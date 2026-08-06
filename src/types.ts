@@ -26,6 +26,9 @@ export interface KnowledgeSource {
   updatedAt: string;
   active: boolean;
   wordCount: number;
+  crawlMode?: 'hybrid' | 'sitemap' | 'sublinks' | 'single';
+  pagesScrapedCount?: number;
+  subPages?: { title: string; url: string }[];
 }
 
 export interface ProductItem {

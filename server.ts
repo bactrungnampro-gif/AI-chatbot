@@ -1,5 +1,6 @@
 import express from "express";
 import path from "path";
+import fs from "fs";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, Type } from "@google/genai";
 import dotenv from "dotenv";
@@ -40,10 +41,205 @@ app.get("/api/health", (req, res) => {
   });
 });
 
-// Website Content Scraper / Extractor Endpoint
+// --- HELPER FUNCTIONS FOR HYBRID SCRAPING ---
+
+// Helper: Clean HTML to readable plain text
+function cleanHtmlContent(html: string): string {
+  if (!html) return "";
+  let text = html
+    .replace(/<script\b[^<]*>([\s\S]*?)<\/script>/gi, '')
+    .replace(/<style\b[^<]*>([\s\S]*?)<\/style>/gi, '')
+    .replace(/<svg\b[^<]*>([\s\S]*?)<\/svg>/gi, '')
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return text;
+}
+
+// Helper: Extract Page Title
+function extractPageTitle(html: string, fallbackUrl: string): string {
+  const titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i);
+  if (titleMatch && titleMatch[1].trim()) {
+    return titleMatch[1].trim();
+  }
+  const h1Match = html.match(/<h1[^>]*>([^<]+)<\/h1>/i);
+  if (h1Match && h1Match[1].trim()) {
+    return cleanHtmlContent(h1Match[1]);
+  }
+  return fallbackUrl;
+}
+
+// Helper: Extract internal sub-links from HTML
+function extractInternalLinks(html: string, baseUrlStr: string): string[] {
+  const links = new Set<string>();
+  try {
+    const baseUrl = new URL(baseUrlStr);
+    const domainHost = baseUrl.hostname.toLowerCase();
+    
+    // Match href attributes
+    const hrefRegex = /href=["']([^"']+)["']/gi;
+    let match;
+    while ((match = hrefRegex.exec(html)) !== null) {
+      let href = match[1].trim();
+      
+      // Skip fragment, javascript, mailto, tel
+      if (!href || href.startsWith('#') || href.startsWith('javascript:') || href.startsWith('mailto:') || href.startsWith('tel:')) {
+        continue;
+      }
+      
+      // Ignore static media & non-HTML file extensions
+      if (/\.(png|jpg|jpeg|gif|webp|svg|ico|pdf|doc|docx|zip|rar|tar|gz|mp4|mp3|avi|css|js|woff|woff2|ttf|eot)$/i.test(href)) {
+        continue;
+      }
+      
+      try {
+        const resolvedUrl = new URL(href, baseUrlStr);
+        // Ensure same domain hostname
+        if (resolvedUrl.hostname.toLowerCase() === domainHost) {
+          // Strip fragment hash
+          resolvedUrl.hash = '';
+          // Remove trailing slash for normalization (unless root)
+          let cleanedHref = resolvedUrl.toString();
+          if (cleanedHref.length > 10 && cleanedHref.endsWith('/')) {
+            cleanedHref = cleanedHref.slice(0, -1);
+          }
+          links.add(cleanedHref);
+        }
+      } catch (err) {
+        // Ignore invalid URLs
+      }
+    }
+  } catch (err) {
+    console.warn('[Link Extractor] Failed to parse base URL:', err);
+  }
+  return Array.from(links);
+}
+
+// Helper: Fetch Sitemaps for a domain (sitemap.xml, sitemap_index.xml, robots.txt)
+async function fetchSitemapUrls(baseUrlStr: string): Promise<{ urls: string[], sitemapLocation?: string }> {
+  const foundUrls = new Set<string>();
+  let sitemapLoc: string | undefined = undefined;
+  
+  try {
+    const baseUrl = new URL(baseUrlStr);
+    const origin = baseUrl.origin;
+    const domainHost = baseUrl.hostname.toLowerCase();
+    
+    const candidateSitemaps = [
+      `${origin}/sitemap.xml`,
+      `${origin}/sitemap_index.xml`,
+      `${origin}/sitemap-index.xml`,
+      `${origin}/sitemap/sitemap.xml`,
+    ];
+    
+    // Check robots.txt first for custom sitemap declaration
+    try {
+      const robotsRes = await fetch(`${origin}/robots.txt`, {
+        headers: { 'User-Agent': 'aistudio-hybrid-crawler/1.0' },
+        signal: AbortSignal.timeout(5000)
+      });
+      if (robotsRes.ok) {
+        const robotsText = await robotsRes.text();
+        const sitemapMatches = robotsText.match(/Sitemap:\s*(https?:\/\/[^\s]+)/gi);
+        if (sitemapMatches) {
+          for (const sm of sitemapMatches) {
+            const smUrl = sm.replace(/Sitemap:\s*/i, '').trim();
+            if (smUrl) candidateSitemaps.unshift(smUrl);
+          }
+        }
+      }
+    } catch (rErr) {
+      // Ignore robots fetch failure
+    }
+    
+    // Fetch candidate sitemaps
+    for (const smUrl of candidateSitemaps) {
+      if (foundUrls.size >= 100) break; // Limit total sitemap URLs collected
+      try {
+        const smRes = await fetch(smUrl, {
+          headers: { 'User-Agent': 'aistudio-hybrid-crawler/1.0' },
+          signal: AbortSignal.timeout(6000)
+        });
+        if (!smRes.ok) continue;
+        const xmlText = await smRes.text();
+        
+        sitemapLoc = smUrl;
+        
+        // Match <loc> URLs
+        const locRegex = /<loc>\s*(https?:\/\/[^<]+)\s*<\/loc>/gi;
+        let match;
+        const subSitemaps: string[] = [];
+        
+        while ((match = locRegex.exec(xmlText)) !== null) {
+          const loc = match[1].trim();
+          if (loc.endsWith('.xml') || loc.includes('sitemap')) {
+            subSitemaps.push(loc);
+          } else {
+            try {
+              const parsed = new URL(loc);
+              if (parsed.hostname.toLowerCase() === domainHost) {
+                parsed.hash = '';
+                let cleaned = parsed.toString();
+                if (cleaned.length > 10 && cleaned.endsWith('/')) cleaned = cleaned.slice(0, -1);
+                foundUrls.add(cleaned);
+              }
+            } catch (e) {}
+          }
+        }
+        
+        // If sitemap index contains sub-sitemaps, fetch up to 3 sub-sitemaps
+        for (const subSm of subSitemaps.slice(0, 3)) {
+          if (foundUrls.size >= 100) break;
+          try {
+            const subRes = await fetch(subSm, {
+              headers: { 'User-Agent': 'aistudio-hybrid-crawler/1.0' },
+              signal: AbortSignal.timeout(5000)
+            });
+            if (subRes.ok) {
+              const subXml = await subRes.text();
+              let subMatch;
+              const subLocRegex = /<loc>\s*(https?:\/\/[^<]+)\s*<\/loc>/gi;
+              while ((subMatch = subLocRegex.exec(subXml)) !== null) {
+                const loc = subMatch[1].trim();
+                if (!loc.endsWith('.xml')) {
+                  try {
+                    const parsed = new URL(loc);
+                    if (parsed.hostname.toLowerCase() === domainHost) {
+                      parsed.hash = '';
+                      let cleaned = parsed.toString();
+                      if (cleaned.length > 10 && cleaned.endsWith('/')) cleaned = cleaned.slice(0, -1);
+                      foundUrls.add(cleaned);
+                    }
+                  } catch (e) {}
+                }
+              }
+            }
+          } catch (subErr) {}
+        }
+        
+        if (foundUrls.size > 0) break; // Found valid sitemap content
+      } catch (smErr) {
+        // Try next candidate
+      }
+    }
+  } catch (err) {
+    console.warn('[Sitemap Crawler] Error fetching sitemap:', err);
+  }
+  
+  return { urls: Array.from(foundUrls), sitemapLocation: sitemapLoc };
+}
+
+// Website Content Scraper / Extractor Endpoint (Hybrid Support)
 app.post("/api/knowledge/scrape", async (req, res) => {
   try {
-    const { url } = req.body;
+    const { url, mode = 'hybrid', maxPages = 10 } = req.body;
     if (!url || typeof url !== "string") {
       res.status(400).json({ error: "URL không hợp lệ hoặc thiếu" });
       return;
@@ -54,58 +250,202 @@ app.post("/api/knowledge/scrape", async (req, res) => {
       targetUrl = "https://" + targetUrl;
     }
 
-    console.log(`[Scraper] Attempting to scrape URL: ${targetUrl}`);
+    // Parse maxPages limit (1 to 25)
+    const pageLimit = Math.min(Math.max(parseInt(String(maxPages), 10) || 10, 1), 25);
+    const crawlMode = ['hybrid', 'sitemap', 'sublinks', 'single'].includes(mode) ? mode : 'hybrid';
 
-    // Fetch webpage using native fetch
-    const response = await fetch(targetUrl, {
+    console.log(`[Scraper] Starting ${crawlMode.toUpperCase()} crawl for: ${targetUrl} (Max pages: ${pageLimit})`);
+
+    // Step 1: Fetch Main Entry Page
+    const mainResponse = await fetch(targetUrl, {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
         'Accept-Language': 'vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7'
       },
-      signal: AbortSignal.timeout(10000) // 10s timeout
+      signal: AbortSignal.timeout(10000)
     });
 
-    if (!response.ok) {
-      throw new Error(`HTTP error ${response.status}: ${response.statusText}`);
+    if (!mainResponse.ok) {
+      throw new Error(`HTTP ${mainResponse.status}: ${mainResponse.statusText}`);
     }
 
-    const html = await response.text();
+    const mainHtml = await mainResponse.text();
+    const mainTitle = extractPageTitle(mainHtml, targetUrl);
+    const mainText = cleanHtmlContent(mainHtml);
 
-    // Extract Title using Regex
-    const titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i);
-    const title = titleMatch ? titleMatch[1].trim() : targetUrl;
-
-    // Remove scripts, styles, and SVG/HTML comments
-    let cleanedText = html
-      .replace(/<script\b[^<]*>([\s\S]*?)<\/script>/gi, '')
-      .replace(/<style\b[^<]*>([\s\S]*?)<\/style>/gi, '')
-      .replace(/<svg\b[^<]*>([\s\S]*?)<\/svg>/gi, '')
-      .replace(/<!--[\s\S]*?-->/g, '')
-      .replace(/<[^>]+>/g, ' ') // Strip HTML tags
-      .replace(/\s+/g, ' ') // Collapse multiple spaces
-      .trim();
-
-    // Truncate to reasonable length for knowledge base item
-    if (cleanedText.length > 8000) {
-      cleanedText = cleanedText.substring(0, 8000) + "... [Đã rút gọn]";
+    // If mode is 'single', return immediately
+    if (crawlMode === 'single' || pageLimit === 1) {
+      let finalSingleText = mainText;
+      if (finalSingleText.length > 12000) {
+        finalSingleText = finalSingleText.substring(0, 12000) + "... [Đã rút gọn]";
+      }
+      const wordCount = finalSingleText.split(/\s+/).filter(Boolean).length;
+      res.json({
+        success: true,
+        title: mainTitle || `Dữ liệu từ ${targetUrl}`,
+        url: targetUrl,
+        content: finalSingleText,
+        wordCount,
+        pagesScrapedCount: 1,
+        crawlMode: 'single',
+        subPages: [{ title: mainTitle, url: targetUrl }]
+      });
+      return;
     }
 
-    const wordCount = cleanedText.split(/\s+/).filter(Boolean).length;
+    // --- HYBRID / MULTI-PAGE CRAWLING ---
+    let discoveredSitemapUrls: string[] = [];
+    let discoveredSublinks: string[] = [];
+    let sitemapLocation: string | undefined = undefined;
+
+    // Mechanism 1: Discover via Sitemap XML (if mode is 'hybrid' or 'sitemap')
+    if (crawlMode === 'hybrid' || crawlMode === 'sitemap') {
+      console.log(`[Scraper] Discovering URLs via Sitemap XML...`);
+      const sitemapResult = await fetchSitemapUrls(targetUrl);
+      discoveredSitemapUrls = sitemapResult.urls;
+      sitemapLocation = sitemapResult.sitemapLocation;
+      console.log(`[Scraper] Sitemap found ${discoveredSitemapUrls.length} URLs from ${sitemapLocation || 'N/A'}`);
+    }
+
+    // Mechanism 2: Discover via Sub-links in HTML (if mode is 'hybrid' or 'sublinks')
+    if (crawlMode === 'hybrid' || crawlMode === 'sublinks') {
+      console.log(`[Scraper] Discovering internal sub-links from main page HTML...`);
+      discoveredSublinks = extractInternalLinks(mainHtml, targetUrl);
+      console.log(`[Scraper] Extracted ${discoveredSublinks.length} internal sub-links from main HTML`);
+    }
+
+    // Combine & Deduplicate candidate URLs
+    const candidateUrlsSet = new Set<string>();
+    
+    // Normalize targetUrl for set comparison
+    let normalizedTargetUrl = targetUrl;
+    if (normalizedTargetUrl.length > 10 && normalizedTargetUrl.endsWith('/')) {
+      normalizedTargetUrl = normalizedTargetUrl.slice(0, -1);
+    }
+
+    // Priority keywords to score URLs
+    const priorityKeywords = [
+      'gioi-thieu', 'about', 'chinh-sach', 'policy', 'san-pham', 'product', 
+      'dich-vu', 'service', 'danh-muc', 'catalog', 'bao-hanh', 'warranty',
+      'huong-dan', 'guide', 'faq', 'hoi-dap', 'lien-he', 'contact'
+    ];
+
+    const scoreUrl = (u: string) => {
+      let score = 0;
+      const lower = u.toLowerCase();
+      // URLs in both sitemap & sublinks get bonus
+      if (discoveredSitemapUrls.includes(u) && discoveredSublinks.includes(u)) score += 5;
+      for (const kw of priorityKeywords) {
+        if (lower.includes(kw)) score += 3;
+      }
+      // Shorter path URLs usually contain main category/info
+      score += Math.max(0, 10 - u.split('/').length);
+      return score;
+    };
+
+    // Combine all
+    const allDiscovered = Array.from(new Set([...discoveredSitemapUrls, ...discoveredSublinks]))
+      .filter(u => u !== normalizedTargetUrl && u !== targetUrl && u !== targetUrl + '/');
+
+    // Sort candidates by priority score descending
+    allDiscovered.sort((a, b) => scoreUrl(b) - scoreUrl(a));
+
+    // Select sub-pages queue up to pageLimit - 1
+    const subPagesToCrawl = allDiscovered.slice(0, pageLimit - 1);
+
+    console.log(`[Scraper] Crawling top ${subPagesToCrawl.length} sub-pages out of ${allDiscovered.length} discovered candidates.`);
+
+    // Crawl sub-pages in batches
+    const scrapedPagesList: Array<{ title: string; url: string; content: string; wordCount: number }> = [
+      {
+        title: mainTitle,
+        url: targetUrl,
+        content: mainText,
+        wordCount: mainText.split(/\s+/).filter(Boolean).length
+      }
+    ];
+
+    // Concurrency batch execution
+    const BATCH_SIZE = 4;
+    for (let i = 0; i < subPagesToCrawl.length; i += BATCH_SIZE) {
+      const batch = subPagesToCrawl.slice(i, i + BATCH_SIZE);
+      const batchPromises = batch.map(async (subUrl) => {
+        try {
+          const res = await fetch(subUrl, {
+            headers: {
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+              'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+            },
+            signal: AbortSignal.timeout(6000)
+          });
+          if (!res.ok) return null;
+          const subHtml = await res.text();
+          const subTitle = extractPageTitle(subHtml, subUrl);
+          const subContent = cleanHtmlContent(subHtml);
+          if (subContent.length < 50) return null; // Skip empty pages
+
+          return {
+            title: subTitle,
+            url: subUrl,
+            content: subContent,
+            wordCount: subContent.split(/\s+/).filter(Boolean).length
+          };
+        } catch (err) {
+          return null; // Ignore individual page fetch errors silently
+        }
+      });
+
+      const batchResults = await Promise.all(batchPromises);
+      for (const item of batchResults) {
+        if (item) scrapedPagesList.push(item);
+      }
+    }
+
+    // Build Combined Knowledge Document
+    let combinedContent = `=== TỔNG HỢP DỮ LIỆU CÀO WEBSITE LAI (HYBRID) ===\n`;
+    combinedContent += `Trang gốc: ${targetUrl}\n`;
+    combinedContent += `Cơ chế: ${crawlMode.toUpperCase()} (Sitemap + Quét liên kết sub-links)\n`;
+    combinedContent += `Tổng số trang đã cào: ${scrapedPagesList.length} trang\n\n`;
+
+    scrapedPagesList.forEach((page, index) => {
+      combinedContent += `--- TRANG ${index + 1}/${scrapedPagesList.length}: ${page.title} ---\n`;
+      combinedContent += `URL: ${page.url}\n`;
+      // Truncate individual page content if too large
+      let pageText = page.content;
+      if (pageText.length > 5000) pageText = pageText.substring(0, 5000) + '... [Rút gọn trang]';
+      combinedContent += `${pageText}\n\n`;
+    });
+
+    // Enforce global combined length limit to avoid blowing prompt limit
+    if (combinedContent.length > 25000) {
+      combinedContent = combinedContent.substring(0, 25000) + '\n\n... [Tổng hợp tri thức đã rút gọn tối ưu cho AI]';
+    }
+
+    const totalWords = scrapedPagesList.reduce((sum, p) => sum + p.wordCount, 0);
+    const domainHost = new URL(targetUrl).hostname;
+
+    console.log(`[Scraper] Hybrid Crawl Completed successfully! Scraped ${scrapedPagesList.length} pages, total ~${totalWords} words.`);
 
     res.json({
       success: true,
-      title: title || `Dữ liệu thu thập từ ${targetUrl}`,
+      title: `Dữ liệu cào Lai (Hybrid) từ ${domainHost} (${scrapedPagesList.length} trang)`,
       url: targetUrl,
-      content: cleanedText,
-      wordCount
+      content: combinedContent,
+      wordCount: totalWords,
+      pagesScrapedCount: scrapedPagesList.length,
+      crawlMode: crawlMode,
+      sitemapsFound: discoveredSitemapUrls.length,
+      sublinksFound: discoveredSublinks.length,
+      sitemapLocation: sitemapLocation || null,
+      subPages: scrapedPagesList.map(p => ({ title: p.title, url: p.url }))
     });
+
   } catch (error: any) {
     console.error("[Scraper Error]:", error?.message || error);
-    // Provide a helpful fallback extracted knowledge object if external site blocks crawling
     res.json({
       success: false,
-      error: `Không thể tải dữ liệu tự động từ URL (${error?.message || 'Kết nối bị chặn'}). Bạn có thể dán nội dung trực tiếp bên dưới.`,
+      error: `Không thể cào dữ liệu tự động từ URL (${error?.message || 'Kết nối bị chặn'}). Bạn có thể dán nội dung trực tiếp bên dưới.`,
       fallbackTitle: `Thu thập dữ liệu từ ${req.body.url || 'Website'}`,
       content: ""
     });
@@ -457,14 +797,16 @@ app.get("/api/widget.js", (req, res) => {
 
 // Vite middleware setup for Development / Static server for Production
 async function startServer() {
-  if (process.env.NODE_ENV !== "production") {
+  const distPath = path.join(process.cwd(), 'dist');
+  const isProduction = process.env.NODE_ENV === "production" || fs.existsSync(path.join(distPath, 'index.html'));
+
+  if (!isProduction) {
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
     });
     app.use(vite.middlewares);
   } else {
-    const distPath = path.join(process.cwd(), 'dist');
     app.use(express.static(distPath));
     app.get('*', (req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));

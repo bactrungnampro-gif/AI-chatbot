@@ -35,9 +35,12 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
   onNavigateToProducts,
 }) => {
   const [urlInput, setUrlInput] = useState('');
+  const [scrapeMode, setScrapeMode] = useState<'hybrid' | 'sitemap' | 'sublinks' | 'single'>('hybrid');
+  const [maxPages, setMaxPages] = useState<number>(10);
   const [isScraping, setIsScraping] = useState(false);
   const [scrapeError, setScrapeError] = useState<string | null>(null);
   const [scrapeSuccess, setScrapeSuccess] = useState<string | null>(null);
+  const [expandedSubPagesId, setExpandedSubPagesId] = useState<string | null>(null);
 
   // Auto product extraction state
   const [extractingId, setExtractingId] = useState<string | null>(null);
@@ -97,7 +100,11 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
       const response = await fetch('/api/knowledge/scrape', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: urlInput.trim() }),
+        body: JSON.stringify({ 
+          url: urlInput.trim(),
+          mode: scrapeMode,
+          maxPages: maxPages
+        }),
       });
 
       const data = await response.json();
@@ -113,10 +120,15 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
           updatedAt: new Date().toISOString(),
           active: true,
           wordCount: data.wordCount || data.content.split(/\s+/).length,
+          crawlMode: data.crawlMode || scrapeMode,
+          pagesScrapedCount: data.pagesScrapedCount || 1,
+          subPages: data.subPages || [],
         };
 
         setKnowledgeSources((prev) => [newSource, ...prev]);
-        setScrapeSuccess(`Đã thu thập thành công ${data.wordCount} từ từ website ${data.url}`);
+        const modeLabel = (data.crawlMode || scrapeMode).toUpperCase();
+        const pagesStr = data.pagesScrapedCount ? `${data.pagesScrapedCount} trang` : '1 trang';
+        setScrapeSuccess(`🎉 Đã thu thập thành công ${pagesStr} (~${data.wordCount} từ) bằng cơ chế ${modeLabel} từ ${data.url}`);
         setUrlInput('');
 
         // Automatically offer or trigger product catalog extraction
@@ -212,9 +224,83 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
           <h2 className="text-xl sm:text-2xl font-bold tracking-tight mb-2">
             Nạp dữ liệu website cho Trợ lý AI
           </h2>
-          <p className="text-xs sm:text-sm text-slate-300 leading-relaxed mb-6">
-            Nhập đường dẫn trang web (ví dụ: trang Giới thiệu, Chính sách bảo hành, Quy trình mua hàng). Hệ thống sẽ tự động quét, trích xuất văn bản và lưu vào cơ sở tri thức cho Agent.
+          <p className="text-xs sm:text-sm text-slate-300 leading-relaxed mb-4">
+            Nhập đường dẫn trang web. Hệ thống sẽ tự động sử dụng <b>Chiến lược Cào Lai (Hybrid Strategy)</b>: Quét Sitemap XML chính chủ kết hợp với bóc tách liên kết con (sub-links) để gom toàn bộ dữ liệu chỉ trong 1 lần nhấn.
           </p>
+
+          {/* Scrape Strategy & Config Selector */}
+          <div className="mb-4 space-y-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-xs text-slate-400 font-semibold mr-1">Cơ chế cào:</span>
+              <button
+                type="button"
+                onClick={() => setScrapeMode('hybrid')}
+                className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 border ${
+                  scrapeMode === 'hybrid'
+                    ? 'bg-indigo-600 text-white border-indigo-500 shadow-xs'
+                    : 'bg-slate-800 text-slate-300 border-slate-700 hover:border-slate-600'
+                }`}
+              >
+                <Sparkles className="w-3.5 h-3.5 text-amber-300" />
+                <span>🚀 Hybrid (Sitemap + Sublinks)</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setScrapeMode('sitemap')}
+                className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 border ${
+                  scrapeMode === 'sitemap'
+                    ? 'bg-indigo-600 text-white border-indigo-500 shadow-xs'
+                    : 'bg-slate-800 text-slate-300 border-slate-700 hover:border-slate-600'
+                }`}
+              >
+                <span>🗺️ Sitemap XML</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setScrapeMode('sublinks')}
+                className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 border ${
+                  scrapeMode === 'sublinks'
+                    ? 'bg-indigo-600 text-white border-indigo-500 shadow-xs'
+                    : 'bg-slate-800 text-slate-300 border-slate-700 hover:border-slate-600'
+                }`}
+              >
+                <span>🔗 Quét Sub-links</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setScrapeMode('single')}
+                className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 border ${
+                  scrapeMode === 'single'
+                    ? 'bg-indigo-600 text-white border-indigo-500 shadow-xs'
+                    : 'bg-slate-800 text-slate-300 border-slate-700 hover:border-slate-600'
+                }`}
+              >
+                <span>📄 Trang Đơn (Single)</span>
+              </button>
+            </div>
+
+            {scrapeMode !== 'single' && (
+              <div className="flex items-center gap-3 text-xs text-slate-300 bg-slate-800/60 p-2.5 rounded-xl border border-slate-700/60">
+                <span className="font-medium text-slate-300">Giới hạn số trang tối đa:</span>
+                <select
+                  value={maxPages}
+                  onChange={(e) => setMaxPages(parseInt(e.target.value, 10))}
+                  className="bg-slate-900 border border-slate-700 text-white rounded-lg px-2.5 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500 font-semibold"
+                >
+                  <option value={5}>5 trang (Nhanh)</option>
+                  <option value={10}>10 trang (Khuyên dùng)</option>
+                  <option value={15}>15 trang (Sâu)</option>
+                  <option value={20}>20 trang (Toàn bộ)</option>
+                </select>
+                <span className="text-[11px] text-slate-400">
+                  (Tự động thu thập các trang Giới thiệu, Sản phẩm, Chính sách...)
+                </span>
+              </div>
+            )}
+          </div>
 
           <form onSubmit={handleScrapeWebsite} className="flex flex-col sm:flex-row gap-2">
             <div className="relative flex-1">
@@ -223,7 +309,7 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
                 type="url"
                 value={urlInput}
                 onChange={(e) => setUrlInput(e.target.value)}
-                placeholder="https://techlife.vn/chinh-sach-doi-tra"
+                placeholder="https://domain.com (hoặc https://domain.com/chinh-sach)"
                 className="w-full pl-10 pr-4 py-3 rounded-xl bg-slate-800 border border-slate-700 text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 text-xs sm:text-sm"
                 required
               />
@@ -231,7 +317,7 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
             <button
               type="submit"
               disabled={isScraping || !urlInput.trim()}
-              className="inline-flex items-center justify-center gap-2 px-6 py-3 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:bg-slate-800 text-white text-xs sm:text-sm font-semibold transition-colors shadow-xs"
+              className="inline-flex items-center justify-center gap-2 px-6 py-3 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:bg-slate-800 text-white text-xs sm:text-sm font-semibold transition-colors shadow-xs shrink-0"
             >
               {isScraping ? (
                 <>
@@ -241,7 +327,7 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
               ) : (
                 <>
                   <Globe className="w-4 h-4" />
-                  <span>Thu thập ngay</span>
+                  <span>Cào Website {scrapeMode === 'hybrid' ? 'Lai (Hybrid)' : ''}</span>
                 </>
               )}
             </button>
@@ -324,21 +410,37 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
           >
             <div>
               <div className="flex items-start justify-between gap-2 mb-3">
-                <span className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-semibold ${
-                  source.type === 'website' ? 'bg-indigo-50 text-indigo-700 border border-indigo-200' :
-                  source.type === 'process_guide' ? 'bg-purple-50 text-purple-700 border border-purple-200' :
-                  'bg-emerald-50 text-emerald-700 border border-emerald-200'
-                }`}>
-                  {source.type === 'website' && <Globe className="w-3 h-3" />}
-                  {source.type === 'process_guide' && <FileCheck className="w-3 h-3" />}
-                  {source.type === 'document' && <FileText className="w-3 h-3" />}
-                  <span className="capitalize">{source.type}</span>
-                </span>
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <span className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-semibold ${
+                    source.type === 'website' ? 'bg-indigo-50 text-indigo-700 border border-indigo-200' :
+                    source.type === 'process_guide' ? 'bg-purple-50 text-purple-700 border border-purple-200' :
+                    'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                  }`}>
+                    {source.type === 'website' && <Globe className="w-3 h-3" />}
+                    {source.type === 'process_guide' && <FileCheck className="w-3 h-3" />}
+                    {source.type === 'document' && <FileText className="w-3 h-3" />}
+                    <span className="capitalize">{source.type}</span>
+                  </span>
+
+                  {source.crawlMode && (
+                    <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wider ${
+                      source.crawlMode === 'hybrid' ? 'bg-amber-50 text-amber-700 border border-amber-200' :
+                      source.crawlMode === 'sitemap' ? 'bg-blue-50 text-blue-700 border border-blue-200' :
+                      'bg-slate-100 text-slate-600 border border-slate-200'
+                    }`}>
+                      {source.crawlMode === 'hybrid' && '🚀 HYBRID'}
+                      {source.crawlMode === 'sitemap' && '🗺️ SITEMAP'}
+                      {source.crawlMode === 'sublinks' && '🔗 SUBLINKS'}
+                      {source.crawlMode === 'single' && '📄 SINGLE'}
+                      {source.pagesScrapedCount ? ` (${source.pagesScrapedCount} TRANG)` : ''}
+                    </span>
+                  )}
+                </div>
 
                 <button
                   onClick={() => toggleSourceActive(source.id)}
                   title={source.active ? 'Tắt nguồn này' : 'Bật nguồn này'}
-                  className="text-slate-400 hover:text-indigo-600"
+                  className="text-slate-400 hover:text-indigo-600 shrink-0"
                 >
                   {source.active ? (
                     <ToggleRight className="w-6 h-6 text-emerald-600" />
@@ -365,6 +467,28 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
               <p className="text-xs text-slate-600 line-clamp-4 leading-relaxed bg-slate-50 p-3 rounded-xl border border-slate-100 font-mono text-[11px]">
                 {source.content}
               </p>
+
+              {/* Subpages inspector accordion */}
+              {Array.isArray(source.subPages) && source.subPages.length > 0 && (
+                <div className="mt-2.5 text-[11px]">
+                  <button
+                    onClick={() => setExpandedSubPagesId(expandedSubPagesId === source.id ? null : source.id)}
+                    className="text-indigo-600 font-semibold hover:underline flex items-center gap-1 bg-indigo-50/70 px-2.5 py-1 rounded-lg border border-indigo-100"
+                  >
+                    <span>{expandedSubPagesId === source.id ? '▼ Ẩn danh sách trang con' : `▶ Xem danh sách ${source.subPages.length} trang đã cào`}</span>
+                  </button>
+                  {expandedSubPagesId === source.id && (
+                    <ul className="mt-2 space-y-1 bg-slate-50 p-2.5 rounded-xl border border-slate-200 text-[10px] max-h-40 overflow-y-auto">
+                      {source.subPages.map((sub, i) => (
+                        <li key={i} className="flex items-center justify-between gap-2 border-b border-slate-100 last:border-0 pb-1 pt-0.5">
+                          <span className="font-medium text-slate-700 truncate">{i + 1}. {sub.title}</span>
+                          <a href={sub.url} target="_blank" rel="noreferrer" className="text-indigo-500 hover:underline shrink-0 font-medium">Link ↗</a>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              )}
 
               {/* Extract to Product Catalog Action Button */}
               {setProducts && (
