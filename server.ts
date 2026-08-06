@@ -173,7 +173,7 @@ async function fetchSitemapUrls(baseUrlStr: string): Promise<{ urls: string[], s
     
     // Fetch candidate sitemaps in priority order
     for (const smUrl of candidateSitemaps) {
-      if (foundUrls.size >= 500) break; // Limit total sitemap URLs collected
+      if (foundUrls.size >= 1200) break; // Limit total sitemap URLs collected
       try {
         const smRes = await fetch(smUrl, {
           headers: { 'User-Agent': 'aistudio-hybrid-crawler/1.0' },
@@ -209,7 +209,7 @@ async function fetchSitemapUrls(baseUrlStr: string): Promise<{ urls: string[], s
         // If sitemap index contains sub-sitemaps and no direct page URLs were found in current file, fetch sub-sitemaps
         if (foundUrls.size === 0 && subSitemaps.length > 0) {
           for (const subSm of subSitemaps.slice(0, 10)) {
-            if (foundUrls.size >= 500) break;
+            if (foundUrls.size >= 1200) break;
             try {
               const subRes = await fetch(subSm, {
                 headers: { 'User-Agent': 'aistudio-hybrid-crawler/1.0' },
@@ -264,8 +264,8 @@ app.post("/api/knowledge/scrape", async (req, res) => {
       targetUrl = "https://" + targetUrl;
     }
 
-    // Parse maxPages limit (1 to 200)
-    const pageLimit = Math.min(Math.max(parseInt(String(maxPages), 10) || 10, 1), 200);
+    // Parse maxPages limit (1 to 1000)
+    const pageLimit = Math.min(Math.max(parseInt(String(maxPages), 10) || 10, 1), 1000);
     const crawlMode = ['hybrid', 'sitemap', 'sublinks', 'single'].includes(mode) ? mode : 'hybrid';
 
     console.log(`[Scraper] Starting ${crawlMode.toUpperCase()} crawl for: ${targetUrl} (Max pages: ${pageLimit})`);

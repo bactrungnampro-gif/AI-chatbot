@@ -43,6 +43,8 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
   const [urlInput, setUrlInput] = useState('');
   const [scrapeMode, setScrapeMode] = useState<'hybrid' | 'sitemap' | 'sublinks' | 'single'>('hybrid');
   const [maxPages, setMaxPages] = useState<number>(10);
+  const [isCustomPages, setIsCustomPages] = useState<boolean>(false);
+  const [customPagesInput, setCustomPagesInput] = useState<string>('30');
   const [isScraping, setIsScraping] = useState(false);
   const [scrapeError, setScrapeError] = useState<string | null>(null);
   const [scrapeSuccess, setScrapeSuccess] = useState<string | null>(null);
@@ -518,39 +520,56 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
                 <span className="font-medium text-slate-300">Số trang thu thập tối đa:</span>
                 <div className="flex items-center gap-2">
                   <select
-                    value={[10, 25, 50, 100, 150, 200].includes(maxPages) ? maxPages : 'custom'}
+                    value={isCustomPages ? 'custom' : maxPages}
                     onChange={(e) => {
                       if (e.target.value === 'custom') {
-                        setMaxPages(50);
+                        setIsCustomPages(true);
+                        const val = parseInt(customPagesInput, 10);
+                        if (!isNaN(val) && val > 0) {
+                          setMaxPages(val);
+                        } else {
+                          setMaxPages(30);
+                          setCustomPagesInput('30');
+                        }
                       } else {
-                        setMaxPages(parseInt(e.target.value, 10));
+                        setIsCustomPages(false);
+                        const parsed = parseInt(e.target.value, 10);
+                        setMaxPages(parsed);
                       }
                     }}
-                    className="bg-slate-900 border border-slate-700 text-white rounded-lg px-2.5 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500 font-semibold"
+                    className="bg-slate-900 border border-slate-700 text-white rounded-lg px-2.5 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500 font-semibold cursor-pointer"
                   >
                     <option value={10}>10 trang (Nhanh)</option>
                     <option value={25}>25 trang (Tiêu chuẩn)</option>
                     <option value={50}>50 trang (Mở rộng)</option>
                     <option value={100}>100 trang (Cào Sâu - Deep Crawl)</option>
-                    <option value={150}>150 trang (Chuyên sâu)</option>
-                    <option value={200}>200 trang (Quy mô Lớn - Max 200)</option>
-                    <option value="custom">⚙️ Nhập số tùy chỉnh...</option>
+                    <option value={200}>200 trang (Quy mô Lớn)</option>
+                    <option value={500}>500 trang (Doanh nghiệp)</option>
+                    <option value={1000}>1000 trang (Tối đa 1000 trang)</option>
+                    <option value="custom">⚙️ Nhập số tùy chỉnh (Tối đa 1000)...</option>
                   </select>
 
-                  {(![10, 25, 50, 100, 150, 200].includes(maxPages) || maxPages > 200) && (
+                  {isCustomPages && (
                     <input
                       type="number"
                       min={1}
-                      max={200}
-                      value={maxPages}
-                      onChange={(e) => setMaxPages(Math.min(200, Math.max(1, parseInt(e.target.value, 10) || 1)))}
-                      className="w-20 bg-slate-900 border border-indigo-500 text-white rounded-lg px-2 py-1 text-xs font-bold text-center focus:outline-none"
+                      max={1000}
+                      value={customPagesInput}
+                      onChange={(e) => {
+                        const strVal = e.target.value;
+                        setCustomPagesInput(strVal);
+                        const parsed = parseInt(strVal, 10);
+                        if (!isNaN(parsed) && parsed > 0) {
+                          setMaxPages(Math.min(1000, parsed));
+                        }
+                      }}
+                      className="w-24 bg-slate-900 border border-indigo-500 text-white rounded-lg px-2.5 py-1 text-xs font-bold text-center focus:outline-none focus:ring-2 focus:ring-indigo-400"
                       placeholder="Số trang"
                     />
                   )}
                 </div>
                 <span className="text-[11px] text-slate-400">
-                  (Hệ thống tự động cào song song batch 8 trang/lần, lưu tối đa 200 trang)
+                  (Hệ thống tự động cào song song batch 8 trang/lần)
                 </span>
               </div>
             )}
@@ -828,7 +847,13 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
       {/* Knowledge Base Header & Controls */}
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 bg-white p-4 rounded-2xl border border-slate-200/80 shadow-2xs">
         <div>
-          <h3 className="font-bold text-slate-900 text-base">Cơ Sở Tri Thức Dữ Liệu</h3>
+          <div className="flex items-center gap-2 mb-0.5">
+            <h3 className="font-bold text-slate-900 text-base">Cơ Sở Tri Thức Dữ Liệu</h3>
+            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 text-[10px] font-semibold border border-emerald-200/60" title="Tự động lưu vào bộ nhớ trình duyệt local storage">
+              <CheckCircle className="w-3 h-3 text-emerald-500" />
+              <span>Đã tự động lưu (Auto-Saved)</span>
+            </span>
+          </div>
           <p className="text-xs text-slate-500">
             Tổng cộng: {knowledgeSources.length} nguồn tri thức ({knowledgeSources.filter((k) => k.active).length} đang hoạt động)
           </p>
@@ -843,7 +868,7 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
               placeholder="Tìm kiếm tài liệu..."
-              className="pl-9 pr-4 py-2 border border-slate-200 rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 w-full sm:w-60 bg-slate-50"
+              className="pl-9 pr-4 py-2 border border-slate-200 rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 w-full sm:w-52 bg-slate-50"
             />
           </div>
 

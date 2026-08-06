@@ -19,21 +19,114 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<string>('chat');
   const [hasApiKey, setHasApiKey] = useState<boolean>(true);
 
-  // Core Application State
-  const [agentConfig, setAgentConfig] = useState<AgentConfig>(defaultAgentConfig);
-  const [knowledgeSources, setKnowledgeSources] = useState<KnowledgeSource[]>(defaultKnowledgeSources);
-  const [products, setProducts] = useState<ProductItem[]>(defaultProducts);
-  const [widgetSettings, setWidgetSettings] = useState<WidgetSettings>(defaultWidgetSettings);
+  // Core Application State with LocalStorage Persistence
+  const [agentConfig, setAgentConfig] = useState<AgentConfig>(() => {
+    try {
+      const saved = localStorage.getItem('aistudio_agent_config');
+      if (saved) return JSON.parse(saved);
+    } catch (e) {
+      console.warn('Failed to load agentConfig from localStorage:', e);
+    }
+    return defaultAgentConfig;
+  });
+
+  const [knowledgeSources, setKnowledgeSources] = useState<KnowledgeSource[]>(() => {
+    try {
+      const saved = localStorage.getItem('aistudio_knowledge_sources');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
+    } catch (e) {
+      console.warn('Failed to load knowledgeSources from localStorage:', e);
+    }
+    return defaultKnowledgeSources;
+  });
+
+  const [products, setProducts] = useState<ProductItem[]>(() => {
+    try {
+      const saved = localStorage.getItem('aistudio_products');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) return parsed;
+      }
+    } catch (e) {
+      console.warn('Failed to load products from localStorage:', e);
+    }
+    return defaultProducts;
+  });
+
+  const [widgetSettings, setWidgetSettings] = useState<WidgetSettings>(() => {
+    try {
+      const saved = localStorage.getItem('aistudio_widget_settings');
+      if (saved) return JSON.parse(saved);
+    } catch (e) {
+      console.warn('Failed to load widgetSettings from localStorage:', e);
+    }
+    return defaultWidgetSettings;
+  });
 
   // Chat sandbox messages state
-  const [messages, setMessages] = useState<ChatMessage[]>([
-    {
-      id: 'welcome_1',
-      sender: 'agent',
-      text: defaultAgentConfig.greetingMessage,
-      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-    },
-  ]);
+  const [messages, setMessages] = useState<ChatMessage[]>(() => {
+    try {
+      const saved = localStorage.getItem('aistudio_chat_messages');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
+    } catch (e) {
+      console.warn('Failed to load messages from localStorage:', e);
+    }
+    return [
+      {
+        id: 'welcome_1',
+        sender: 'agent',
+        text: defaultAgentConfig.greetingMessage,
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      },
+    ];
+  });
+
+  // Save to LocalStorage whenever state changes
+  useEffect(() => {
+    try {
+      localStorage.setItem('aistudio_knowledge_sources', JSON.stringify(knowledgeSources));
+    } catch (e) {
+      console.error('Failed to save knowledgeSources to localStorage:', e);
+    }
+  }, [knowledgeSources]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('aistudio_products', JSON.stringify(products));
+    } catch (e) {
+      console.error('Failed to save products to localStorage:', e);
+    }
+  }, [products]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('aistudio_agent_config', JSON.stringify(agentConfig));
+    } catch (e) {
+      console.error('Failed to save agentConfig to localStorage:', e);
+    }
+  }, [agentConfig]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('aistudio_widget_settings', JSON.stringify(widgetSettings));
+    } catch (e) {
+      console.error('Failed to save widgetSettings to localStorage:', e);
+    }
+  }, [widgetSettings]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('aistudio_chat_messages', JSON.stringify(messages));
+    } catch (e) {
+      console.error('Failed to save messages to localStorage:', e);
+    }
+  }, [messages]);
 
   // Check backend health & Gemini API status on boot
   useEffect(() => {
