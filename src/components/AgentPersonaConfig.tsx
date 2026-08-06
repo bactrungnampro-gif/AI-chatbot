@@ -333,8 +333,28 @@ export const AgentPersonaConfig: React.FC<AgentPersonaConfigProps> = ({
                   {showApiKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                 </button>
               </div>
-              <p className="text-[10px] text-slate-400 mt-1">
-                API Key được lưu bảo mật trong trình duyệt và gửi mã hoá tới server.
+              <p className="text-[10px] text-slate-400 mt-1 flex items-center justify-between flex-wrap gap-1">
+                <span>API Key được lưu bảo mật trong trình duyệt và gửi mã hoá tới server.</span>
+                {formData.selectedProvider === 'google' && (
+                  <a
+                    href="https://aistudio.google.com/app/apikey"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-indigo-600 hover:underline font-medium inline-flex items-center gap-0.5"
+                  >
+                    <span>Lấy Gemini Key Miễn Phí (Google AI Studio) ↗</span>
+                  </a>
+                )}
+                {formData.selectedProvider === 'anthropic' && (
+                  <a
+                    href="https://console.anthropic.com/settings/keys"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-indigo-600 hover:underline font-medium inline-flex items-center gap-0.5"
+                  >
+                    <span>Lấy API Key trên Anthropic Console ↗</span>
+                  </a>
+                )}
               </p>
             </div>
 
