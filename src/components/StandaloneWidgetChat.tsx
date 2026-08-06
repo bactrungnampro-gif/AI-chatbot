@@ -22,8 +22,8 @@ interface StandaloneWidgetChatProps {
 
 export const StandaloneWidgetChat: React.FC<StandaloneWidgetChatProps> = ({
   agentConfig: initialAgentConfig,
-  knowledgeSources,
-  products,
+  knowledgeSources: initialKnowledgeSources,
+  products: initialProducts,
   widgetSettings: initialWidgetSettings,
 }) => {
   const [currentAgent, setCurrentAgent] = useState<AgentConfig>(() => {
@@ -42,6 +42,9 @@ export const StandaloneWidgetChat: React.FC<StandaloneWidgetChatProps> = ({
     return initialWidgetSettings;
   });
 
+  const [currentKnowledge, setCurrentKnowledge] = useState<KnowledgeSource[]>(initialKnowledgeSources);
+  const [currentProducts, setCurrentProducts] = useState<ProductItem[]>(initialProducts);
+
   useEffect(() => {
     fetch('/api/config')
       .then((res) => res.json())
@@ -51,6 +54,12 @@ export const StandaloneWidgetChat: React.FC<StandaloneWidgetChatProps> = ({
         }
         if (data.widgetSettings) {
           setCurrentSettings((prev) => ({ ...prev, ...data.widgetSettings }));
+        }
+        if (Array.isArray(data.knowledgeSources) && data.knowledgeSources.length > 0) {
+          setCurrentKnowledge(data.knowledgeSources);
+        }
+        if (Array.isArray(data.products) && data.products.length > 0) {
+          setCurrentProducts(data.products);
         }
       })
       .catch((err) => console.warn('Could not fetch /api/config in standalone widget:', err));
@@ -172,8 +181,8 @@ export const StandaloneWidgetChat: React.FC<StandaloneWidgetChatProps> = ({
           message: userMessage.text,
           history: messages,
           agentConfig: currentAgent,
-          knowledgeSources,
-          products,
+          knowledgeSources: currentKnowledge,
+          products: currentProducts,
           attachments: currentAttachments,
         }),
       });

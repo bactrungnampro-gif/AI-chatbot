@@ -926,11 +926,24 @@ app.post("/api/chat", async (req, res) => {
     const {
       message,
       history = [],
-      agentConfig,
-      knowledgeSources = [],
-      products = [],
+      agentConfig: clientAgentConfig,
+      knowledgeSources: clientKnowledgeSources,
+      products: clientProducts,
       attachments = []
     } = req.body;
+
+    // Use client data if provided & non-empty, otherwise fallback to server store
+    const agentConfig = (clientAgentConfig && (clientAgentConfig.name || clientAgentConfig.businessName)) 
+      ? { ...(serverAgentConfig || {}), ...clientAgentConfig } 
+      : (serverAgentConfig || clientAgentConfig || {});
+
+    const knowledgeSources = (Array.isArray(clientKnowledgeSources) && clientKnowledgeSources.length > 0)
+      ? clientKnowledgeSources
+      : (Array.isArray(serverKnowledgeSources) && serverKnowledgeSources.length > 0 ? serverKnowledgeSources : (clientKnowledgeSources || []));
+
+    const products = (Array.isArray(clientProducts) && clientProducts.length > 0)
+      ? clientProducts
+      : (Array.isArray(serverProducts) && serverProducts.length > 0 ? serverProducts : (clientProducts || []));
 
     if (!message && (!attachments || attachments.length === 0)) {
       res.status(400).json({ error: "Yêu cầu cần chứa tin nhắn hoặc tệp đính kèm." });
@@ -1313,35 +1326,40 @@ YÊU CẦU ĐỊNH DẠNG ĐẦU RA:
 });
 
 // Global In-Memory Config Store for Widget Sync
-let serverAgentConfig = {
-  name: "Trợ lý Agent",
-  title: "Trả lời tự động 24/7 bằng Trợ lý AI",
-  avatarUrl: "https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?w=150&auto=format&fit=crop&q=80",
-  greetingMessage: "Xin chào! Tôi là Trợ lý AI của Amall. Tôi có thể tư vấn sản phẩm, hướng dẫn nghiệp vụ sử dụng, hoặc giải đáp thắc mắc cho bạn. Bạn có thể gửi hình ảnh/tệp tin để tôi hỗ trợ chính xác hơn nhé!"
-};
-
-let serverWidgetSettings = {
-  primaryColor: "#2563eb",
-  headerTitle: "Trợ lý Agent",
-  subtitle: "Trả lời tự động 24/7 bằng Trợ lý AI",
-  buttonText: "Hỏi Trợ Lý AI"
-};
+let serverAgentConfig: any = null;
+let serverWidgetSettings: any = null;
+let serverKnowledgeSources: any[] = [];
+let serverProducts: any[] = [];
 
 app.get("/api/config", (req, res) => {
   res.json({
     agentConfig: serverAgentConfig,
-    widgetSettings: serverWidgetSettings
+    widgetSettings: serverWidgetSettings,
+    knowledgeSources: serverKnowledgeSources,
+    products: serverProducts,
   });
 });
 
 app.post("/api/config", (req, res) => {
   if (req.body?.agentConfig) {
-    serverAgentConfig = { ...serverAgentConfig, ...req.body.agentConfig };
+    serverAgentConfig = { ...(serverAgentConfig || {}), ...req.body.agentConfig };
   }
   if (req.body?.widgetSettings) {
-    serverWidgetSettings = { ...serverWidgetSettings, ...req.body.widgetSettings };
+    serverWidgetSettings = { ...(serverWidgetSettings || {}), ...req.body.widgetSettings };
   }
-  res.json({ success: true, agentConfig: serverAgentConfig, widgetSettings: serverWidgetSettings });
+  if (Array.isArray(req.body?.knowledgeSources)) {
+    serverKnowledgeSources = req.body.knowledgeSources;
+  }
+  if (Array.isArray(req.body?.products)) {
+    serverProducts = req.body.products;
+  }
+  res.json({
+    success: true,
+    agentConfig: serverAgentConfig,
+    widgetSettings: serverWidgetSettings,
+    knowledgeSources: serverKnowledgeSources,
+    products: serverProducts,
+  });
 });
 
 // Embeddable JS Widget Script Generator Endpoint

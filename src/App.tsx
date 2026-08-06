@@ -88,48 +88,24 @@ export default function App() {
     ];
   });
 
-  // Save to LocalStorage whenever state changes
+  // Save to LocalStorage and sync to Server whenever core state changes
   useEffect(() => {
     try {
       localStorage.setItem('aistudio_knowledge_sources', JSON.stringify(knowledgeSources));
-    } catch (e) {
-      console.error('Failed to save knowledgeSources to localStorage:', e);
-    }
-  }, [knowledgeSources]);
-
-  useEffect(() => {
-    try {
       localStorage.setItem('aistudio_products', JSON.stringify(products));
-    } catch (e) {
-      console.error('Failed to save products to localStorage:', e);
-    }
-  }, [products]);
-
-  useEffect(() => {
-    try {
       localStorage.setItem('aistudio_agent_config', JSON.stringify(agentConfig));
-      fetch('/api/config', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ agentConfig, widgetSettings }),
-      }).catch(() => {});
-    } catch (e) {
-      console.error('Failed to save agentConfig to localStorage:', e);
-    }
-  }, [agentConfig, widgetSettings]);
-
-  useEffect(() => {
-    try {
       localStorage.setItem('aistudio_widget_settings', JSON.stringify(widgetSettings));
+
+      // Post full configuration to server memory store so embedded widgets and /api/chat endpoints use actual data
       fetch('/api/config', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ agentConfig, widgetSettings }),
+        body: JSON.stringify({ agentConfig, widgetSettings, knowledgeSources, products }),
       }).catch(() => {});
     } catch (e) {
-      console.error('Failed to save widgetSettings to localStorage:', e);
+      console.error('Failed to save config to localStorage or sync server:', e);
     }
-  }, [widgetSettings]);
+  }, [agentConfig, widgetSettings, knowledgeSources, products]);
 
   useEffect(() => {
     try {
@@ -139,7 +115,7 @@ export default function App() {
     }
   }, [messages]);
 
-  // Check backend health & Gemini API status on boot
+  // Check backend health & sync server config on boot
   useEffect(() => {
     fetch('/api/health')
       .then(async (res) => {
@@ -155,6 +131,25 @@ export default function App() {
       .catch((err) => {
         console.warn('Could not verify API health status:', err);
       });
+
+    // Sync with server configuration
+    fetch('/api/config')
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.agentConfig && data.agentConfig.name && data.agentConfig.name !== agentConfig.name) {
+          setAgentConfig((prev) => ({ ...prev, ...data.agentConfig }));
+        }
+        if (Array.isArray(data.knowledgeSources) && data.knowledgeSources.length > 0) {
+          setKnowledgeSources(data.knowledgeSources);
+        }
+        if (Array.isArray(data.products) && data.products.length > 0) {
+          setProducts(data.products);
+        }
+        if (data.widgetSettings) {
+          setWidgetSettings((prev) => ({ ...prev, ...data.widgetSettings }));
+        }
+      })
+      .catch(() => {});
   }, []);
 
   // Check if URL requests standalone widget mode (e.g., when embedded on Sapo, WordPress, etc.)
