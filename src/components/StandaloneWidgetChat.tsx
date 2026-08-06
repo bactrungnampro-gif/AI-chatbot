@@ -286,7 +286,7 @@ export const StandaloneWidgetChat: React.FC<StandaloneWidgetChatProps> = ({
               )}
 
               {/* Message text */}
-              <FormattedMessage text={msg.text} />
+              <FormattedMessage content={msg.text} isAgent={msg.sender === 'agent'} />
 
               <div
                 className={`text-[9px] mt-1 text-right ${
