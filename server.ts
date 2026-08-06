@@ -1120,8 +1120,8 @@ YÊU CẦU ĐỊNH DẠNG ĐẦU RA:
 
     // Auto-normalize Gemini model names to valid production models
     if (provider === 'google') {
-      if (!selectedModel || selectedModel.includes('3.6') || selectedModel.includes('3.1') || selectedModel.includes('flash-latest')) {
-        selectedModel = 'gemini-2.5-flash';
+      if (!selectedModel || selectedModel.includes('1.5') || selectedModel.includes('2.0') || selectedModel.includes('2.5')) {
+        selectedModel = 'gemini-3.6-flash';
       }
     }
     const customApiKey = agentConfig?.customApiKey;
@@ -1179,8 +1179,8 @@ YÊU CẦU ĐỊNH DẠNG ĐẦU RA:
         parts: currentParts
       });
 
-      // Try model cascade sequence to bypass model-specific rate limits
-      const modelsToTry = Array.from(new Set([selectedModel, 'gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash']));
+      // Try model cascade sequence with valid Gemini models
+      const modelsToTry = Array.from(new Set([selectedModel, 'gemini-3.6-flash', 'gemini-3.1-flash-lite', 'gemini-flash-latest']));
       let geminiSuccess = false;
       let lastGeminiErr: any = null;
 

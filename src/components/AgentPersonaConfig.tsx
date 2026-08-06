@@ -29,7 +29,7 @@ export const AgentPersonaConfig: React.FC<AgentPersonaConfigProps> = ({
 }) => {
   const [formData, setFormData] = useState<AgentConfig>({
     selectedProvider: 'google',
-    selectedModel: 'gemini-2.5-flash',
+    selectedModel: 'gemini-3.6-flash',
     customApiKey: '',
     customApiEndpoint: '',
     temperature: 0.7,
@@ -39,7 +39,7 @@ export const AgentPersonaConfig: React.FC<AgentPersonaConfigProps> = ({
   React.useEffect(() => {
     setFormData((prev) => ({
       selectedProvider: 'google',
-      selectedModel: 'gemini-2.5-flash',
+      selectedModel: 'gemini-3.6-flash',
       customApiKey: '',
       customApiEndpoint: '',
       temperature: 0.7,
@@ -73,12 +73,12 @@ export const AgentPersonaConfig: React.FC<AgentPersonaConfigProps> = ({
       description: 'Hệ sinh thái Gemini AI chính thức từ Google. Hỗ trợ đa phương tiện (Hình ảnh, Video, Tài liệu).',
       badge: 'Mặc định Server',
       badgeColor: 'bg-blue-100 text-blue-700 border-blue-200',
-      defaultModel: 'gemini-2.5-flash',
+      defaultModel: 'gemini-3.6-flash',
       models: [
-        { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash', tag: 'Khuyên Dùng', desc: 'Tốc độ siêu nhanh, phản hồi tức thì, xử lý ảnh & tài liệu xuất sắc' },
-        { id: 'gemini-2.0-flash', name: 'Gemini 2.0 Flash', tag: 'Gọn Nhẹ', desc: 'Mô hình tốc độ cao, tối ưu quota lượt gọi cho chăm sóc khách hàng' },
-        { id: 'gemini-1.5-flash', name: 'Gemini 1.5 Flash', tag: 'Ổn Định', desc: 'Mô hình chuẩn, phản hồi nhanh và phản ứng chính xác' },
-        { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro', tag: 'Chuyên Sâu', desc: 'Khả năng suy luận tư duy đỉnh cao, giải quyết nghiệp vụ phức tạp' },
+        { id: 'gemini-3.6-flash', name: 'Gemini 3.6 Flash', tag: 'Khuyên Dùng', desc: 'Tốc độ siêu nhanh, phản hồi tức thì, xử lý ảnh & tài liệu xuất sắc' },
+        { id: 'gemini-3.1-flash-lite', name: 'Gemini 3.1 Flash Lite', tag: 'Siêu Nhẹ', desc: 'Mô hình gọn nhẹ, phản hồi tốc độ cao và tối ưu quota' },
+        { id: 'gemini-flash-latest', name: 'Gemini Flash Latest', tag: 'Mới Nhất', desc: 'Mô hình Gemini Flash tự động cập nhật bản mới nhất' },
+        { id: 'gemini-3.1-pro-preview', name: 'Gemini 3.1 Pro', tag: 'Chuyên Sâu', desc: 'Khả năng suy luận tư duy đỉnh cao, giải quyết nghiệp vụ phức tạp' },
       ],
     },
     {
