@@ -1312,11 +1312,44 @@ YÊU CẦU ĐỊNH DẠNG ĐẦU RA:
   }
 });
 
+// Global In-Memory Config Store for Widget Sync
+let serverAgentConfig = {
+  name: "Trợ lý Agent",
+  title: "Trả lời tự động 24/7 bằng Trợ lý AI",
+  avatarUrl: "https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?w=150&auto=format&fit=crop&q=80",
+  greetingMessage: "Xin chào! Tôi là Trợ lý AI của Amall. Tôi có thể tư vấn sản phẩm, hướng dẫn nghiệp vụ sử dụng, hoặc giải đáp thắc mắc cho bạn. Bạn có thể gửi hình ảnh/tệp tin để tôi hỗ trợ chính xác hơn nhé!"
+};
+
+let serverWidgetSettings = {
+  primaryColor: "#2563eb",
+  headerTitle: "Trợ lý Agent",
+  subtitle: "Trả lời tự động 24/7 bằng Trợ lý AI",
+  buttonText: "Hỏi Trợ Lý AI"
+};
+
+app.get("/api/config", (req, res) => {
+  res.json({
+    agentConfig: serverAgentConfig,
+    widgetSettings: serverWidgetSettings
+  });
+});
+
+app.post("/api/config", (req, res) => {
+  if (req.body?.agentConfig) {
+    serverAgentConfig = { ...serverAgentConfig, ...req.body.agentConfig };
+  }
+  if (req.body?.widgetSettings) {
+    serverWidgetSettings = { ...serverWidgetSettings, ...req.body.widgetSettings };
+  }
+  res.json({ success: true, agentConfig: serverAgentConfig, widgetSettings: serverWidgetSettings });
+});
+
 // Embeddable JS Widget Script Generator Endpoint
 app.get("/api/widget.js", (req, res) => {
   const host = req.get('host') || 'localhost:3000';
   const protocol = req.protocol || 'http';
   const baseUrl = `${protocol}://${host}`;
+  const launcherText = serverWidgetSettings.buttonText || 'Hỏi Trợ Lý AI';
 
   const jsCode = `
 (function() {
@@ -1337,7 +1370,7 @@ app.get("/api/widget.js", (req, res) => {
   var closeSvg = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>';
 
   btn.innerHTML = '<span style="display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;background:rgba(255,255,255,0.2);border-radius:50%;" id="techlife-ai-btn-icon">' + botSvg + '</span>' +
-                  '<span id="techlife-ai-btn-text">Trợ Lý AI</span>' +
+                  '<span id="techlife-ai-btn-text">${launcherText}</span>' +
                   '<span style="position:absolute;top:2px;right:2px;width:10px;height:10px;background:#10b981;border:2px solid #ffffff;border-radius:50%;"></span>';
 
   // 2. Create Chat Iframe (Collapsed / Hidden by Default)
@@ -1369,7 +1402,7 @@ app.get("/api/widget.js", (req, res) => {
         if (!isOpen) iframe.style.display = 'none';
       }, 300);
       if (iconContainer) iconContainer.innerHTML = botSvg;
-      if (textContainer) textContainer.innerText = 'Trợ Lý AI';
+      if (textContainer) textContainer.innerText = '${launcherText}';
     }
   }
 

@@ -108,14 +108,24 @@ export default function App() {
   useEffect(() => {
     try {
       localStorage.setItem('aistudio_agent_config', JSON.stringify(agentConfig));
+      fetch('/api/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ agentConfig, widgetSettings }),
+      }).catch(() => {});
     } catch (e) {
       console.error('Failed to save agentConfig to localStorage:', e);
     }
-  }, [agentConfig]);
+  }, [agentConfig, widgetSettings]);
 
   useEffect(() => {
     try {
       localStorage.setItem('aistudio_widget_settings', JSON.stringify(widgetSettings));
+      fetch('/api/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ agentConfig, widgetSettings }),
+      }).catch(() => {});
     } catch (e) {
       console.error('Failed to save widgetSettings to localStorage:', e);
     }

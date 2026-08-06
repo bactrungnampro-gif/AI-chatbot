@@ -21,12 +21,46 @@ interface StandaloneWidgetChatProps {
 }
 
 export const StandaloneWidgetChat: React.FC<StandaloneWidgetChatProps> = ({
-  agentConfig,
+  agentConfig: initialAgentConfig,
   knowledgeSources,
   products,
-  widgetSettings,
+  widgetSettings: initialWidgetSettings,
 }) => {
-  const primaryColor = widgetSettings?.primaryColor || '#2563eb';
+  const [currentAgent, setCurrentAgent] = useState<AgentConfig>(() => {
+    try {
+      const saved = localStorage.getItem('aistudio_agent_config');
+      if (saved) return JSON.parse(saved);
+    } catch (e) {}
+    return initialAgentConfig;
+  });
+
+  const [currentSettings, setCurrentSettings] = useState<WidgetSettings | undefined>(() => {
+    try {
+      const saved = localStorage.getItem('aistudio_widget_settings');
+      if (saved) return JSON.parse(saved);
+    } catch (e) {}
+    return initialWidgetSettings;
+  });
+
+  useEffect(() => {
+    fetch('/api/config')
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.agentConfig && data.agentConfig.name) {
+          setCurrentAgent((prev) => ({ ...prev, ...data.agentConfig }));
+        }
+        if (data.widgetSettings) {
+          setCurrentSettings((prev) => ({ ...prev, ...data.widgetSettings }));
+        }
+      })
+      .catch((err) => console.warn('Could not fetch /api/config in standalone widget:', err));
+  }, []);
+
+  const primaryColor = currentSettings?.primaryColor || '#2563eb';
+  const agentName = currentSettings?.headerTitle || currentAgent.name || 'Trợ lý Agent';
+  const agentSubtitle = currentSettings?.subtitle || currentAgent.title || 'Trả lời tự động 24/7 bằng Trợ lý AI';
+  const avatarUrl = currentAgent.avatarUrl;
+
   const [inputText, setInputText] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
@@ -47,7 +81,7 @@ export const StandaloneWidgetChat: React.FC<StandaloneWidgetChatProps> = ({
       {
         id: 'w_welcome_1',
         sender: 'agent',
-        text: agentConfig.greetingMessage || 'Xin chào! Em có thể giúp gì cho bạn hôm nay?',
+        text: currentAgent.greetingMessage || 'Xin chào! Em có thể giúp gì cho bạn hôm nay?',
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       },
     ];
@@ -137,7 +171,7 @@ export const StandaloneWidgetChat: React.FC<StandaloneWidgetChatProps> = ({
         body: JSON.stringify({
           message: userMessage.text,
           history: messages,
-          agentConfig,
+          agentConfig: currentAgent,
           knowledgeSources,
           products,
           attachments: currentAttachments,
@@ -179,7 +213,7 @@ export const StandaloneWidgetChat: React.FC<StandaloneWidgetChatProps> = ({
       {
         id: 'w_welcome_1',
         sender: 'agent',
-        text: agentConfig.greetingMessage || 'Xin chào! Em có thể giúp gì cho bạn hôm nay?',
+        text: currentAgent.greetingMessage || 'Xin chào! Em có thể giúp gì cho bạn hôm nay?',
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       },
     ]);
@@ -195,16 +229,24 @@ export const StandaloneWidgetChat: React.FC<StandaloneWidgetChatProps> = ({
         style={{ backgroundColor: primaryColor }}
       >
         <div className="flex items-center gap-2.5">
-          <div className="w-9 h-9 rounded-full bg-white/20 backdrop-blur-md flex items-center justify-center text-white font-bold shrink-0 border border-white/30">
-            <Bot className="w-5 h-5" />
-          </div>
+          {avatarUrl ? (
+            <img
+              src={avatarUrl}
+              alt={agentName}
+              className="w-9 h-9 rounded-full object-cover ring-2 ring-white/30 shrink-0"
+            />
+          ) : (
+            <div className="w-9 h-9 rounded-full bg-white/20 backdrop-blur-md flex items-center justify-center text-white font-bold shrink-0 border border-white/30">
+              <Bot className="w-5 h-5" />
+            </div>
+          )}
           <div>
             <h1 className="font-bold text-sm leading-tight text-white flex items-center gap-1.5">
-              <span>{agentConfig.agentName || 'Trợ Lý AI Tư Vấn'}</span>
+              <span>{agentName}</span>
             </h1>
             <div className="flex items-center gap-1.5 text-[11px] text-white/80 mt-0.5">
               <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-              <span>Trực tuyến 24/7</span>
+              <span>{agentSubtitle}</span>
             </div>
           </div>
         </div>
@@ -242,12 +284,20 @@ export const StandaloneWidgetChat: React.FC<StandaloneWidgetChatProps> = ({
           >
             {/* Avatar */}
             {msg.sender === 'agent' && (
-              <div 
-                className="w-7 h-7 rounded-full text-white flex items-center justify-center text-xs font-bold shrink-0 mt-0.5 shadow-xs"
-                style={{ backgroundColor: primaryColor }}
-              >
-                <Bot className="w-4 h-4" />
-              </div>
+              avatarUrl ? (
+                <img
+                  src={avatarUrl}
+                  alt={agentName}
+                  className="w-7 h-7 rounded-full object-cover mt-0.5 shadow-xs shrink-0 ring-1 ring-slate-200"
+                />
+              ) : (
+                <div 
+                  className="w-7 h-7 rounded-full text-white flex items-center justify-center text-xs font-bold shrink-0 mt-0.5 shadow-xs"
+                  style={{ backgroundColor: primaryColor }}
+                >
+                  <Bot className="w-4 h-4" />
+                </div>
+              )
             )}
             {msg.sender === 'user' && (
               <div className="w-7 h-7 rounded-full bg-slate-700 text-white flex items-center justify-center text-xs font-bold shrink-0 mt-0.5 shadow-xs">
@@ -302,15 +352,23 @@ export const StandaloneWidgetChat: React.FC<StandaloneWidgetChatProps> = ({
         {/* Loading Indicator */}
         {isLoading && (
           <div className="flex items-center gap-2 text-slate-500 text-xs py-2">
-            <div 
-              className="w-7 h-7 rounded-full text-white flex items-center justify-center text-xs font-bold shrink-0 shadow-xs animate-spin"
-              style={{ backgroundColor: primaryColor }}
-            >
-              <Sparkles className="w-3.5 h-3.5" />
-            </div>
+            {avatarUrl ? (
+              <img
+                src={avatarUrl}
+                alt={agentName}
+                className="w-7 h-7 rounded-full object-cover shadow-xs shrink-0 ring-1 ring-slate-200 animate-pulse"
+              />
+            ) : (
+              <div 
+                className="w-7 h-7 rounded-full text-white flex items-center justify-center text-xs font-bold shrink-0 shadow-xs animate-spin"
+                style={{ backgroundColor: primaryColor }}
+              >
+                <Sparkles className="w-3.5 h-3.5" />
+              </div>
+            )}
             <div className="bg-white px-3 py-2 rounded-2xl border border-slate-200 text-slate-500 text-xs flex items-center gap-1.5 shadow-2xs">
               <span className="w-1.5 h-1.5 rounded-full bg-slate-400 animate-ping"></span>
-              <span>{agentConfig.agentName || 'Agent'} đang phản hồi...</span>
+              <span>{agentName} đang phản hồi...</span>
             </div>
           </div>
         )}
@@ -369,7 +427,7 @@ export const StandaloneWidgetChat: React.FC<StandaloneWidgetChatProps> = ({
             type="text"
             value={inputText}
             onChange={(e) => setInputText(e.target.value)}
-            placeholder={agentConfig.chatPlaceholder || 'Nhập câu hỏi của bạn...'}
+            placeholder={'Nhập câu hỏi của bạn...'}
             disabled={isLoading}
             className="flex-1 bg-slate-100 border-0 focus:ring-2 focus:ring-indigo-500 rounded-xl px-3 py-2 text-xs text-slate-800 placeholder-slate-400 outline-none transition-all"
           />
