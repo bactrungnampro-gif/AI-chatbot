@@ -1325,22 +1325,73 @@ app.get("/api/widget.js", (req, res) => {
 
   console.log("🤖 TechLife AI Customer Support Agent Widget Loading...");
 
-  const iframe = document.createElement('iframe');
+  var isOpen = false;
+
+  // 1. Create Floating Launcher Button
+  var btn = document.createElement('button');
+  btn.id = 'techlife-ai-agent-launcher';
+  btn.setAttribute('aria-label', 'Mở Chat AI');
+  btn.style.cssText = 'position:fixed;bottom:20px;right:20px;z-index:999999;height:52px;padding:0 18px 0 14px;border-radius:26px;background:linear-gradient(135deg, #2563eb, #4f46e5);color:#ffffff;border:none;box-shadow:0 10px 25px -5px rgba(37, 99, 235, 0.4), 0 8px 10px -6px rgba(0, 0, 0, 0.1);cursor:pointer;display:flex;align-items:center;gap:8px;font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;font-size:13px;font-weight:600;transition:all 0.3s cubic-bezier(0.16, 1, 0.3, 1);outline:none;line-height:1;';
+
+  var botSvg = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="12" x="3" y="6" rx="2"/><path d="M9 18v2"/><path d="M15 18v2"/><path d="M12 2v4"/><path d="M12 11h.01"/><path d="M16 11h.01"/><path d="M8 11h.01"/></svg>';
+  var closeSvg = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>';
+
+  btn.innerHTML = '<span style="display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;background:rgba(255,255,255,0.2);border-radius:50%;" id="techlife-ai-btn-icon">' + botSvg + '</span>' +
+                  '<span id="techlife-ai-btn-text">Trợ Lý AI</span>' +
+                  '<span style="position:absolute;top:2px;right:2px;width:10px;height:10px;background:#10b981;border:2px solid #ffffff;border-radius:50%;"></span>';
+
+  // 2. Create Chat Iframe (Collapsed / Hidden by Default)
+  var iframe = document.createElement('iframe');
   iframe.id = 'techlife-ai-agent-iframe';
   iframe.src = '${baseUrl}/?mode=widget';
-  iframe.style.position = 'fixed';
-  iframe.style.bottom = '20px';
-  iframe.style.right = '20px';
-  iframe.style.width = '400px';
-  iframe.style.height = '620px';
-  iframe.style.border = 'none';
-  iframe.style.borderRadius = '16px';
-  iframe.style.boxShadow = '0 10px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1)';
-  iframe.style.zIndex = '999999';
-  iframe.style.transition = 'all 0.3s ease';
+  iframe.style.cssText = 'position:fixed;bottom:82px;right:20px;width:380px;max-width:calc(100vw - 32px);height:580px;max-height:calc(100vh - 100px);border:none;border-radius:20px;box-shadow:0 20px 30px -10px rgba(0, 0, 0, 0.25), 0 10px 15px -5px rgba(0, 0, 0, 0.1);z-index:999998;transition:all 0.3s cubic-bezier(0.16, 1, 0.3, 1);opacity:0;pointer-events:none;transform:translateY(15px) scale(0.96);display:none;background:#f8fafc;';
   iframe.allow = 'camera; microphone; autoplay';
 
+  function toggleWidget(forceState) {
+    isOpen = forceState !== undefined ? forceState : !isOpen;
+    var iconContainer = document.getElementById('techlife-ai-btn-icon');
+    var textContainer = document.getElementById('techlife-ai-btn-text');
+
+    if (isOpen) {
+      iframe.style.display = 'block';
+      setTimeout(function() {
+        iframe.style.opacity = '1';
+        iframe.style.transform = 'translateY(0) scale(1)';
+        iframe.style.pointerEvents = 'auto';
+      }, 10);
+      if (iconContainer) iconContainer.innerHTML = closeSvg;
+      if (textContainer) textContainer.innerText = 'Thu gọn';
+    } else {
+      iframe.style.opacity = '0';
+      iframe.style.transform = 'translateY(15px) scale(0.96)';
+      iframe.style.pointerEvents = 'none';
+      setTimeout(function() {
+        if (!isOpen) iframe.style.display = 'none';
+      }, 300);
+      if (iconContainer) iconContainer.innerHTML = botSvg;
+      if (textContainer) textContainer.innerText = 'Trợ Lý AI';
+    }
+  }
+
+  btn.onclick = function() {
+    toggleWidget();
+  };
+
+  btn.onmouseenter = function() {
+    btn.style.transform = 'translateY(-2px) scale(1.02)';
+  };
+  btn.onmouseleave = function() {
+    btn.style.transform = 'translateY(0) scale(1)';
+  };
+
+  window.addEventListener('message', function(e) {
+    if (e.data && e.data.type === 'TOGGLE_AI_WIDGET') {
+      toggleWidget(e.data.open);
+    }
+  });
+
   document.body.appendChild(iframe);
+  document.body.appendChild(btn);
 })();
 `;
 

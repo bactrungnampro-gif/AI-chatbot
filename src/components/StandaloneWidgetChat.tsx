@@ -209,13 +209,26 @@ export const StandaloneWidgetChat: React.FC<StandaloneWidgetChatProps> = ({
           </div>
         </div>
 
-        <button
-          onClick={handleResetChat}
-          title="Làm mới trò chuyện"
-          className="p-1.5 rounded-lg hover:bg-white/20 text-white/90 hover:text-white transition-colors"
-        >
-          <RotateCcw className="w-4 h-4" />
-        </button>
+        <div className="flex items-center gap-1">
+          <button
+            onClick={handleResetChat}
+            title="Làm mới trò chuyện"
+            className="p-1.5 rounded-lg hover:bg-white/20 text-white/90 hover:text-white transition-colors"
+          >
+            <RotateCcw className="w-4 h-4" />
+          </button>
+          <button
+            onClick={() => {
+              if (window.parent && window.parent !== window) {
+                window.parent.postMessage({ type: 'TOGGLE_AI_WIDGET', open: false }, '*');
+              }
+            }}
+            title="Thu gọn khung chat"
+            className="p-1.5 rounded-lg hover:bg-white/20 text-white/90 hover:text-white transition-colors"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
       </header>
 
       {/* Chat Messages List */}
