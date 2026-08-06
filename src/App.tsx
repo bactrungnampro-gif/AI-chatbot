@@ -88,8 +88,25 @@ export default function App() {
     ];
   });
 
+  const [isConfigLoaded, setIsConfigLoaded] = useState(false);
+
   // Sync with server store on initial mount
   useEffect(() => {
+    // Check backend health
+    fetch('/api/health')
+      .then(async (res) => {
+        if (!res.ok) return null;
+        const text = await res.text();
+        return text ? JSON.parse(text) : null;
+      })
+      .then((data) => {
+        if (data && typeof data.hasApiKey === 'boolean') {
+          setHasApiKey(data.hasApiKey);
+        }
+      })
+      .catch((err) => console.warn('Could not verify API health status:', err));
+
+    // Fetch initial configuration from server
     fetch('/api/config')
       .then((res) => res.json())
       .then((data) => {
@@ -106,18 +123,23 @@ export default function App() {
           setWidgetSettings((prev) => ({ ...prev, ...data.widgetSettings }));
         }
       })
-      .catch((err) => console.warn('Could not load initial config from server:', err));
+      .catch((err) => console.warn('Could not load initial config from server:', err))
+      .finally(() => {
+        setIsConfigLoaded(true);
+      });
   }, []);
 
-  // Save to LocalStorage and sync to Server whenever core state changes
+  // Save to LocalStorage and sync to Server whenever core state changes AFTER initial load
   useEffect(() => {
+    if (!isConfigLoaded) return;
+
     try {
       localStorage.setItem('aistudio_knowledge_sources', JSON.stringify(knowledgeSources));
       localStorage.setItem('aistudio_products', JSON.stringify(products));
       localStorage.setItem('aistudio_agent_config', JSON.stringify(agentConfig));
       localStorage.setItem('aistudio_widget_settings', JSON.stringify(widgetSettings));
 
-      // Post full configuration to server memory store so embedded widgets and /api/chat endpoints use actual data
+      // Post full configuration to server store so embedded widgets and /api/chat endpoints use actual data
       fetch('/api/config', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -126,69 +148,7 @@ export default function App() {
     } catch (e) {
       console.error('Failed to save config to localStorage or sync server:', e);
     }
-  }, [agentConfig, widgetSettings, knowledgeSources, products]);
-
-  // Keep initial welcome message in sync with updated agentConfig greetingMessage
-  useEffect(() => {
-    if (agentConfig.greetingMessage) {
-      setMessages((prevMessages) => {
-        if (prevMessages.length === 1 && prevMessages[0].id === 'welcome_1') {
-          if (prevMessages[0].text !== agentConfig.greetingMessage) {
-            return [{
-              ...prevMessages[0],
-              text: agentConfig.greetingMessage,
-            }];
-          }
-        }
-        return prevMessages;
-      });
-    }
-  }, [agentConfig.greetingMessage]);
-
-  useEffect(() => {
-    try {
-      localStorage.setItem('aistudio_chat_messages', JSON.stringify(messages));
-    } catch (e) {
-      console.error('Failed to save messages to localStorage:', e);
-    }
-  }, [messages]);
-
-  // Check backend health & sync server config on boot
-  useEffect(() => {
-    fetch('/api/health')
-      .then(async (res) => {
-        if (!res.ok) return null;
-        const text = await res.text();
-        return text ? JSON.parse(text) : null;
-      })
-      .then((data) => {
-        if (data && typeof data.hasApiKey === 'boolean') {
-          setHasApiKey(data.hasApiKey);
-        }
-      })
-      .catch((err) => {
-        console.warn('Could not verify API health status:', err);
-      });
-
-    // Sync with server configuration
-    fetch('/api/config')
-      .then((res) => res.json())
-      .then((data) => {
-        if (data.agentConfig && data.agentConfig.name && data.agentConfig.name !== agentConfig.name) {
-          setAgentConfig((prev) => ({ ...prev, ...data.agentConfig }));
-        }
-        if (Array.isArray(data.knowledgeSources) && data.knowledgeSources.length > 0) {
-          setKnowledgeSources(data.knowledgeSources);
-        }
-        if (Array.isArray(data.products) && data.products.length > 0) {
-          setProducts(data.products);
-        }
-        if (data.widgetSettings) {
-          setWidgetSettings((prev) => ({ ...prev, ...data.widgetSettings }));
-        }
-      })
-      .catch(() => {});
-  }, []);
+  }, [agentConfig, widgetSettings, knowledgeSources, products, isConfigLoaded]);
 
   // Check if URL requests standalone widget mode (e.g., when embedded on Sapo, WordPress, etc.)
   const isWidgetMode = typeof window !== 'undefined' && (

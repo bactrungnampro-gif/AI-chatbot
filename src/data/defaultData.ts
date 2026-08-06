@@ -2,14 +2,14 @@ import { AgentConfig, KnowledgeSource, ProductItem, WidgetSettings } from '../ty
 
 export const defaultAgentConfig: AgentConfig = {
   id: 'agent_default',
-  name: 'Trợ Lý Linh (TechLife)',
+  name: 'Trợ Lý AI',
   title: 'Chuyên viên Tư Vấn & Hỗ Trợ Khách Hàng',
   avatarUrl: 'https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?w=150&auto=format&fit=crop&q=80',
-  greetingMessage: 'Xin chào! Tôi là Trợ lý AI của TechLife. Tôi có thể tư vấn sản phẩm, hướng dẫn nghiệp vụ sử dụng, hoặc giải đáp thắc mắc cho bạn. Bạn có thể gửi hình ảnh/tệp tin để tôi hỗ trợ chính xác hơn nhé!',
+  greetingMessage: 'Xin chào! Tôi là Trợ lý AI tư vấn. Tôi có thể giải đáp thắc mắc, tư vấn sản phẩm, dịch vụ và hỗ trợ nghiệp vụ cho bạn. Bạn cần hỗ trợ thông tin gì ạ?',
   tone: 'friendly',
-  businessName: 'TechLife Viet Nam',
-  businessIndustry: 'Thiết bị công nghệ & Gia dụng thông minh',
-  businessDescription: 'TechLife chuyên cung cấp Robot hút bụi, Tai nghe không dây, Nồi chiên không dầu và giải pháp nhà thông minh cao cấp.',
+  businessName: 'Doanh Nghiệp AI',
+  businessIndustry: 'Thương mại & Dịch vụ',
+  businessDescription: 'Chuyên cung cấp các giải pháp, sản phẩm và dịch vụ chất lượng cao cho khách hàng.',
   clarificationEnabled: true,
   clarificationStyle: 'polite',
   primaryLanguage: 'Vietnamese',
@@ -152,7 +152,7 @@ export const defaultProducts: ProductItem[] = [
 
 export const defaultWidgetSettings: WidgetSettings = {
   primaryColor: '#2563eb', // royal blue
-  headerTitle: 'Hỗ Trợ Khách Hàng TechLife',
+  headerTitle: 'Hỗ Trợ Khách Hàng AI',
   subtitle: 'Trả lời tự động 24/7 bằng Trợ lý AI',
   position: 'bottom-right',
   buttonText: 'Hỏi Trợ Lý AI',
