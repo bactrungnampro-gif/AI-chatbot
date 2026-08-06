@@ -65,8 +65,9 @@ export const AgentPersonaConfig: React.FC<AgentPersonaConfigProps> = ({
       defaultModel: 'gemini-3.6-flash',
       models: [
         { id: 'gemini-3.6-flash', name: 'Gemini 3.6 Flash', tag: 'Khuyên Dùng', desc: 'Tốc độ siêu nhanh, phản hồi tức thì, xử lý ảnh & tài liệu xuất sắc' },
+        { id: 'gemini-3.1-flash-lite', name: 'Gemini 3.1 Flash Lite', tag: 'Siêu Nhẹ', desc: 'Mô hình gọn nhẹ, phản hồi tốc độ cao và tối ưu quota' },
+        { id: 'gemini-flash-latest', name: 'Gemini Flash Latest', tag: 'Mới Nhất', desc: 'Mô hình Gemini Flash tự động cập nhật bản mới nhất' },
         { id: 'gemini-3.1-pro-preview', name: 'Gemini 3.1 Pro', tag: 'Chuyên Sâu', desc: 'Khả năng suy luận tư duy đỉnh cao, giải quyết nghiệp vụ phức tạp' },
-        { id: 'gemini-flash-latest', name: 'Gemini Flash Latest', tag: 'Mới Nhất', desc: 'Mô hình Gemini Flash cập nhật mới nhất từ Google' },
       ],
     },
     {

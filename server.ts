@@ -1117,16 +1117,39 @@ YÊU CẦU ĐỊNH DẠNG ĐẦU RA:
         parts: currentParts
       });
 
-      const response = await googleClient.models.generateContent({
-        model: selectedModel,
-        contents,
-        config: {
-          systemInstruction,
-          temperature,
+      try {
+        const response = await googleClient.models.generateContent({
+          model: selectedModel,
+          contents,
+          config: {
+            systemInstruction,
+            temperature,
+          }
+        });
+        responseText = response.text || "";
+      } catch (err: any) {
+        console.error("[Gemini API Error]", err);
+        const errStr = err?.message || String(err);
+        if (errStr.includes("429") || errStr.includes("RESOURCE_EXHAUSTED") || errStr.includes("Quota exceeded")) {
+          console.log("[Gemini Fallback] Quota hit for model, trying fallback model gemini-3.1-flash-lite...");
+          try {
+            const fallbackModel = selectedModel === 'gemini-3.1-flash-lite' ? 'gemini-flash-latest' : 'gemini-3.1-flash-lite';
+            const fallbackResponse = await googleClient.models.generateContent({
+              model: fallbackModel,
+              contents,
+              config: {
+                systemInstruction,
+                temperature,
+              }
+            });
+            responseText = fallbackResponse.text || "";
+          } catch (fallbackErr: any) {
+            throw new Error("Tài khoản đã vượt quá giới hạn lượt gọi API miễn phí (Rate Limit 429). Vui lòng nhập API Key cá nhân trong phần 'Cấu Hình Agent' hoặc đổi sang mô hình khác (OpenAI, DeepSeek, Claude) để tiếp tục.");
+          }
+        } else {
+          throw err;
         }
-      });
-
-      responseText = response.text || "";
+      }
     } else if (provider === 'openai' || provider === 'deepseek' || provider === 'custom_openai') {
       // OpenAI-compatible Chat Completion API
       const effectiveApiKey = (customApiKey && customApiKey.trim()) 
