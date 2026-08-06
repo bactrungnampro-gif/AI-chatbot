@@ -11,7 +11,12 @@ import {
   Layers,
   Sparkles,
   Send,
-  Paperclip
+  Paperclip,
+  Store,
+  HelpCircle,
+  ExternalLink,
+  ChevronRight,
+  BookOpen
 } from 'lucide-react';
 import { AgentConfig, ChatMessage, WidgetSettings } from '../types';
 import { FormattedMessage } from './FormattedMessage';
@@ -30,6 +35,7 @@ export const IntegrationWidget: React.FC<IntegrationWidgetProps> = ({
   const [copiedScript, setCopiedScript] = useState(false);
   const [copiedIframe, setCopiedIframe] = useState(false);
   const [isWidgetOpen, setIsWidgetOpen] = useState(false);
+  const [activePlatform, setActivePlatform] = useState<'sapo' | 'haravan' | 'wordpress' | 'ladipage'>('sapo');
 
   // Widget preview messaging
   const [widgetInput, setWidgetInput] = useState('');
@@ -155,6 +161,124 @@ export const IntegrationWidget: React.FC<IntegrationWidgetProps> = ({
             <pre className="bg-slate-50 p-3.5 rounded-xl text-slate-800 font-mono text-[11px] overflow-x-auto border border-slate-200">
               <code>{iframeCode}</code>
             </pre>
+          </div>
+
+          {/* Platform Integration Detailed Guide */}
+          <div className="bg-white p-6 rounded-2xl border border-slate-200/80 shadow-2xs space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <h3 className="font-bold text-slate-900 text-sm flex items-center gap-2">
+                <BookOpen className="w-4 h-4 text-indigo-600" />
+                <span>Hướng Dẫn Nhúng Chi Tiết Cho Từng Nền Tảng Website</span>
+              </h3>
+            </div>
+
+            {/* Platform Selector Tabs */}
+            <div className="flex flex-wrap gap-2">
+              {[
+                { id: 'sapo', name: 'Sapo Web', badge: 'Phổ biến' },
+                { id: 'haravan', name: 'Haravan', badge: '' },
+                { id: 'wordpress', name: 'WordPress', badge: '' },
+                { id: 'ladipage', name: 'LadiPage', badge: '' },
+              ].map((plat) => (
+                <button
+                  key={plat.id}
+                  onClick={() => setActivePlatform(plat.id as any)}
+                  className={`px-3 py-2 rounded-xl text-xs font-semibold transition-all flex items-center gap-1.5 ${
+                    activePlatform === plat.id
+                      ? 'bg-indigo-600 text-white shadow-xs'
+                      : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                  }`}
+                >
+                  <Store className="w-3.5 h-3.5" />
+                  <span>{plat.name}</span>
+                  {plat.badge && (
+                    <span className="text-[9px] bg-amber-400 text-slate-900 px-1.5 py-0.5 rounded-md font-bold">
+                      {plat.badge}
+                    </span>
+                  )}
+                </button>
+              ))}
+            </div>
+
+            {/* Instruction Steps according to activePlatform */}
+            <div className="bg-slate-50 p-4 rounded-xl border border-slate-200/80 space-y-3 text-xs">
+              {activePlatform === 'sapo' && (
+                <div className="space-y-2.5">
+                  <div className="font-bold text-indigo-950 flex items-center gap-2">
+                    <span className="w-5 h-5 rounded-full bg-indigo-600 text-white inline-flex items-center justify-center text-[10px]">1</span>
+                    <span>Hướng dẫn tích hợp AI Chatbot vào Sapo Web:</span>
+                  </div>
+                  <ol className="list-decimal pl-5 space-y-2 text-slate-700 leading-relaxed">
+                    <li>
+                      <strong>Sao chép mã Script:</strong> Bấm nút <span className="text-blue-600 font-semibold">Sao Chép Mã</span> ở khung Script màu đen phía trên.
+                    </li>
+                    <li>
+                      <strong>Truy cập Sapo Admin:</strong> Đăng nhập vào trang quản trị cửa hàng Sapo của bạn. Trên menu bên trái, chọn <strong>Website</strong> → <strong>Giao diện</strong>.
+                    </li>
+                    <li>
+                      <strong>Chỉnh sửa Code Giao Diện:</strong> Tại giao diện đang sử dụng, bấm nút <strong>Thao tác</strong> → Chọn <strong>Chỉnh sửa code</strong>.
+                    </li>
+                    <li>
+                      <strong>Chèn đoạn mã Widget:</strong> Trong danh sách các tập tin bên trái, tìm và chọn file <code className="bg-slate-200 px-1 rounded text-rose-600 font-mono">theme.bte</code> (hoặc <code className="bg-slate-200 px-1 rounded text-rose-600 font-mono">layout.bte</code>, <code className="bg-slate-200 px-1 rounded text-rose-600 font-mono">header.bte</code>). Cuộn xuống cuối file và dán đoạn mã Script vào ngay <strong>TRƯỚC</strong> thẻ đóng <code className="text-indigo-600 font-mono font-bold">&lt;/body&gt;</code>.
+                    </li>
+                    <li>
+                      <strong>Lưu & Kiểm tra:</strong> Bấm nút <strong>Lưu</strong> ở góc trên. Sau đó mở trang chủ Website Sapo để trải nghiệm Bong Bóng Chat AI hiển thị ngay góc dưới màn hình!
+                    </li>
+                  </ol>
+                  <div className="mt-2 p-2.5 bg-amber-50 border border-amber-200 rounded-lg text-[11px] text-amber-800">
+                    💡 <strong>Cách 2 (Qua Mã Nhúng JS Bổ Sung):</strong> Vào <strong>Cấu hình</strong> → <strong>Cấu hình chung</strong> → Tìm mục <strong>Mã nhúng JS bổ sung / Google Analytics</strong> → Dán mã Script vào và bấm Lưu.
+                  </div>
+                </div>
+              )}
+
+              {activePlatform === 'haravan' && (
+                <div className="space-y-2.5">
+                  <div className="font-bold text-indigo-950 flex items-center gap-2">
+                    <span className="w-5 h-5 rounded-full bg-indigo-600 text-white inline-flex items-center justify-center text-[10px]">1</span>
+                    <span>Hướng dẫn tích hợp AI Chatbot vào Haravan Store:</span>
+                  </div>
+                  <ol className="list-decimal pl-5 space-y-2 text-slate-700 leading-relaxed">
+                    <li>Sao chép mã Script ở khung phía trên.</li>
+                    <li>Đăng nhập Haravan Admin → Chọn <strong>Website</strong> → <strong>Giao diện</strong>.</li>
+                    <li>Bấm nút <strong>Thao tác</strong> → Chọn <strong>Chỉnh sửa code</strong>.</li>
+                    <li>Mở file <code className="bg-slate-200 px-1 rounded text-rose-600 font-mono">theme.liquid</code> trong thư mục <em>Layout</em>.</li>
+                    <li>Dán đoạn mã Script vào trước thẻ đóng <code className="text-indigo-600 font-mono font-bold">&lt;/body&gt;</code> và bấm <strong>Lưu</strong>.</li>
+                  </ol>
+                </div>
+              )}
+
+              {activePlatform === 'wordpress' && (
+                <div className="space-y-2.5">
+                  <div className="font-bold text-indigo-950 flex items-center gap-2">
+                    <span className="w-5 h-5 rounded-full bg-indigo-600 text-white inline-flex items-center justify-center text-[10px]">1</span>
+                    <span>Hướng dẫn tích hợp AI Chatbot vào WordPress / WooCommerce:</span>
+                  </div>
+                  <ol className="list-decimal pl-5 space-y-2 text-slate-700 leading-relaxed">
+                    <li>Sao chép mã Script ở khung phía trên.</li>
+                    <li>Đăng nhập WordPress Admin → Chọn <strong>Plugins</strong> → <strong>Cài mới (Add New)</strong>.</li>
+                    <li>Tìm kiếm và cài đặt Plugin <strong>WPCode (Insert Headers and Footers)</strong>.</li>
+                    <li>Vào mục <strong>Code Snippets</strong> → <strong>Header & Footer</strong>.</li>
+                    <li>Dán mã Script vào ô <strong>Footer</strong> và bấm <strong>Save Changes</strong>.</li>
+                  </ol>
+                </div>
+              )}
+
+              {activePlatform === 'ladipage' && (
+                <div className="space-y-2.5">
+                  <div className="font-bold text-indigo-950 flex items-center gap-2">
+                    <span className="w-5 h-5 rounded-full bg-indigo-600 text-white inline-flex items-center justify-center text-[10px]">1</span>
+                    <span>Hướng dẫn tích hợp AI Chatbot vào LadiPage:</span>
+                  </div>
+                  <ol className="list-decimal pl-5 space-y-2 text-slate-700 leading-relaxed">
+                    <li>Sao chép mã Script ở khung phía trên.</li>
+                    <li>Mở trang LadiPage muốn nhúng trong trình thiết kế.</li>
+                    <li>Vào <strong>Thiết lập</strong> (biểu tượng bánh răng) → Chọn <strong>Mã Javascript/CSS</strong>.</li>
+                    <li>Dán mã Script vào mục <strong>Mã Javascript Body</strong>.</li>
+                    <li>Bấm <strong>Xuất bản lại</strong> trang Landing Page của bạn.</li>
+                  </ol>
+                </div>
+              )}
+            </div>
           </div>
 
           {/* Widget Styling Customization */}

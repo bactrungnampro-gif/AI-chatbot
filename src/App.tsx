@@ -6,6 +6,7 @@ import { ProductCatalog } from './components/ProductCatalog';
 import { AgentPersonaConfig } from './components/AgentPersonaConfig';
 import { IntegrationWidget } from './components/IntegrationWidget';
 import { ConversationHistory } from './components/ConversationHistory';
+import { StandaloneWidgetChat } from './components/StandaloneWidgetChat';
 
 import {
   defaultAgentConfig,
@@ -145,6 +146,25 @@ export default function App() {
         console.warn('Could not verify API health status:', err);
       });
   }, []);
+
+  // Check if URL requests standalone widget mode (e.g., when embedded on Sapo, WordPress, etc.)
+  const isWidgetMode = typeof window !== 'undefined' && (
+    window.location.search.includes('mode=widget') ||
+    window.location.search.includes('embed=true') ||
+    window.location.search.includes('widget=true') ||
+    window.location.pathname.startsWith('/widget')
+  );
+
+  if (isWidgetMode) {
+    return (
+      <StandaloneWidgetChat
+        agentConfig={agentConfig}
+        knowledgeSources={knowledgeSources}
+        products={products}
+        widgetSettings={widgetSettings}
+      />
+    );
+  }
 
   return (
     <div className="min-h-screen bg-slate-50/60 font-sans text-slate-800 flex flex-col selection:bg-blue-500 selection:text-white">
