@@ -66,7 +66,12 @@ export const StandaloneWidgetChat: React.FC<StandaloneWidgetChatProps> = ({
   }, []);
 
   const primaryColor = currentSettings?.primaryColor || '#2563eb';
-  const agentName = currentSettings?.headerTitle || currentAgent.name || 'Trợ lý Agent';
+  const agentDisplayName = (currentAgent.name && !currentAgent.name.includes('TechLife') && !currentAgent.name.includes('Linh'))
+    ? currentAgent.name
+    : 'Trợ Lý AI';
+  const widgetHeaderTitle = (currentSettings?.headerTitle && !currentSettings.headerTitle.includes('TechLife'))
+    ? currentSettings.headerTitle
+    : (currentAgent.businessName && !currentAgent.businessName.includes('TechLife') ? `Hỗ Trợ Khách Hàng ${currentAgent.businessName}` : 'Hỗ Trợ Khách Hàng AI');
   const agentSubtitle = currentSettings?.subtitle || currentAgent.title || 'Trả lời tự động 24/7 bằng Trợ lý AI';
   const avatarUrl = currentAgent.avatarUrl;
 
@@ -264,7 +269,7 @@ export const StandaloneWidgetChat: React.FC<StandaloneWidgetChatProps> = ({
           )}
           <div>
             <h1 className="font-bold text-sm leading-tight text-white flex items-center gap-1.5">
-              <span>{agentName}</span>
+              <span>{widgetHeaderTitle}</span>
             </h1>
             <div className="flex items-center gap-1.5 text-[11px] text-white/80 mt-0.5">
               <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
@@ -377,7 +382,7 @@ export const StandaloneWidgetChat: React.FC<StandaloneWidgetChatProps> = ({
             {avatarUrl ? (
               <img
                 src={avatarUrl}
-                alt={agentName}
+                alt={agentDisplayName}
                 className="w-7 h-7 rounded-full object-cover shadow-xs shrink-0 ring-1 ring-slate-200 animate-pulse"
               />
             ) : (
@@ -390,7 +395,7 @@ export const StandaloneWidgetChat: React.FC<StandaloneWidgetChatProps> = ({
             )}
             <div className="bg-white px-3 py-2 rounded-2xl border border-slate-200 text-slate-500 text-xs flex items-center gap-1.5 shadow-2xs">
               <span className="w-1.5 h-1.5 rounded-full bg-slate-400 animate-ping"></span>
-              <span>{agentName} đang phản hồi...</span>
+              <span>{agentDisplayName} đang phản hồi...</span>
             </div>
           </div>
         )}

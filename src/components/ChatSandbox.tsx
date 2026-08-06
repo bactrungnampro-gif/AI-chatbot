@@ -425,7 +425,7 @@ export const ChatSandbox: React.FC<ChatSandboxProps> = ({
                 </div>
                 <div className="bg-slate-100 p-3 rounded-2xl border border-slate-200 flex items-center gap-2">
                   <div className="w-2 h-2 rounded-full bg-blue-600 animate-ping"></div>
-                  <span>Agent đang tra cứu dữ liệu & phân tích tệp để phản hồi...</span>
+                  <span>{agentConfig.name && !agentConfig.name.includes('TechLife') ? agentConfig.name : 'Trợ Lý AI'} đang tra cứu dữ liệu & phân tích tệp để phản hồi...</span>
                 </div>
               </div>
             )}
