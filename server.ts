@@ -403,9 +403,24 @@ app.post("/api/knowledge/scrape", async (req, res) => {
       });
     }
 
-    // Concurrency batch execution
-    const BATCH_SIZE = 8;
+    // Concurrency batch execution with dynamic parallelism & safety time budget
+    const crawlStartTime = Date.now();
+    const MAX_CRAWL_DURATION_MS = 45000; // 45 seconds safety window to guarantee clean response before proxy 502/504 timeout
+
+    let BATCH_SIZE = 8;
+    if (subPagesToCrawl.length > 200) {
+      BATCH_SIZE = 25; // High parallelism for 200-1000 pages
+    } else if (subPagesToCrawl.length > 50) {
+      BATCH_SIZE = 16;
+    }
+
     for (let i = 0; i < subPagesToCrawl.length; i += BATCH_SIZE) {
+      // Safety threshold check before executing next batch
+      if (Date.now() - crawlStartTime > MAX_CRAWL_DURATION_MS) {
+        console.log(`[Scraper] Reached 45s time budget window! Returning ${scrapedPagesList.length} pages accumulated so far.`);
+        break;
+      }
+
       const batch = subPagesToCrawl.slice(i, i + BATCH_SIZE);
       const batchPromises = batch.map(async (subUrl) => {
         try {
@@ -414,7 +429,7 @@ app.post("/api/knowledge/scrape", async (req, res) => {
               'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
               'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
             },
-            signal: AbortSignal.timeout(5000)
+            signal: AbortSignal.timeout(3500)
           });
           if (!res.ok) return null;
           const subHtml = await res.text();
@@ -1107,9 +1122,12 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
+  const server = app.listen(PORT, "0.0.0.0", () => {
     console.log(`🚀 AI Agent Server running at http://0.0.0.0:${PORT}`);
   });
+  server.timeout = 300000; // 5 minutes
+  server.keepAliveTimeout = 120000;
+  server.headersTimeout = 125000;
 }
 
 startServer();
