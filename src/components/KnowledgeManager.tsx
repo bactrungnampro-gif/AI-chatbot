@@ -15,7 +15,10 @@ import {
   ToggleRight,
   Sparkles,
   ShoppingBag,
-  ArrowRight
+  ArrowRight,
+  FileSpreadsheet,
+  HardDrive,
+  Server
 } from 'lucide-react';
 import { KnowledgeSource, KnowledgeType, ProductItem } from '../types';
 
@@ -34,6 +37,9 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
   setProducts,
   onNavigateToProducts,
 }) => {
+  const [activeTab, setActiveTab] = useState<'website' | 'sheets' | 'drive' | 'api'>('website');
+
+  // Website Scraper State
   const [urlInput, setUrlInput] = useState('');
   const [scrapeMode, setScrapeMode] = useState<'hybrid' | 'sitemap' | 'sublinks' | 'single'>('hybrid');
   const [maxPages, setMaxPages] = useState<number>(10);
@@ -41,6 +47,23 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
   const [scrapeError, setScrapeError] = useState<string | null>(null);
   const [scrapeSuccess, setScrapeSuccess] = useState<string | null>(null);
   const [expandedSubPagesId, setExpandedSubPagesId] = useState<string | null>(null);
+
+  // Google Sheets Integration State
+  const [sheetUrl, setSheetUrl] = useState('');
+  const [sheetName, setSheetName] = useState('');
+  const [isFetchingSheet, setIsFetchingSheet] = useState(false);
+
+  // Google Drive Integration State
+  const [driveUrl, setDriveUrl] = useState('');
+  const [isFetchingDrive, setIsFetchingDrive] = useState(false);
+
+  // Custom REST API Integration State
+  const [apiUrl, setApiUrl] = useState('');
+  const [apiMethod, setApiMethod] = useState<'GET' | 'POST'>('GET');
+  const [apiHeaders, setApiHeaders] = useState('{\n  "Authorization": "Bearer YOUR_API_KEY"\n}');
+  const [apiBody, setApiBody] = useState('');
+  const [apiTitle, setApiTitle] = useState('');
+  const [isFetchingApi, setIsFetchingApi] = useState(false);
 
   // Auto product extraction state
   const [extractingId, setExtractingId] = useState<string | null>(null);
@@ -145,6 +168,157 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
     }
   };
 
+  // Handle Google Sheets Sync
+  const handleSyncGoogleSheet = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!sheetUrl.trim()) return;
+
+    setIsFetchingSheet(true);
+    setScrapeError(null);
+    setScrapeSuccess(null);
+
+    try {
+      const response = await fetch('/api/knowledge/fetch-google-sheet', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sheetUrl: sheetUrl.trim(),
+          sheetName: sheetName.trim() || undefined
+        }),
+      });
+
+      const data = await response.json();
+
+      if (data.success) {
+        const newSource: KnowledgeSource = {
+          id: `kb_sheet_${Date.now()}`,
+          title: data.title,
+          type: 'google_sheets',
+          url: data.url,
+          content: data.content,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          active: true,
+          wordCount: data.wordCount,
+        };
+
+        setKnowledgeSources((prev) => [newSource, ...prev]);
+        setScrapeSuccess(`🎉 Đã đồng bộ thành công dữ liệu Google Sheet (${data.rowCount} hàng) vào Tri thức AI!`);
+        setSheetUrl('');
+        setSheetName('');
+
+        if (setProducts) {
+          handleExtractProducts(newSource);
+        }
+      } else {
+        setScrapeError(data.error || 'Không thể đồng bộ Google Sheet.');
+      }
+    } catch (err: any) {
+      setScrapeError('Lỗi kết nối đến máy chủ Google Sheets: ' + (err.message || String(err)));
+    } finally {
+      setIsFetchingSheet(false);
+    }
+  };
+
+  // Handle Google Drive Sync
+  const handleSyncGoogleDrive = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!driveUrl.trim()) return;
+
+    setIsFetchingDrive(true);
+    setScrapeError(null);
+    setScrapeSuccess(null);
+
+    try {
+      const response = await fetch('/api/knowledge/fetch-google-drive', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ driveUrl: driveUrl.trim() }),
+      });
+
+      const data = await response.json();
+
+      if (data.success) {
+        const newSource: KnowledgeSource = {
+          id: `kb_drive_${Date.now()}`,
+          title: data.title,
+          type: 'google_drive',
+          url: data.url,
+          content: data.content,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          active: true,
+          wordCount: data.wordCount,
+        };
+
+        setKnowledgeSources((prev) => [newSource, ...prev]);
+        setScrapeSuccess(`🎉 Đã đồng bộ tài liệu từ Google Drive/Docs (${data.wordCount} từ) vào Tri thức AI!`);
+        setDriveUrl('');
+      } else {
+        setScrapeError(data.error || 'Không thể đồng bộ Google Drive.');
+      }
+    } catch (err: any) {
+      setScrapeError('Lỗi kết nối đến máy chủ Google Drive: ' + (err.message || String(err)));
+    } finally {
+      setIsFetchingDrive(false);
+    }
+  };
+
+  // Handle Custom REST API Sync
+  const handleSyncRestApi = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!apiUrl.trim()) return;
+
+    setIsFetchingApi(true);
+    setScrapeError(null);
+    setScrapeSuccess(null);
+
+    try {
+      const response = await fetch('/api/knowledge/fetch-api-endpoint', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          apiUrl: apiUrl.trim(),
+          method: apiMethod,
+          headers: apiHeaders,
+          body: apiBody.trim() || undefined,
+          title: apiTitle.trim() || undefined
+        }),
+      });
+
+      const data = await response.json();
+
+      if (data.success) {
+        const newSource: KnowledgeSource = {
+          id: `kb_api_${Date.now()}`,
+          title: data.title,
+          type: 'api_endpoint',
+          url: data.url,
+          content: data.content,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          active: true,
+          wordCount: data.wordCount,
+        };
+
+        setKnowledgeSources((prev) => [newSource, ...prev]);
+        setScrapeSuccess(`🎉 Đã kết nối và đồng bộ dữ liệu từ REST API Endpoint vào Tri thức AI!`);
+        setApiUrl('');
+        setApiTitle('');
+
+        if (setProducts) {
+          handleExtractProducts(newSource);
+        }
+      } else {
+        setScrapeError(data.error || 'Không thể kết nối đến REST API Endpoint.');
+      }
+    } catch (err: any) {
+      setScrapeError('Lỗi kết nối REST API: ' + (err.message || String(err)));
+    } finally {
+      setIsFetchingApi(false);
+    }
+  };
+
   // Add Manual Knowledge Source
   const handleAddKnowledge = (e: React.FormEvent) => {
     e.preventDefault();
@@ -216,7 +390,64 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
           </div>
         </div>
 
-        <div className="max-w-3xl">
+        {/* Connector Navigation Tabs */}
+        <div className="flex flex-wrap items-center gap-2 border-b border-slate-800 pb-4 mb-4">
+          <button
+            type="button"
+            onClick={() => setActiveTab('website')}
+            className={`px-4 py-2 rounded-xl text-xs sm:text-sm font-bold transition-all flex items-center gap-2 border ${
+              activeTab === 'website'
+                ? 'bg-indigo-600 text-white border-indigo-500 shadow-md'
+                : 'bg-slate-800/80 text-slate-300 border-slate-700/80 hover:bg-slate-800 hover:text-white'
+            }`}
+          >
+            <Globe className="w-4 h-4 text-sky-400" />
+            <span>1. Website Scraper</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveTab('sheets')}
+            className={`px-4 py-2 rounded-xl text-xs sm:text-sm font-bold transition-all flex items-center gap-2 border ${
+              activeTab === 'sheets'
+                ? 'bg-emerald-600 text-white border-emerald-500 shadow-md'
+                : 'bg-slate-800/80 text-slate-300 border-slate-700/80 hover:bg-slate-800 hover:text-white'
+            }`}
+          >
+            <FileSpreadsheet className="w-4 h-4 text-emerald-400" />
+            <span>2. Google Sheets</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveTab('drive')}
+            className={`px-4 py-2 rounded-xl text-xs sm:text-sm font-bold transition-all flex items-center gap-2 border ${
+              activeTab === 'drive'
+                ? 'bg-blue-600 text-white border-blue-500 shadow-md'
+                : 'bg-slate-800/80 text-slate-300 border-slate-700/80 hover:bg-slate-800 hover:text-white'
+            }`}
+          >
+            <HardDrive className="w-4 h-4 text-blue-400" />
+            <span>3. Google Drive / Docs</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveTab('api')}
+            className={`px-4 py-2 rounded-xl text-xs sm:text-sm font-bold transition-all flex items-center gap-2 border ${
+              activeTab === 'api'
+                ? 'bg-purple-600 text-white border-purple-500 shadow-md'
+                : 'bg-slate-800/80 text-slate-300 border-slate-700/80 hover:bg-slate-800 hover:text-white'
+            }`}
+          >
+            <Server className="w-4 h-4 text-purple-400" />
+            <span>4. REST API Endpoint</span>
+          </button>
+        </div>
+
+        {/* TAB 1: WEBSITE SCRAPER */}
+        {activeTab === 'website' && (
+          <div className="max-w-3xl">
           <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-indigo-500/20 text-indigo-300 text-xs font-semibold mb-3 border border-indigo-400/30">
             <Globe className="w-3.5 h-3.5" />
             <span>Thu Thập Tự Động Từ Website (Website Scraping)</span>
@@ -283,20 +514,43 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
             </div>
 
             {scrapeMode !== 'single' && (
-              <div className="flex items-center gap-3 text-xs text-slate-300 bg-slate-800/60 p-2.5 rounded-xl border border-slate-700/60">
-                <span className="font-medium text-slate-300">Giới hạn số trang tối đa:</span>
-                <select
-                  value={maxPages}
-                  onChange={(e) => setMaxPages(parseInt(e.target.value, 10))}
-                  className="bg-slate-900 border border-slate-700 text-white rounded-lg px-2.5 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500 font-semibold"
-                >
-                  <option value={5}>5 trang (Nhanh)</option>
-                  <option value={10}>10 trang (Khuyên dùng)</option>
-                  <option value={15}>15 trang (Sâu)</option>
-                  <option value={20}>20 trang (Toàn bộ)</option>
-                </select>
+              <div className="flex flex-wrap items-center gap-3 text-xs text-slate-300 bg-slate-800/60 p-2.5 rounded-xl border border-slate-700/60">
+                <span className="font-medium text-slate-300">Số trang thu thập tối đa:</span>
+                <div className="flex items-center gap-2">
+                  <select
+                    value={[10, 25, 50, 100, 150, 200].includes(maxPages) ? maxPages : 'custom'}
+                    onChange={(e) => {
+                      if (e.target.value === 'custom') {
+                        setMaxPages(50);
+                      } else {
+                        setMaxPages(parseInt(e.target.value, 10));
+                      }
+                    }}
+                    className="bg-slate-900 border border-slate-700 text-white rounded-lg px-2.5 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500 font-semibold"
+                  >
+                    <option value={10}>10 trang (Nhanh)</option>
+                    <option value={25}>25 trang (Tiêu chuẩn)</option>
+                    <option value={50}>50 trang (Mở rộng)</option>
+                    <option value={100}>100 trang (Cào Sâu - Deep Crawl)</option>
+                    <option value={150}>150 trang (Chuyên sâu)</option>
+                    <option value={200}>200 trang (Quy mô Lớn - Max 200)</option>
+                    <option value="custom">⚙️ Nhập số tùy chỉnh...</option>
+                  </select>
+
+                  {(![10, 25, 50, 100, 150, 200].includes(maxPages) || maxPages > 200) && (
+                    <input
+                      type="number"
+                      min={1}
+                      max={200}
+                      value={maxPages}
+                      onChange={(e) => setMaxPages(Math.min(200, Math.max(1, parseInt(e.target.value, 10) || 1)))}
+                      className="w-20 bg-slate-900 border border-indigo-500 text-white rounded-lg px-2 py-1 text-xs font-bold text-center focus:outline-none"
+                      placeholder="Số trang"
+                    />
+                  )}
+                </div>
                 <span className="text-[11px] text-slate-400">
-                  (Tự động thu thập các trang Giới thiệu, Sản phẩm, Chính sách...)
+                  (Hệ thống tự động cào song song batch 8 trang/lần, lưu tối đa 200 trang)
                 </span>
               </div>
             )}
@@ -332,6 +586,229 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
               )}
             </button>
           </form>
+        </div>
+        )}
+
+        {/* TAB 2: GOOGLE SHEETS */}
+        {activeTab === 'sheets' && (
+          <div className="max-w-3xl space-y-4">
+            <div>
+              <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-500/20 text-emerald-300 text-xs font-semibold mb-2 border border-emerald-400/30">
+                <FileSpreadsheet className="w-3.5 h-3.5" />
+                <span>Đồng Bộ Trực Tiếp Từ Google Sheets</span>
+              </div>
+              <h2 className="text-xl sm:text-2xl font-bold tracking-tight mb-1">
+                Nạp dữ liệu từ Bảng tính Google Sheet
+              </h2>
+              <p className="text-xs sm:text-sm text-slate-300 leading-relaxed">
+                Nhập link Google Sheet (Bảng giá, Sản phẩm, FAQ, Tồn kho...). Đảm bảo file đã bật chế độ <b>"Bất kỳ ai có liên kết đều có thể xem" (Anyone with link)</b>.
+              </p>
+            </div>
+
+            <form onSubmit={handleSyncGoogleSheet} className="space-y-3">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div className="sm:col-span-2 relative">
+                  <FileSpreadsheet className="w-5 h-5 absolute left-3.5 top-1/2 -translate-y-1/2 text-emerald-400" />
+                  <input
+                    type="url"
+                    value={sheetUrl}
+                    onChange={(e) => setSheetUrl(e.target.value)}
+                    placeholder="https://docs.google.com/spreadsheets/d/1ABC.../edit"
+                    className="w-full pl-10 pr-4 py-3 rounded-xl bg-slate-800 border border-slate-700 text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-500 text-xs sm:text-sm"
+                    required
+                  />
+                </div>
+                <input
+                  type="text"
+                  value={sheetName}
+                  onChange={(e) => setSheetName(e.target.value)}
+                  placeholder="Tên gợi nhớ (Ví dụ: Bảng Giá 2026)"
+                  className="w-full px-4 py-3 rounded-xl bg-slate-800 border border-slate-700 text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-500 text-xs sm:text-sm"
+                />
+              </div>
+
+              <div className="flex items-center justify-between gap-4">
+                <p className="text-[11px] text-slate-400">
+                  💡 Mẹo: Dữ liệu Google Sheet sau khi nạp sẽ tự động phân tích thành các cột thông tin cho AI đọc tra cứu.
+                </p>
+                <button
+                  type="submit"
+                  disabled={isFetchingSheet || !sheetUrl.trim()}
+                  className="inline-flex items-center justify-center gap-2 px-6 py-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-800 text-white text-xs sm:text-sm font-semibold transition-colors shadow-xs shrink-0"
+                >
+                  {isFetchingSheet ? (
+                    <>
+                      <RefreshCw className="w-4 h-4 animate-spin" />
+                      <span>Đang đọc Bảng tính...</span>
+                    </>
+                  ) : (
+                    <>
+                      <FileSpreadsheet className="w-4 h-4" />
+                      <span>Đồng Bộ Google Sheet</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
+        )}
+
+        {/* TAB 3: GOOGLE DRIVE */}
+        {activeTab === 'drive' && (
+          <div className="max-w-3xl space-y-4">
+            <div>
+              <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-blue-500/20 text-blue-300 text-xs font-semibold mb-2 border border-blue-400/30">
+                <HardDrive className="w-3.5 h-3.5" />
+                <span>Đồng Bộ Tài Liệu Từ Google Drive / Google Docs</span>
+              </div>
+              <h2 className="text-xl sm:text-2xl font-bold tracking-tight mb-1">
+                Nạp văn bản từ Google Docs / Drive
+              </h2>
+              <p className="text-xs sm:text-sm text-slate-300 leading-relaxed">
+                Nhập link văn bản Google Docs hoặc file tài liệu trên Google Drive (SOP, Quy trình, Hướng dẫn bán hàng...). Đảm bảo tệp chia sẻ quyền xem công khai (Anyone with link).
+              </p>
+            </div>
+
+            <form onSubmit={handleSyncGoogleDrive} className="space-y-3">
+              <div className="relative">
+                <HardDrive className="w-5 h-5 absolute left-3.5 top-1/2 -translate-y-1/2 text-blue-400" />
+                <input
+                  type="url"
+                  value={driveUrl}
+                  onChange={(e) => setDriveUrl(e.target.value)}
+                  placeholder="https://docs.google.com/document/d/1XYZ.../edit"
+                  className="w-full pl-10 pr-4 py-3 rounded-xl bg-slate-800 border border-slate-700 text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 text-xs sm:text-sm"
+                  required
+                />
+              </div>
+
+              <div className="flex items-center justify-between gap-4">
+                <p className="text-[11px] text-slate-400">
+                  💡 Mẹo: AI Agent sẽ học toàn bộ nội dung văn bản trong Google Docs để tư vấn chính xác.
+                </p>
+                <button
+                  type="submit"
+                  disabled={isFetchingDrive || !driveUrl.trim()}
+                  className="inline-flex items-center justify-center gap-2 px-6 py-3 rounded-xl bg-blue-600 hover:bg-blue-500 disabled:bg-slate-800 text-white text-xs sm:text-sm font-semibold transition-colors shadow-xs shrink-0"
+                >
+                  {isFetchingDrive ? (
+                    <>
+                      <RefreshCw className="w-4 h-4 animate-spin" />
+                      <span>Đang trích xuất tài liệu...</span>
+                    </>
+                  ) : (
+                    <>
+                      <HardDrive className="w-4 h-4" />
+                      <span>Nạp Google Drive / Doc</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
+        )}
+
+        {/* TAB 4: REST API ENDPOINT */}
+        {activeTab === 'api' && (
+          <div className="max-w-3xl space-y-4">
+            <div>
+              <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-purple-500/20 text-purple-300 text-xs font-semibold mb-2 border border-purple-400/30">
+                <Server className="w-3.5 h-3.5" />
+                <span>Kết Nối API System / ERP / CRM Bên Ngoài</span>
+              </div>
+              <h2 className="text-xl sm:text-2xl font-bold tracking-tight mb-1">
+                Kết nối REST API Endpoint bên thứ ba
+              </h2>
+              <p className="text-xs sm:text-sm text-slate-300 leading-relaxed">
+                Nhập Endpoint API của hệ thống nội bộ (CRM, ERP, Kho hàng, POS, Webhook...). AI Agent sẽ tự động gửi HTTP Request để lấy dữ liệu JSON/Text làm tri thức học.
+              </p>
+            </div>
+
+            <form onSubmit={handleSyncRestApi} className="space-y-3">
+              <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
+                <select
+                  value={apiMethod}
+                  onChange={(e) => setApiMethod(e.target.value as 'GET' | 'POST')}
+                  className="bg-slate-800 border border-slate-700 text-white font-bold rounded-xl px-3 py-3 text-xs focus:outline-none focus:ring-2 focus:ring-purple-500"
+                >
+                  <option value="GET">GET Request</option>
+                  <option value="POST">POST Request</option>
+                </select>
+
+                <div className="sm:col-span-3 relative">
+                  <Server className="w-5 h-5 absolute left-3.5 top-1/2 -translate-y-1/2 text-purple-400" />
+                  <input
+                    type="url"
+                    value={apiUrl}
+                    onChange={(e) => setApiUrl(e.target.value)}
+                    placeholder="https://api.yourdomain.com/v1/products"
+                    className="w-full pl-10 pr-4 py-3 rounded-xl bg-slate-800 border border-slate-700 text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-purple-500 text-xs sm:text-sm"
+                    required
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-300 mb-1">
+                    Custom Headers (JSON - Ví dụ API Key / Authorization Header):
+                  </label>
+                  <textarea
+                    rows={3}
+                    value={apiHeaders}
+                    onChange={(e) => setApiHeaders(e.target.value)}
+                    className="w-full p-2.5 rounded-xl bg-slate-900 border border-slate-700 text-emerald-400 font-mono text-xs focus:outline-none focus:ring-2 focus:ring-purple-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-300 mb-1">
+                    Tên gợi nhớ & Payload (Option):
+                  </label>
+                  <input
+                    type="text"
+                    value={apiTitle}
+                    onChange={(e) => setApiTitle(e.target.value)}
+                    placeholder="Tên nguồn (VD: Kho Hàng Tân Bình)"
+                    className="w-full mb-2 px-3 py-2 rounded-xl bg-slate-800 border border-slate-700 text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-purple-500 text-xs"
+                  />
+                  {apiMethod === 'POST' && (
+                    <input
+                      type="text"
+                      value={apiBody}
+                      onChange={(e) => setApiBody(e.target.value)}
+                      placeholder='POST Body JSON (VD: {"action":"get_catalog"})'
+                      className="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-emerald-400 font-mono text-xs focus:outline-none focus:ring-2 focus:ring-purple-500"
+                    />
+                  )}
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between gap-4 pt-1">
+                <p className="text-[11px] text-slate-400">
+                  ⚡ API Endpoint hỗ trợ các chuẩn dữ liệu JSON, RESTful và Plain Text.
+                </p>
+                <button
+                  type="submit"
+                  disabled={isFetchingApi || !apiUrl.trim()}
+                  className="inline-flex items-center justify-center gap-2 px-6 py-3 rounded-xl bg-purple-600 hover:bg-purple-500 disabled:bg-slate-800 text-white text-xs sm:text-sm font-semibold transition-colors shadow-xs shrink-0"
+                >
+                  {isFetchingApi ? (
+                    <>
+                      <RefreshCw className="w-4 h-4 animate-spin" />
+                      <span>Đang gọi API Endpoint...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Server className="w-4 h-4" />
+                      <span>Kết Nối API & Gọi Dữ Liệu</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
+        )}
 
           {scrapeSuccess && (
             <div className="mt-4 p-3 rounded-xl bg-emerald-500/20 border border-emerald-400/30 text-emerald-200 text-xs flex items-center gap-2">
@@ -347,7 +824,6 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
             </div>
           )}
         </div>
-      </div>
 
       {/* Knowledge Base Header & Controls */}
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 bg-white p-4 rounded-2xl border border-slate-200/80 shadow-2xs">

@@ -13,7 +13,7 @@ export interface AgentConfig {
   primaryLanguage: string;
 }
 
-export type KnowledgeType = 'website' | 'document' | 'faq' | 'process_guide';
+export type KnowledgeType = 'website' | 'document' | 'faq' | 'process_guide' | 'google_sheets' | 'google_drive' | 'api_endpoint';
 
 export interface KnowledgeSource {
   id: string;

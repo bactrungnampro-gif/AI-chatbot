@@ -132,36 +132,48 @@ async function fetchSitemapUrls(baseUrlStr: string): Promise<{ urls: string[], s
     const origin = baseUrl.origin;
     const domainHost = baseUrl.hostname.toLowerCase();
     
-    const candidateSitemaps = [
+    const isDirectXml = baseUrlStr.toLowerCase().endsWith('.xml') || baseUrlStr.toLowerCase().includes('sitemap');
+    const candidateSitemaps: string[] = [];
+    
+    // IF the user provided a specific sitemap URL (e.g., sitemap_blogs_1.xml), test it FIRST!
+    if (isDirectXml) {
+      candidateSitemaps.push(baseUrlStr);
+    }
+    
+    candidateSitemaps.push(
       `${origin}/sitemap.xml`,
       `${origin}/sitemap_index.xml`,
       `${origin}/sitemap-index.xml`,
-      `${origin}/sitemap/sitemap.xml`,
-    ];
+      `${origin}/sitemap/sitemap.xml`
+    );
     
-    // Check robots.txt first for custom sitemap declaration
-    try {
-      const robotsRes = await fetch(`${origin}/robots.txt`, {
-        headers: { 'User-Agent': 'aistudio-hybrid-crawler/1.0' },
-        signal: AbortSignal.timeout(5000)
-      });
-      if (robotsRes.ok) {
-        const robotsText = await robotsRes.text();
-        const sitemapMatches = robotsText.match(/Sitemap:\s*(https?:\/\/[^\s]+)/gi);
-        if (sitemapMatches) {
-          for (const sm of sitemapMatches) {
-            const smUrl = sm.replace(/Sitemap:\s*/i, '').trim();
-            if (smUrl) candidateSitemaps.unshift(smUrl);
+    // Check robots.txt for custom sitemap declarations only if user didn't enter a direct sitemap
+    if (!isDirectXml) {
+      try {
+        const robotsRes = await fetch(`${origin}/robots.txt`, {
+          headers: { 'User-Agent': 'aistudio-hybrid-crawler/1.0' },
+          signal: AbortSignal.timeout(5000)
+        });
+        if (robotsRes.ok) {
+          const robotsText = await robotsRes.text();
+          const sitemapMatches = robotsText.match(/Sitemap:\s*(https?:\/\/[^\s]+)/gi);
+          if (sitemapMatches) {
+            for (const sm of sitemapMatches) {
+              const smUrl = sm.replace(/Sitemap:\s*/i, '').trim();
+              if (smUrl && !candidateSitemaps.includes(smUrl)) {
+                candidateSitemaps.push(smUrl);
+              }
+            }
           }
         }
+      } catch (rErr) {
+        // Ignore robots fetch failure
       }
-    } catch (rErr) {
-      // Ignore robots fetch failure
     }
     
-    // Fetch candidate sitemaps
+    // Fetch candidate sitemaps in priority order
     for (const smUrl of candidateSitemaps) {
-      if (foundUrls.size >= 100) break; // Limit total sitemap URLs collected
+      if (foundUrls.size >= 500) break; // Limit total sitemap URLs collected
       try {
         const smRes = await fetch(smUrl, {
           headers: { 'User-Agent': 'aistudio-hybrid-crawler/1.0' },
@@ -194,37 +206,39 @@ async function fetchSitemapUrls(baseUrlStr: string): Promise<{ urls: string[], s
           }
         }
         
-        // If sitemap index contains sub-sitemaps, fetch up to 3 sub-sitemaps
-        for (const subSm of subSitemaps.slice(0, 3)) {
-          if (foundUrls.size >= 100) break;
-          try {
-            const subRes = await fetch(subSm, {
-              headers: { 'User-Agent': 'aistudio-hybrid-crawler/1.0' },
-              signal: AbortSignal.timeout(5000)
-            });
-            if (subRes.ok) {
-              const subXml = await subRes.text();
-              let subMatch;
-              const subLocRegex = /<loc>\s*(https?:\/\/[^<]+)\s*<\/loc>/gi;
-              while ((subMatch = subLocRegex.exec(subXml)) !== null) {
-                const loc = subMatch[1].trim();
-                if (!loc.endsWith('.xml')) {
-                  try {
-                    const parsed = new URL(loc);
-                    if (parsed.hostname.toLowerCase() === domainHost) {
-                      parsed.hash = '';
-                      let cleaned = parsed.toString();
-                      if (cleaned.length > 10 && cleaned.endsWith('/')) cleaned = cleaned.slice(0, -1);
-                      foundUrls.add(cleaned);
-                    }
-                  } catch (e) {}
+        // If sitemap index contains sub-sitemaps and no direct page URLs were found in current file, fetch sub-sitemaps
+        if (foundUrls.size === 0 && subSitemaps.length > 0) {
+          for (const subSm of subSitemaps.slice(0, 10)) {
+            if (foundUrls.size >= 500) break;
+            try {
+              const subRes = await fetch(subSm, {
+                headers: { 'User-Agent': 'aistudio-hybrid-crawler/1.0' },
+                signal: AbortSignal.timeout(5000)
+              });
+              if (subRes.ok) {
+                const subXml = await subRes.text();
+                let subMatch;
+                const subLocRegex = /<loc>\s*(https?:\/\/[^<]+)\s*<\/loc>/gi;
+                while ((subMatch = subLocRegex.exec(subXml)) !== null) {
+                  const loc = subMatch[1].trim();
+                  if (!loc.endsWith('.xml')) {
+                    try {
+                      const parsed = new URL(loc);
+                      if (parsed.hostname.toLowerCase() === domainHost) {
+                        parsed.hash = '';
+                        let cleaned = parsed.toString();
+                        if (cleaned.length > 10 && cleaned.endsWith('/')) cleaned = cleaned.slice(0, -1);
+                        foundUrls.add(cleaned);
+                      }
+                    } catch (e) {}
+                  }
                 }
               }
-            }
-          } catch (subErr) {}
+            } catch (subErr) {}
+          }
         }
         
-        if (foundUrls.size > 0) break; // Found valid sitemap content
+        if (foundUrls.size > 0) break; // Found valid page URLs from this candidate sitemap, stop checking others!
       } catch (smErr) {
         // Try next candidate
       }
@@ -250,8 +264,8 @@ app.post("/api/knowledge/scrape", async (req, res) => {
       targetUrl = "https://" + targetUrl;
     }
 
-    // Parse maxPages limit (1 to 25)
-    const pageLimit = Math.min(Math.max(parseInt(String(maxPages), 10) || 10, 1), 25);
+    // Parse maxPages limit (1 to 200)
+    const pageLimit = Math.min(Math.max(parseInt(String(maxPages), 10) || 10, 1), 200);
     const crawlMode = ['hybrid', 'sitemap', 'sublinks', 'single'].includes(mode) ? mode : 'hybrid';
 
     console.log(`[Scraper] Starting ${crawlMode.toUpperCase()} crawl for: ${targetUrl} (Max pages: ${pageLimit})`);
@@ -271,8 +285,16 @@ app.post("/api/knowledge/scrape", async (req, res) => {
     }
 
     const mainHtml = await mainResponse.text();
-    const mainTitle = extractPageTitle(mainHtml, targetUrl);
-    const mainText = cleanHtmlContent(mainHtml);
+    const isXmlSitemap = targetUrl.toLowerCase().endsWith('.xml') || mainHtml.includes('<urlset') || mainHtml.includes('<sitemapindex');
+    
+    let mainTitle = extractPageTitle(mainHtml, targetUrl);
+    let mainText = cleanHtmlContent(mainHtml);
+
+    if (isXmlSitemap) {
+      const fileName = targetUrl.split('/').pop() || targetUrl;
+      mainTitle = `Sitemap XML: ${fileName}`;
+      mainText = `Sitemap XML chứa danh sách liên kết từ ${targetUrl}`;
+    }
 
     // If mode is 'single', return immediately
     if (crawlMode === 'single' || pageLimit === 1) {
@@ -299,8 +321,21 @@ app.post("/api/knowledge/scrape", async (req, res) => {
     let discoveredSublinks: string[] = [];
     let sitemapLocation: string | undefined = undefined;
 
+    // Direct extraction of <loc> if targetUrl itself is an XML sitemap
+    if (isXmlSitemap) {
+      const locRegex = /<loc>\s*(https?:\/\/[^<]+)\s*<\/loc>/gi;
+      let match;
+      while ((match = locRegex.exec(mainHtml)) !== null) {
+        const loc = match[1].trim();
+        if (!loc.endsWith('.xml') && !loc.includes('sitemap')) {
+          discoveredSitemapUrls.push(loc);
+        }
+      }
+      sitemapLocation = targetUrl;
+    }
+
     // Mechanism 1: Discover via Sitemap XML (if mode is 'hybrid' or 'sitemap')
-    if (crawlMode === 'hybrid' || crawlMode === 'sitemap') {
+    if ((crawlMode === 'hybrid' || crawlMode === 'sitemap') && discoveredSitemapUrls.length === 0) {
       console.log(`[Scraper] Discovering URLs via Sitemap XML...`);
       const sitemapResult = await fetchSitemapUrls(targetUrl);
       discoveredSitemapUrls = sitemapResult.urls;
@@ -308,16 +343,13 @@ app.post("/api/knowledge/scrape", async (req, res) => {
       console.log(`[Scraper] Sitemap found ${discoveredSitemapUrls.length} URLs from ${sitemapLocation || 'N/A'}`);
     }
 
-    // Mechanism 2: Discover via Sub-links in HTML (if mode is 'hybrid' or 'sublinks')
-    if (crawlMode === 'hybrid' || crawlMode === 'sublinks') {
+    // Mechanism 2: Discover via Sub-links in HTML (if mode is 'hybrid' or 'sublinks' AND NOT an XML file)
+    if ((crawlMode === 'hybrid' || crawlMode === 'sublinks') && !isXmlSitemap) {
       console.log(`[Scraper] Discovering internal sub-links from main page HTML...`);
       discoveredSublinks = extractInternalLinks(mainHtml, targetUrl);
       console.log(`[Scraper] Extracted ${discoveredSublinks.length} internal sub-links from main HTML`);
     }
 
-    // Combine & Deduplicate candidate URLs
-    const candidateUrlsSet = new Set<string>();
-    
     // Normalize targetUrl for set comparison
     let normalizedTargetUrl = targetUrl;
     if (normalizedTargetUrl.length > 10 && normalizedTargetUrl.endsWith('/')) {
@@ -344,30 +376,35 @@ app.post("/api/knowledge/scrape", async (req, res) => {
       return score;
     };
 
-    // Combine all
+    // Combine all discovered candidates
     const allDiscovered = Array.from(new Set([...discoveredSitemapUrls, ...discoveredSublinks]))
       .filter(u => u !== normalizedTargetUrl && u !== targetUrl && u !== targetUrl + '/');
 
-    // Sort candidates by priority score descending
-    allDiscovered.sort((a, b) => scoreUrl(b) - scoreUrl(a));
+    // Sort candidates by priority score descending (if sitemap was specifically provided, preserve sitemap order mostly)
+    if (!isXmlSitemap) {
+      allDiscovered.sort((a, b) => scoreUrl(b) - scoreUrl(a));
+    }
 
-    // Select sub-pages queue up to pageLimit - 1
-    const subPagesToCrawl = allDiscovered.slice(0, pageLimit - 1);
+    // Select sub-pages queue (if targetUrl is XML sitemap, crawl up to pageLimit pages directly)
+    const pagesToCrawlLimit = isXmlSitemap ? pageLimit : (pageLimit - 1);
+    const subPagesToCrawl = allDiscovered.slice(0, pagesToCrawlLimit);
 
     console.log(`[Scraper] Crawling top ${subPagesToCrawl.length} sub-pages out of ${allDiscovered.length} discovered candidates.`);
 
     // Crawl sub-pages in batches
-    const scrapedPagesList: Array<{ title: string; url: string; content: string; wordCount: number }> = [
-      {
+    const scrapedPagesList: Array<{ title: string; url: string; content: string; wordCount: number }> = [];
+
+    if (!isXmlSitemap) {
+      scrapedPagesList.push({
         title: mainTitle,
         url: targetUrl,
         content: mainText,
         wordCount: mainText.split(/\s+/).filter(Boolean).length
-      }
-    ];
+      });
+    }
 
     // Concurrency batch execution
-    const BATCH_SIZE = 4;
+    const BATCH_SIZE = 8;
     for (let i = 0; i < subPagesToCrawl.length; i += BATCH_SIZE) {
       const batch = subPagesToCrawl.slice(i, i + BATCH_SIZE);
       const batchPromises = batch.map(async (subUrl) => {
@@ -377,7 +414,7 @@ app.post("/api/knowledge/scrape", async (req, res) => {
               'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
               'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
             },
-            signal: AbortSignal.timeout(6000)
+            signal: AbortSignal.timeout(5000)
           });
           if (!res.ok) return null;
           const subHtml = await res.text();
@@ -402,24 +439,38 @@ app.post("/api/knowledge/scrape", async (req, res) => {
       }
     }
 
+    // Fallback if no subpages could be scraped for XML
+    if (scrapedPagesList.length === 0) {
+      scrapedPagesList.push({
+        title: mainTitle,
+        url: targetUrl,
+        content: mainText,
+        wordCount: mainText.split(/\s+/).filter(Boolean).length
+      });
+    }
+
     // Build Combined Knowledge Document
     let combinedContent = `=== TỔNG HỢP DỮ LIỆU CÀO WEBSITE LAI (HYBRID) ===\n`;
     combinedContent += `Trang gốc: ${targetUrl}\n`;
     combinedContent += `Cơ chế: ${crawlMode.toUpperCase()} (Sitemap + Quét liên kết sub-links)\n`;
     combinedContent += `Tổng số trang đã cào: ${scrapedPagesList.length} trang\n\n`;
 
+    // Dynamic per-page truncation based on page count to preserve total context window
+    const maxCharsPerPage = scrapedPagesList.length > 50 ? 1200 : (scrapedPagesList.length > 20 ? 2500 : 5000);
+
     scrapedPagesList.forEach((page, index) => {
       combinedContent += `--- TRANG ${index + 1}/${scrapedPagesList.length}: ${page.title} ---\n`;
       combinedContent += `URL: ${page.url}\n`;
-      // Truncate individual page content if too large
       let pageText = page.content;
-      if (pageText.length > 5000) pageText = pageText.substring(0, 5000) + '... [Rút gọn trang]';
+      if (pageText.length > maxCharsPerPage) {
+        pageText = pageText.substring(0, maxCharsPerPage) + '... [Đã rút gọn trang]';
+      }
       combinedContent += `${pageText}\n\n`;
     });
 
-    // Enforce global combined length limit to avoid blowing prompt limit
-    if (combinedContent.length > 25000) {
-      combinedContent = combinedContent.substring(0, 25000) + '\n\n... [Tổng hợp tri thức đã rút gọn tối ưu cho AI]';
+    // Enforce global combined length limit (up to 50,000 chars)
+    if (combinedContent.length > 50000) {
+      combinedContent = combinedContent.substring(0, 50000) + '\n\n... [Tổng hợp tri thức đã rút gọn tối ưu cho AI]';
     }
 
     const totalWords = scrapedPagesList.reduce((sum, p) => sum + p.wordCount, 0);
@@ -429,7 +480,7 @@ app.post("/api/knowledge/scrape", async (req, res) => {
 
     res.json({
       success: true,
-      title: `Dữ liệu cào Lai (Hybrid) từ ${domainHost} (${scrapedPagesList.length} trang)`,
+      title: `Dữ liệu cào từ ${domainHost} (${scrapedPagesList.length} trang)`,
       url: targetUrl,
       content: combinedContent,
       wordCount: totalWords,
@@ -449,6 +500,249 @@ app.post("/api/knowledge/scrape", async (req, res) => {
       fallbackTitle: `Thu thập dữ liệu từ ${req.body.url || 'Website'}`,
       content: ""
     });
+  }
+});
+
+// --- GOOGLE SHEETS & GOOGLE DRIVE & CUSTOM REST API INTEGRATION ENDPOINTS ---
+
+// 1. Google Sheets Fetch Endpoint
+app.post("/api/knowledge/fetch-google-sheet", async (req, res) => {
+  try {
+    const { sheetUrl, sheetName } = req.body;
+    if (!sheetUrl || typeof sheetUrl !== "string") {
+      res.status(400).json({ success: false, error: "Vui lòng nhập URL Google Sheet hợp lệ." });
+      return;
+    }
+
+    console.log(`[Google Sheets] Fetching sheet from: ${sheetUrl}`);
+
+    // Extract Spreadsheet ID
+    const sheetIdMatch = sheetUrl.match(/\/d\/([a-zA-Z0-9-_]+)/);
+    if (!sheetIdMatch) {
+      res.status(400).json({ success: false, error: "Định dạng URL Google Sheet không đúng. Cần có dạng https://docs.google.com/spreadsheets/d/ID/edit" });
+      return;
+    }
+
+    const spreadsheetId = sheetIdMatch[1];
+    let csvText = "";
+    let sheetTitle = sheetName || "Google Sheet Data";
+
+    // Attempt 1: Direct CSV Export (Works for shared/public Google Sheets)
+    try {
+      const csvExportUrl = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/export?format=csv`;
+      const response = await fetch(csvExportUrl, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36'
+        },
+        signal: AbortSignal.timeout(10000)
+      });
+
+      if (response.ok) {
+        csvText = await response.text();
+      }
+    } catch (e) {
+      console.warn("[Google Sheets] Direct CSV export failed, trying API fallback...");
+    }
+
+    // Convert CSV/Tabular data into structured AI knowledge text
+    if (!csvText || csvText.trim().length === 0) {
+      res.json({
+        success: false,
+        error: "Không thể đọc dữ liệu Google Sheet. Vui lòng đảm bảo bảng tính đã bật chế độ 'Bất kỳ ai có liên kết đều có thể xem' (Anyone with link can view).",
+      });
+      return;
+    }
+
+    const lines = csvText.split('\n').filter(l => l.trim().length > 0);
+    if (lines.length === 0) {
+      res.json({ success: false, error: "Google Sheet trống hoặc không chứa dữ liệu." });
+      return;
+    }
+
+    // Format headers and rows
+    const headers = lines[0].split(',').map(h => h.replace(/^"|"$/g, '').trim());
+    let formattedData = `=== DỮ LIỆU ĐỒNG BỘ TỪ GOOGLE SHEETS ===\n`;
+    formattedData += `Nguồn bảng tính: ${sheetUrl}\n`;
+    formattedData += `Số dòng dữ liệu: ${lines.length - 1}\n\n`;
+    formattedData += `BẢNG CỘT THÔNG TIN: ${headers.join(' | ')}\n\n`;
+
+    lines.slice(1).forEach((line, index) => {
+      const cells = line.split(',').map(c => c.replace(/^"|"$/g, '').trim());
+      formattedData += `--- HÀNG ${index + 1} ---\n`;
+      headers.forEach((header, hIdx) => {
+        const val = cells[hIdx] || "N/A";
+        formattedData += `• ${header || `Cột ${hIdx + 1}`}: ${val}\n`;
+      });
+      formattedData += `\n`;
+    });
+
+    const wordCount = formattedData.split(/\s+/).filter(Boolean).length;
+
+    res.json({
+      success: true,
+      title: `Google Sheet: ${sheetTitle} (${lines.length - 1} dòng)`,
+      url: sheetUrl,
+      content: formattedData,
+      wordCount: wordCount,
+      rowCount: lines.length - 1
+    });
+
+  } catch (error: any) {
+    console.error("[Google Sheets Error]:", error);
+    res.status(500).json({ success: false, error: "Lỗi kết nối Google Sheets: " + (error?.message || String(error)) });
+  }
+});
+
+// 2. Google Drive Fetch Endpoint
+app.post("/api/knowledge/fetch-google-drive", async (req, res) => {
+  try {
+    const { driveUrl } = req.body;
+    if (!driveUrl || typeof driveUrl !== "string") {
+      res.status(400).json({ success: false, error: "Vui lòng nhập URL Google Drive hợp lệ." });
+      return;
+    }
+
+    console.log(`[Google Drive] Fetching file/doc from: ${driveUrl}`);
+
+    const fileIdMatch = driveUrl.match(/\/(?:file\/d|document\/d|spreadsheets\/d)\/([a-zA-Z0-9-_]+)/);
+    if (!fileIdMatch) {
+      res.status(400).json({ success: false, error: "Không tìm thấy ID tệp Google Drive. Cần chứa link dạng https://drive.google.com/file/d/ID hoặc https://docs.google.com/document/d/ID" });
+      return;
+    }
+
+    const fileId = fileIdMatch[1];
+    let extractedContent = "";
+    let fileTitle = "Google Drive Document";
+
+    // Attempt Google Docs txt export
+    try {
+      const txtExportUrl = `https://docs.google.com/documents/d/${fileId}/export?format=txt`;
+      const txtRes = await fetch(txtExportUrl, {
+        headers: { 'User-Agent': 'Mozilla/5.0' },
+        signal: AbortSignal.timeout(10000)
+      });
+      if (txtRes.ok) {
+        extractedContent = await txtRes.text();
+        fileTitle = "Google Doc Document";
+      }
+    } catch (e) {
+      console.warn("[Google Drive] Txt export failed, trying alternative...");
+    }
+
+    if (!extractedContent || extractedContent.trim().length === 0) {
+      res.json({
+        success: false,
+        error: "Không thể đọc nội dung tài liệu Google Drive. Vui lòng đảm bảo tệp/Google Docs đã chia sẻ quyền xem (Anyone with link).",
+      });
+      return;
+    }
+
+    let formattedData = `=== DỮ LIỆU ĐỒNG BỘ TỪ GOOGLE DRIVE / DOCS ===\n`;
+    formattedData += `Nguồn tệp: ${driveUrl}\n\n`;
+    formattedData += extractedContent;
+
+    const wordCount = formattedData.split(/\s+/).filter(Boolean).length;
+
+    res.json({
+      success: true,
+      title: `Google Drive: ${fileTitle}`,
+      url: driveUrl,
+      content: formattedData,
+      wordCount
+    });
+
+  } catch (error: any) {
+    console.error("[Google Drive Error]:", error);
+    res.status(500).json({ success: false, error: "Lỗi đọc Google Drive: " + (error?.message || String(error)) });
+  }
+});
+
+// 3. Custom Third-Party REST API Data Integration Endpoint
+app.post("/api/knowledge/fetch-api-endpoint", async (req, res) => {
+  try {
+    const { apiUrl, method = "GET", headers = {}, body = null, title } = req.body;
+    if (!apiUrl || typeof apiUrl !== "string") {
+      res.status(400).json({ success: false, error: "Vui lòng nhập API Endpoint URL hợp lệ." });
+      return;
+    }
+
+    console.log(`[API Integration] Syncing data from REST API: ${method} ${apiUrl}`);
+
+    // Parse custom headers if sent as JSON string
+    let parsedHeaders: Record<string, string> = {
+      'User-Agent': 'AIAgent-DataSync/1.0',
+      'Accept': 'application/json, text/plain, */*'
+    };
+
+    if (typeof headers === 'string' && headers.trim()) {
+      try {
+        parsedHeaders = { ...parsedHeaders, ...JSON.parse(headers) };
+      } catch (e) {
+        console.warn("[API Integration] Could not parse custom headers JSON string.");
+      }
+    } else if (typeof headers === 'object' && headers !== null) {
+      parsedHeaders = { ...parsedHeaders, ...headers };
+    }
+
+    // Prepare fetch options
+    const fetchOptions: RequestInit = {
+      method: method.toUpperCase(),
+      headers: parsedHeaders,
+      signal: AbortSignal.timeout(12000)
+    };
+
+    if (['POST', 'PUT', 'PATCH'].includes(method.toUpperCase()) && body) {
+      if (typeof body === 'object') {
+        fetchOptions.body = JSON.stringify(body);
+        parsedHeaders['Content-Type'] = 'application/json';
+      } else {
+        fetchOptions.body = String(body);
+      }
+    }
+
+    const response = await fetch(apiUrl, fetchOptions);
+    if (!response.ok) {
+      res.json({
+        success: false,
+        error: `API Endpoint trả về mã lỗi HTTP ${response.status} (${response.statusText}). Vui lòng kiểm tra lại URL và API Key/Headers.`
+      });
+      return;
+    }
+
+    const contentType = response.headers.get('content-type') || '';
+    let rawData: any;
+    let formattedText = "";
+
+    if (contentType.includes('application/json')) {
+      rawData = await response.json();
+      formattedText = JSON.stringify(rawData, null, 2);
+    } else {
+      formattedText = await response.text();
+    }
+
+    if (!formattedText || formattedText.trim().length === 0) {
+      res.json({ success: false, error: "API Endpoint không trả về dữ liệu nào (Trống)." });
+      return;
+    }
+
+    let combinedData = `=== DỮ LIỆU ĐỒNG BỘ TỪ REST API HỆ THỐNG BÊN NGOÀI ===\n`;
+    combinedData += `API Endpoint: ${method.toUpperCase()} ${apiUrl}\n`;
+    combinedData += `Thời gian đồng bộ: ${new Date().toLocaleString('vi-VN')}\n\n`;
+    combinedData += `NỘI DUNG DỮ LIỆU ĐÃ HỌC:\n${formattedText.substring(0, 40000)}`;
+
+    const wordCount = combinedData.split(/\s+/).filter(Boolean).length;
+
+    res.json({
+      success: true,
+      title: title || `API Sync: ${new URL(apiUrl).hostname}${new URL(apiUrl).pathname}`,
+      url: apiUrl,
+      content: combinedData,
+      wordCount
+    });
+
+  } catch (error: any) {
+    console.error("[API Endpoint Sync Error]:", error);
+    res.status(500).json({ success: false, error: "Không thể kết nối đến API Endpoint: " + (error?.message || String(error)) });
   }
 });
 
