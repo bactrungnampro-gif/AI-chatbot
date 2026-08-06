@@ -206,17 +206,17 @@ async function fetchSitemapUrls(baseUrlStr: string): Promise<{ urls: string[], s
           }
         }
         
-        // If sitemap index contains sub-sitemaps and no direct page URLs were found in current file, fetch sub-sitemaps
+        // If sitemap index contains sub-sitemaps and no direct page URLs were found in current file, fetch sub-sitemaps in parallel
         if (foundUrls.size === 0 && subSitemaps.length > 0) {
-          for (const subSm of subSitemaps.slice(0, 10)) {
-            if (foundUrls.size >= 1200) break;
+          const subSitemapPromises = subSitemaps.slice(0, 15).map(async (subSm) => {
             try {
               const subRes = await fetch(subSm, {
                 headers: { 'User-Agent': 'aistudio-hybrid-crawler/1.0' },
-                signal: AbortSignal.timeout(5000)
+                signal: AbortSignal.timeout(3000)
               });
               if (subRes.ok) {
                 const subXml = await subRes.text();
+                const extracted: string[] = [];
                 let subMatch;
                 const subLocRegex = /<loc>\s*(https?:\/\/[^<]+)\s*<\/loc>/gi;
                 while ((subMatch = subLocRegex.exec(subXml)) !== null) {
@@ -228,13 +228,23 @@ async function fetchSitemapUrls(baseUrlStr: string): Promise<{ urls: string[], s
                         parsed.hash = '';
                         let cleaned = parsed.toString();
                         if (cleaned.length > 10 && cleaned.endsWith('/')) cleaned = cleaned.slice(0, -1);
-                        foundUrls.add(cleaned);
+                        extracted.push(cleaned);
                       }
                     } catch (e) {}
                   }
                 }
+                return extracted;
               }
             } catch (subErr) {}
+            return [];
+          });
+
+          const subResults = await Promise.all(subSitemapPromises);
+          for (const resList of subResults) {
+            for (const item of resList) {
+              foundUrls.add(item);
+              if (foundUrls.size >= 1500) break;
+            }
           }
         }
         
@@ -252,6 +262,9 @@ async function fetchSitemapUrls(baseUrlStr: string): Promise<{ urls: string[], s
 
 // Website Content Scraper / Extractor Endpoint (Hybrid Support)
 app.post("/api/knowledge/scrape", async (req, res) => {
+  const globalRequestStart = Date.now();
+  const MAX_GLOBAL_TIME_MS = 42000; // 42 seconds total budget to guarantee response before 502/504 gateway timeout
+
   try {
     const { url, mode = 'hybrid', maxPages = 10 } = req.body;
     if (!url || typeof url !== "string") {
@@ -277,7 +290,7 @@ app.post("/api/knowledge/scrape", async (req, res) => {
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
         'Accept-Language': 'vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7'
       },
-      signal: AbortSignal.timeout(10000)
+      signal: AbortSignal.timeout(8000)
     });
 
     if (!mainResponse.ok) {
@@ -336,11 +349,13 @@ app.post("/api/knowledge/scrape", async (req, res) => {
 
     // Mechanism 1: Discover via Sitemap XML (if mode is 'hybrid' or 'sitemap')
     if ((crawlMode === 'hybrid' || crawlMode === 'sitemap') && discoveredSitemapUrls.length === 0) {
-      console.log(`[Scraper] Discovering URLs via Sitemap XML...`);
-      const sitemapResult = await fetchSitemapUrls(targetUrl);
-      discoveredSitemapUrls = sitemapResult.urls;
-      sitemapLocation = sitemapResult.sitemapLocation;
-      console.log(`[Scraper] Sitemap found ${discoveredSitemapUrls.length} URLs from ${sitemapLocation || 'N/A'}`);
+      if (Date.now() - globalRequestStart < MAX_GLOBAL_TIME_MS - 5000) {
+        console.log(`[Scraper] Discovering URLs via Sitemap XML...`);
+        const sitemapResult = await fetchSitemapUrls(targetUrl);
+        discoveredSitemapUrls = sitemapResult.urls;
+        sitemapLocation = sitemapResult.sitemapLocation;
+        console.log(`[Scraper] Sitemap found ${discoveredSitemapUrls.length} URLs from ${sitemapLocation || 'N/A'}`);
+      }
     }
 
     // Mechanism 2: Discover via Sub-links in HTML (if mode is 'hybrid' or 'sublinks' AND NOT an XML file)
@@ -403,21 +418,25 @@ app.post("/api/knowledge/scrape", async (req, res) => {
       });
     }
 
-    // Concurrency batch execution with dynamic parallelism & safety time budget
-    const crawlStartTime = Date.now();
-    const MAX_CRAWL_DURATION_MS = 45000; // 45 seconds safety window to guarantee clean response before proxy 502/504 timeout
+    // Concurrency batch execution with high-throughput parallelism & dynamic timeout
+    let BATCH_SIZE = 10;
+    let PAGE_TIMEOUT_MS = 3500;
 
-    let BATCH_SIZE = 8;
-    if (subPagesToCrawl.length > 200) {
-      BATCH_SIZE = 25; // High parallelism for 200-1000 pages
+    if (subPagesToCrawl.length > 500) {
+      BATCH_SIZE = 60; // Ultra high parallelism for 500-1000 pages
+      PAGE_TIMEOUT_MS = 2200;
+    } else if (subPagesToCrawl.length > 200) {
+      BATCH_SIZE = 40; // High parallelism for 200-500 pages
+      PAGE_TIMEOUT_MS = 2500;
     } else if (subPagesToCrawl.length > 50) {
-      BATCH_SIZE = 16;
+      BATCH_SIZE = 20;
+      PAGE_TIMEOUT_MS = 3000;
     }
 
     for (let i = 0; i < subPagesToCrawl.length; i += BATCH_SIZE) {
       // Safety threshold check before executing next batch
-      if (Date.now() - crawlStartTime > MAX_CRAWL_DURATION_MS) {
-        console.log(`[Scraper] Reached 45s time budget window! Returning ${scrapedPagesList.length} pages accumulated so far.`);
+      if (Date.now() - globalRequestStart > MAX_GLOBAL_TIME_MS) {
+        console.log(`[Scraper] Reached ${MAX_GLOBAL_TIME_MS}ms global time window budget! Returning ${scrapedPagesList.length} pages accumulated so far.`);
         break;
       }
 
@@ -429,7 +448,7 @@ app.post("/api/knowledge/scrape", async (req, res) => {
               'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
               'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
             },
-            signal: AbortSignal.timeout(3500)
+            signal: AbortSignal.timeout(PAGE_TIMEOUT_MS)
           });
           if (!res.ok) return null;
           const subHtml = await res.text();
@@ -465,13 +484,22 @@ app.post("/api/knowledge/scrape", async (req, res) => {
     }
 
     // Build Combined Knowledge Document
-    let combinedContent = `=== TỔNG HỢP DỮ LIỆU CÀO WEBSITE LAI (HYBRID) ===\n`;
+    let combinedContent = `=== TỔNG HỢP DỮ LIỆU CÀO WEBSITE LAI (HYBRID CRAWLER) ===\n`;
     combinedContent += `Trang gốc: ${targetUrl}\n`;
     combinedContent += `Cơ chế: ${crawlMode.toUpperCase()} (Sitemap + Quét liên kết sub-links)\n`;
-    combinedContent += `Tổng số trang đã cào: ${scrapedPagesList.length} trang\n\n`;
+    combinedContent += `Tổng số trang đã cào thành công: ${scrapedPagesList.length} trang\n\n`;
 
-    // Dynamic per-page truncation based on page count to preserve total context window
-    const maxCharsPerPage = scrapedPagesList.length > 50 ? 1200 : (scrapedPagesList.length > 20 ? 2500 : 5000);
+    // Dynamic per-page truncation based on page count to preserve total context window & lightweight payload
+    let maxCharsPerPage = 5000;
+    if (scrapedPagesList.length > 300) {
+      maxCharsPerPage = 500;
+    } else if (scrapedPagesList.length > 100) {
+      maxCharsPerPage = 800;
+    } else if (scrapedPagesList.length > 50) {
+      maxCharsPerPage = 1200;
+    } else if (scrapedPagesList.length > 20) {
+      maxCharsPerPage = 2500;
+    }
 
     scrapedPagesList.forEach((page, index) => {
       combinedContent += `--- TRANG ${index + 1}/${scrapedPagesList.length}: ${page.title} ---\n`;
@@ -483,15 +511,15 @@ app.post("/api/knowledge/scrape", async (req, res) => {
       combinedContent += `${pageText}\n\n`;
     });
 
-    // Enforce global combined length limit (up to 50,000 chars)
-    if (combinedContent.length > 50000) {
-      combinedContent = combinedContent.substring(0, 50000) + '\n\n... [Tổng hợp tri thức đã rút gọn tối ưu cho AI]';
+    // Enforce global combined length limit (up to 80,000 chars)
+    if (combinedContent.length > 80000) {
+      combinedContent = combinedContent.substring(0, 80000) + '\n\n... [Tổng hợp tri thức đã rút gọn tối ưu cho AI]';
     }
 
     const totalWords = scrapedPagesList.reduce((sum, p) => sum + p.wordCount, 0);
     const domainHost = new URL(targetUrl).hostname;
 
-    console.log(`[Scraper] Hybrid Crawl Completed successfully! Scraped ${scrapedPagesList.length} pages, total ~${totalWords} words.`);
+    console.log(`[Scraper] Hybrid Crawl Completed successfully in ${Date.now() - globalRequestStart}ms! Scraped ${scrapedPagesList.length} pages, total ~${totalWords} words.`);
 
     res.json({
       success: true,
