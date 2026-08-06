@@ -17,6 +17,7 @@ import {
   Upload
 } from 'lucide-react';
 import { AgentConfig, Attachment, ChatMessage, KnowledgeSource, ProductItem } from '../types';
+import { FormattedMessage } from './FormattedMessage';
 
 interface ChatSandboxProps {
   agentConfig: AgentConfig;
@@ -170,10 +171,10 @@ export const ChatSandbox: React.FC<ChatSandboxProps> = ({
 
   // Preset Prompts for fast testing
   const samplePrompts = [
-    '🤖 Tôi muốn mua Robot hút bụi, nhà em 100m2 nên dùng loại nào?',
-    '🔧 Hướng dẫn tôi quy trình bảo hành & đổi trả sản phẩm mới?',
-    '⚡ Thiết bị của tôi bị báo lỗi nháy đèn đỏ không chạy, phải làm sao?',
-    '📄 Phân tích tệp hình ảnh/tài liệu tôi vừa tải lên',
+    '🖼️ Tư vấn Robot hút bụi TechLife Pro X và gửi kèm hình ảnh sản phẩm',
+    '🔗 Robot hút bụi Pro X có tính năng gì? Cho tôi xin link bài viết để xem chi tiết',
+    '🎧 Tư vấn Tai nghe chống ồn SoundBuds Pro kèm hình ảnh & giá bán',
+    '🔧 Hướng dẫn quy trình bảo hành & đổi trả sản phẩm mới',
   ];
 
   return (
@@ -388,13 +389,13 @@ export const ChatSandbox: React.FC<ChatSandboxProps> = ({
                     )}
 
                     <div
-                      className={`p-4 rounded-2xl text-xs sm:text-sm leading-relaxed whitespace-pre-wrap shadow-2xs ${
+                      className={`p-4 rounded-2xl text-xs sm:text-sm leading-relaxed shadow-2xs ${
                         isAgent
                           ? 'bg-slate-100/90 text-slate-900 rounded-tl-xs border border-slate-200/60'
                           : 'bg-indigo-600 text-white rounded-tr-xs'
                       }`}
                     >
-                      {msg.text}
+                      <FormattedMessage content={msg.text} isAgent={isAgent} />
                     </div>
 
                     {/* Clarification Indicator Badge */}

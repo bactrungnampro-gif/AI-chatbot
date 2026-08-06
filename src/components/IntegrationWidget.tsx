@@ -14,6 +14,7 @@ import {
   Paperclip
 } from 'lucide-react';
 import { AgentConfig, ChatMessage, WidgetSettings } from '../types';
+import { FormattedMessage } from './FormattedMessage';
 
 interface IntegrationWidgetProps {
   agentConfig: AgentConfig;
@@ -294,7 +295,7 @@ export const IntegrationWidget: React.FC<IntegrationWidgetProps> = ({
                         }`}
                         style={{ backgroundColor: !isAgent ? widgetSettings.primaryColor : undefined }}
                       >
-                        {msg.text}
+                        <FormattedMessage content={msg.text} isAgent={isAgent} />
                       </div>
                     </div>
                   );

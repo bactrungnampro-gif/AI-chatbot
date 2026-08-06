@@ -914,20 +914,43 @@ app.post("/api/chat", async (req, res) => {
     // Prepare Knowledge Base Context
     const activeKnowledge = knowledgeSources
       .filter((k: any) => k.active && k.content)
-      .map((k: any) => `=== [CƠ SỞ DỮ LIỆU: ${k.title} (${k.type})] ===\n${k.content}\n`)
+      .map((k: any) => {
+        let kText = `=== [CƠ SỞ DỮ LIỆU: ${k.title} (${k.type})] ===\n`;
+        if (k.url && !k.url.includes('docs.google.com') && !k.url.includes('drive.google.com')) {
+          kText += `• LINK WEBSITE NẠP: ${k.url}\n`;
+        }
+        if (Array.isArray(k.subPages) && k.subPages.length > 0) {
+          kText += `• TRANG CON WEBSITE NẠP:\n`;
+          k.subPages.forEach((sp: any) => {
+            if (sp.url && !sp.url.includes('docs.google.com') && !sp.url.includes('drive.google.com')) {
+              kText += `  + ${sp.title}: ${sp.url}\n`;
+            }
+          });
+        }
+        kText += `Nội dung tri thức:\n${k.content}\n`;
+        return kText;
+      })
       .join("\n");
 
     // Prepare Product Catalog Context
     const activeProducts = products
-      .map((p: any) => `=== [SẢN PHẨM: ${p.name}] ===
-- Danh mục: ${p.category}
-- Giá bán: ${p.price?.toLocaleString('vi-VN')} VNĐ ${p.originalPrice ? `(Giá gốc: ${p.originalPrice.toLocaleString('vi-VN')} VNĐ)` : ''}
-- Mô tả: ${p.description}
-- Đặc điểm nổi bật: ${Array.isArray(p.keyFeatures) ? p.keyFeatures.join(', ') : p.keyFeatures}
-- Phù hợp nhất cho (Ideal For): ${p.idealFor || 'Mọi khách hàng'}
-- Hướng dẫn sử dụng: ${p.usageInstructions || 'Xem tài liệu đi kèm'}
-- Tình trạng: ${p.inStock ? 'Còn hàng' : 'Hết hàng'}
-`)
+      .map((p: any) => {
+        let pText = `=== [SẢN PHẨM: ${p.name}] ===\n`;
+        pText += `- Danh mục: ${p.category}\n`;
+        pText += `- Giá bán: ${p.price?.toLocaleString('vi-VN')} VNĐ ${p.originalPrice ? `(Giá gốc: ${p.originalPrice.toLocaleString('vi-VN')} VNĐ)` : ''}\n`;
+        if (p.imageUrl) {
+          pText += `- LINK HÌNH ẢNH SẢN PHẨM: ${p.imageUrl}\n`;
+        }
+        if (p.sourceUrl && !p.sourceUrl.includes('docs.google.com') && !p.sourceUrl.includes('drive.google.com')) {
+          pText += `- LINK WEB NẠP SẢN PHẨM: ${p.sourceUrl}\n`;
+        }
+        pText += `- Mô tả: ${p.description}\n`;
+        pText += `- Đặc điểm nổi bật: ${Array.isArray(p.keyFeatures) ? p.keyFeatures.join(', ') : p.keyFeatures}\n`;
+        pText += `- Phù hợp nhất cho (Ideal For): ${p.idealFor || 'Mọi khách hàng'}\n`;
+        pText += `- Hướng dẫn sử dụng: ${p.usageInstructions || 'Xem tài liệu đi kèm'}\n`;
+        pText += `- Tình trạng: ${p.inStock ? 'Còn hàng' : 'Hết hàng'}\n`;
+        return pText;
+      })
       .join("\n");
 
     // Construct System Instruction with Data Priority Hierarchy
@@ -939,6 +962,23 @@ app.post("/api/chat", async (req, res) => {
 - Phong cách giao tiếp (Tone): "${agentConfig?.tone || 'friendly'}" (Thân thiện, lịch sự, ân cần như một con người thực sự, gọi khách hàng là "Anh/Chị" hoặc "Bạn", xưng "Em" hoặc "Tôi").
 
 ===================================================================
+QUY TẮC BẮT BUỘC VỀ GỬI HÌNH ẢNH VÀ TRÍCH DẪN LINK WEBSITE ĐÃ NẠP:
+
+1. QUY TẮC GỬI HÌNH ẢNH SẢN PHẨM / THIẾT BỊ:
+   - Khi tư vấn, đề xuất hoặc giới thiệu sản phẩm có "LINK HÌNH ẢNH SẢN PHẨM" trong danh mục bên dưới, bạn HÃY CHỦ ĐỘNG chèn hình ảnh sản phẩm vào câu trả lời bằng cú pháp Markdown:
+     ![Tên sản phẩm](URL_Hình_Ảnh)
+   - Đặt hình ảnh ngay bên dưới tên sản phẩm hoặc giá bán để câu trả lời sinh động, trực quan và chuyên nghiệp.
+
+2. QUY TẮC GỬI LINK WEBSITE (BÀI VIẾT / TRANG NGUỒN WEBSITE):
+   - CHỈ GỬI LINK WEBSITE KHI KHÁCH HÀNG CÓ YÊU CẦU HOẶC KHÁCH HÀNG MUỐN TÌM HIỂU KỸ HƠN (Ví dụ: khách hỏi "gửi link", "cho xin link", "xem chi tiết ở đâu", "muốn xem thêm", "tìm hiểu sâu hơn", v.v.).
+   - NẾU KHÁCH HÀNG KHÔNG YÊU CẦU LINK HOẶC KHÔNG CÓ Ý ĐỊNH XEM CHI TIẾT TRANG WEB, KHÔNG CẦN TỰ Ý GỬI LINK WEBSITE để tránh làm rườm rà tin nhắn.
+   - NGUYÊN TẮC GIỚI HẠN AN TOÀN LINK DUY NHẤT:
+     + CHỈ ĐƯỢC DÙNG link trang web chính thức từ "LINK WEBSITE NẠP", "TRANG CON WEBSITE NẠP", hoặc "LINK WEB NẠP SẢN PHẨM" trong dữ liệu đã nạp bên dưới.
+     + TUYỆT ĐỐI KHÔNG gửi bất kỳ link nào từ Google Sheets (docs.google.com) hoặc Google Drive (drive.google.com).
+     + TUYỆT ĐỐI KHÔNG tự bịa ra link hoặc lấy link trang web ngoài chưa được nạp.
+   - Định dạng link bằng Markdown sạch đẹp: [Tên Bài Viết/Trang Web](URL_Web_Đã_Nạp).
+===================================================================
+
 CƠ CHẾ ƯU TIÊN DỮ LIỆU ĐỂ TRẢ LỜI KHÁCH HÀNG (QUY TẮC BẮT BUỘC):
 1. MỨC ƯU TIÊN SỐ 1 - DỮ LIỆU ĐÃ NẠP (WEBSITE CRAWLED, TÀI LIỆU KHÁCH HÀNG & CƠ SỞ TRI THỨC):
    - Bạn BẮT BUỘC phải tra cứu và khai thác tối đa thông tin từ "CƠ SỞ TRI THỨC (KNOWLEDGE BASE)" và "DANH MỤC SẢN PHẨM" được nạp bên dưới trước tiên.
