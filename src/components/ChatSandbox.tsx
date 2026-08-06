@@ -342,10 +342,19 @@ export const ChatSandbox: React.FC<ChatSandboxProps> = ({
 
               if (isSystem) {
                 return (
-                  <div key={msg.id} className="flex justify-center my-2">
-                    <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-amber-50 border border-amber-200 text-amber-800 text-xs font-medium">
-                      <AlertCircle className="w-3.5 h-3.5 text-amber-600" />
-                      <span>{msg.text}</span>
+                  <div key={msg.id} className="flex justify-center my-3 max-w-2xl mx-auto">
+                    <div className="p-3.5 rounded-2xl bg-amber-50/90 border border-amber-200 text-amber-900 text-xs shadow-2xs space-y-2 w-full">
+                      <div className="flex items-start gap-2">
+                        <AlertCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                        <div className="space-y-1">
+                          <p className="font-semibold">{msg.text}</p>
+                          {msg.text.includes('Rate Limit 429') && (
+                            <p className="text-[11px] text-amber-800 leading-relaxed">
+                              💡 <b>Mẹo:</b> Vượt quá lượt gọi Gemini miễn phí từ Server chung. Bạn hãy chuyển sang mục <b>"Cấu Hình Agent"</b> ➔ Nhập <b>API Key cá nhân</b> (Google Gemini, OpenAI, Claude hoặc DeepSeek) để tiếp tục nhắn tin mượt mà không bị ngắt quãng.
+                            </p>
+                          )}
+                        </div>
+                      </div>
                     </div>
                   </div>
                 );
@@ -425,7 +434,7 @@ export const ChatSandbox: React.FC<ChatSandboxProps> = ({
                 </div>
                 <div className="bg-slate-100 p-3 rounded-2xl border border-slate-200 flex items-center gap-2">
                   <div className="w-2 h-2 rounded-full bg-blue-600 animate-ping"></div>
-                  <span>{agentConfig.name && !agentConfig.name.includes('TechLife') ? agentConfig.name : 'Trợ Lý AI'} đang tra cứu dữ liệu & phân tích tệp để phản hồi...</span>
+                  <span>{agentConfig.name || 'Trợ Lý AI'} đang tra cứu dữ liệu & phân tích tệp để phản hồi...</span>
                 </div>
               </div>
             )}

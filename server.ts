@@ -1118,10 +1118,10 @@ YÊU CẦU ĐỊNH DẠNG ĐẦU RA:
       provider === 'deepseek' ? 'deepseek-chat' : 'llama3.2'
     );
 
-    // Auto-normalize deprecated or invalid Gemini model names
+    // Auto-normalize Gemini model names to valid production models
     if (provider === 'google') {
-      if (!selectedModel || selectedModel.includes('gemini-2.5') || selectedModel.includes('gemini-1.5') || selectedModel.includes('gemini-2.0') || selectedModel === 'models/gemini-2.5-flash') {
-        selectedModel = 'gemini-3.6-flash';
+      if (!selectedModel || selectedModel.includes('3.6') || selectedModel.includes('3.1') || selectedModel.includes('flash-latest')) {
+        selectedModel = 'gemini-2.5-flash';
       }
     }
     const customApiKey = agentConfig?.customApiKey;
@@ -1141,7 +1141,7 @@ YÊU CẦU ĐỊNH DẠNG ĐẦU RA:
       const contents: any[] = [];
       if (Array.isArray(history) && history.length > 0) {
         let userStarted = false;
-        const recentHistory = history.slice(-10);
+        const recentHistory = history.slice(-8); // keep last 8 messages to conserve tokens/quota
         for (const msg of recentHistory) {
           if (msg.sender === 'user') {
             userStarted = true;
@@ -1179,37 +1179,40 @@ YÊU CẦU ĐỊNH DẠNG ĐẦU RA:
         parts: currentParts
       });
 
-      try {
-        const response = await googleClient.models.generateContent({
-          model: selectedModel,
-          contents,
-          config: {
-            systemInstruction,
-            temperature,
+      // Try model cascade sequence to bypass model-specific rate limits
+      const modelsToTry = Array.from(new Set([selectedModel, 'gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash']));
+      let geminiSuccess = false;
+      let lastGeminiErr: any = null;
+
+      for (const m of modelsToTry) {
+        try {
+          console.log(`[Gemini Engine] Attempting request with model: ${m}...`);
+          const response = await googleClient.models.generateContent({
+            model: m,
+            contents,
+            config: {
+              systemInstruction,
+              temperature,
+            }
+          });
+          responseText = response.text || "";
+          if (responseText && responseText.trim().length > 0) {
+            geminiSuccess = true;
+            console.log(`[Gemini Engine] Successfully received response with model: ${m}`);
+            break;
           }
-        });
-        responseText = response.text || "";
-      } catch (err: any) {
-        console.error("[Gemini API Error]", err);
-        const errStr = err?.message || String(err);
-        if (errStr.includes("429") || errStr.includes("RESOURCE_EXHAUSTED") || errStr.includes("Quota exceeded")) {
-          console.log("[Gemini Fallback] Quota hit for model, trying fallback model gemini-3.1-flash-lite...");
-          try {
-            const fallbackModel = selectedModel === 'gemini-3.1-flash-lite' ? 'gemini-flash-latest' : 'gemini-3.1-flash-lite';
-            const fallbackResponse = await googleClient.models.generateContent({
-              model: fallbackModel,
-              contents,
-              config: {
-                systemInstruction,
-                temperature,
-              }
-            });
-            responseText = fallbackResponse.text || "";
-          } catch (fallbackErr: any) {
-            throw new Error("Tài khoản đã vượt quá giới hạn lượt gọi API miễn phí (Rate Limit 429). Vui lòng nhập API Key cá nhân trong phần 'Cấu Hình Agent' hoặc đổi sang mô hình khác (OpenAI, DeepSeek, Claude) để tiếp tục.");
-          }
+        } catch (err: any) {
+          console.warn(`[Gemini Engine Warning] Model ${m} failed:`, err?.message || String(err));
+          lastGeminiErr = err;
+        }
+      }
+
+      if (!geminiSuccess) {
+        const errStr = lastGeminiErr?.message || String(lastGeminiErr);
+        if (errStr.includes("429") || errStr.includes("RESOURCE_EXHAUSTED") || errStr.includes("Quota exceeded") || errStr.includes("quota")) {
+          throw new Error("Tài khoản đã đạt giới hạn gọi API miễn phí chung của hệ thống (Rate Limit 429). Vui lòng nhập API Key cá nhân trong phần 'Cấu Hình Agent' (lấy miễn phí tại Google AI Studio) hoặc đổi sang mô hình khác (OpenAI, DeepSeek, Claude) để không bị gián đoạn.");
         } else {
-          throw err;
+          throw lastGeminiErr || new Error("Không thể nhận phản hồi từ Gemini API. Vui lòng kiểm tra lại cấu hình.");
         }
       }
     } else if (provider === 'openai' || provider === 'deepseek' || provider === 'custom_openai') {

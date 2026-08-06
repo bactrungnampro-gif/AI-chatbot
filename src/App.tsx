@@ -106,18 +106,40 @@ export default function App() {
       })
       .catch((err) => console.warn('Could not verify API health status:', err));
 
-    // Fetch initial configuration from server
+    // Fetch initial configuration from server and merge with localStorage without losing custom data
     fetch('/api/config')
       .then((res) => res.json())
       .then((data) => {
-        if (data.agentConfig && (data.agentConfig.businessName || data.agentConfig.name)) {
-          setAgentConfig((prev) => ({ ...prev, ...data.agentConfig }));
+        if (data.agentConfig && typeof data.agentConfig === 'object') {
+          setAgentConfig((prev) => {
+            // Merge server agentConfig into local state without losing local customApiKey unless server has a key
+            return {
+              ...prev,
+              ...data.agentConfig,
+              customApiKey: prev.customApiKey || data.agentConfig.customApiKey || '',
+            };
+          });
         }
         if (Array.isArray(data.knowledgeSources) && data.knowledgeSources.length > 0) {
-          setKnowledgeSources(data.knowledgeSources);
+          setKnowledgeSources((prev) => {
+            // Check if local has custom items
+            const localHasCustom = prev.some((item) => !['kb_1', 'kb_2', 'kb_3', 'kb_4'].includes(item.id));
+            const serverHasCustom = data.knowledgeSources.some((item: any) => !['kb_1', 'kb_2', 'kb_3', 'kb_4'].includes(item.id));
+            if (localHasCustom && !serverHasCustom) {
+              return prev; // keep user's local custom sources
+            }
+            return data.knowledgeSources;
+          });
         }
         if (Array.isArray(data.products) && data.products.length > 0) {
-          setProducts(data.products);
+          setProducts((prev) => {
+            const localHasCustom = prev.some((item) => !['prod_1', 'prod_2', 'prod_3'].includes(item.id));
+            const serverHasCustom = data.products.some((item: any) => !['prod_1', 'prod_2', 'prod_3'].includes(item.id));
+            if (localHasCustom && !serverHasCustom) {
+              return prev; // keep user's local custom products
+            }
+            return data.products;
+          });
         }
         if (data.widgetSettings && data.widgetSettings.headerTitle) {
           setWidgetSettings((prev) => ({ ...prev, ...data.widgetSettings }));
