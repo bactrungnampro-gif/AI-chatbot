@@ -71,6 +71,20 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
   const [extractingId, setExtractingId] = useState<string | null>(null);
   const [extractedNotice, setExtractedNotice] = useState<string | null>(null);
 
+  // Helper for safe JSON response parsing
+  const safeFetchJson = async (url: string, options: RequestInit) => {
+    const response = await fetch(url, options);
+    const text = await response.text();
+    if (!text || !text.trim()) {
+      throw new Error(`Máy chủ phản hồi rỗng (Mã lỗi ${response.status}). Có thể do quá trình xử lý quá lâu gây ra Timeout hoặc dịch vụ đang khởi động lại.`);
+    }
+    try {
+      return JSON.parse(text);
+    } catch (e) {
+      throw new Error(`Máy chủ phản hồi định dạng không hợp lệ (HTTP ${response.status}). Dữ liệu phản hồi bị gián đoạn.`);
+    }
+  };
+
   // Manual Ingestion Form State
   const [showAddModal, setShowAddModal] = useState(false);
   const [newTitle, setNewTitle] = useState('');
@@ -87,7 +101,7 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
     setExtractedNotice(null);
 
     try {
-      const response = await fetch('/api/knowledge/extract-products', {
+      const data = await safeFetchJson('/api/knowledge/extract-products', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -97,7 +111,6 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
         }),
       });
 
-      const data = await response.json();
       if (data.success && Array.isArray(data.products) && data.products.length > 0) {
         setProducts((prev) => [...data.products, ...prev]);
         setExtractedNotice(`🎉 Đã tự động trích xuất ${data.products.length} sản phẩm từ "${source.title}" vào Danh mục Sản phẩm!`);
@@ -122,7 +135,7 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
     setExtractedNotice(null);
 
     try {
-      const response = await fetch('/api/knowledge/scrape', {
+      const data = await safeFetchJson('/api/knowledge/scrape', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
@@ -131,8 +144,6 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
           maxPages: maxPages
         }),
       });
-
-      const data = await response.json();
 
       if (data.success && data.content) {
         const newSource: KnowledgeSource = {
@@ -180,7 +191,7 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
     setScrapeSuccess(null);
 
     try {
-      const response = await fetch('/api/knowledge/fetch-google-sheet', {
+      const data = await safeFetchJson('/api/knowledge/fetch-google-sheet', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -188,8 +199,6 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
           sheetName: sheetName.trim() || undefined
         }),
       });
-
-      const data = await response.json();
 
       if (data.success) {
         const newSource: KnowledgeSource = {
@@ -232,13 +241,11 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
     setScrapeSuccess(null);
 
     try {
-      const response = await fetch('/api/knowledge/fetch-google-drive', {
+      const data = await safeFetchJson('/api/knowledge/fetch-google-drive', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ driveUrl: driveUrl.trim() }),
       });
-
-      const data = await response.json();
 
       if (data.success) {
         const newSource: KnowledgeSource = {
@@ -276,7 +283,7 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
     setScrapeSuccess(null);
 
     try {
-      const response = await fetch('/api/knowledge/fetch-api-endpoint', {
+      const data = await safeFetchJson('/api/knowledge/fetch-api-endpoint', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -287,8 +294,6 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
           title: apiTitle.trim() || undefined
         }),
       });
-
-      const data = await response.json();
 
       if (data.success) {
         const newSource: KnowledgeSource = {

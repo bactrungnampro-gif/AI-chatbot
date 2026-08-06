@@ -131,7 +131,11 @@ export default function App() {
   // Check backend health & Gemini API status on boot
   useEffect(() => {
     fetch('/api/health')
-      .then((res) => res.json())
+      .then(async (res) => {
+        if (!res.ok) return null;
+        const text = await res.text();
+        return text ? JSON.parse(text) : null;
+      })
       .then((data) => {
         if (data && typeof data.hasApiKey === 'boolean') {
           setHasApiKey(data.hasApiKey);
