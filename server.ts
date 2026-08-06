@@ -1209,10 +1209,18 @@ YÊU CẦU ĐỊNH DẠNG ĐẦU RA:
 
       if (!geminiSuccess) {
         const errStr = lastGeminiErr?.message || String(lastGeminiErr);
+        const isCustomKeyUsed = Boolean(customApiKey && customApiKey.trim());
+
         if (errStr.includes("429") || errStr.includes("RESOURCE_EXHAUSTED") || errStr.includes("Quota exceeded") || errStr.includes("quota")) {
-          throw new Error("Tài khoản đã đạt giới hạn gọi API miễn phí chung của hệ thống (Rate Limit 429). Vui lòng nhập API Key cá nhân trong phần 'Cấu Hình Agent' (lấy miễn phí tại Google AI Studio) hoặc đổi sang mô hình khác (OpenAI, DeepSeek, Claude) để không bị gián đoạn.");
+          if (isCustomKeyUsed) {
+            throw new Error(`API Key cá nhân bạn vừa nhập đã chạm giới hạn lượt gọi miễn phí của Google (Rate Limit 429 / Quota Exhausted). Vui lòng đợi 1-2 phút rồi thử lại, hoặc chọn model 'Gemini 3.1 Flash Lite' / đổi sang nhà cung cấp DeepSeek / OpenAI.`);
+          } else {
+            throw new Error("Tài khoản đã đạt giới hạn gọi API miễn phí chung của hệ thống (Rate Limit 429). Vui lòng nhập API Key cá nhân trong phần 'Cấu Hình Agent' (lấy miễn phí tại Google AI Studio) hoặc đổi sang mô hình khác (OpenAI, DeepSeek, Claude) để không bị gián đoạn.");
+          }
+        } else if (errStr.includes("API_KEY_INVALID") || errStr.includes("API key not valid") || errStr.includes("invalid")) {
+          throw new Error("API Key cá nhân bạn nhập không hợp lệ hoặc đã bị vô hiệu hóa. Vui lòng kiểm tra lại API Key lấy từ Google AI Studio (aistudio.google.com/app/apikey).");
         } else {
-          throw lastGeminiErr || new Error("Không thể nhận phản hồi từ Gemini API. Vui lòng kiểm tra lại cấu hình.");
+          throw new Error(`Không thể nhận phản hồi từ Gemini API${isCustomKeyUsed ? ' (API Key cá nhân)' : ''}: ${errStr}`);
         }
       }
     } else if (provider === 'openai' || provider === 'deepseek' || provider === 'custom_openai') {
