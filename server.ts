@@ -827,7 +827,7 @@ Yêu cầu trả về JSON chuẩn xác:
 `;
 
         const response = await ai.models.generateContent({
-          model: 'gemini-3.6-flash',
+          model: 'gemini-2.5-flash',
           contents: prompt,
           config: {
             responseMimeType: "application/json",
@@ -1052,63 +1052,210 @@ YÊU CẦU ĐỊNH DẠNG ĐẦU RA:
 - Nếu bạn cần hỏi thêm thông tin từ khách hàng, hãy đặt câu hỏi một cách khéo léo và chu đáo.
 `;
 
-    // Prepare contents array for Gemini
-    const contents: any[] = [];
+    // Extract Model & Provider Configuration
+    const provider = agentConfig?.selectedProvider || 'google';
+    const selectedModel = agentConfig?.selectedModel || (
+      provider === 'google' ? 'gemini-2.5-flash' :
+      provider === 'openai' ? 'gpt-4o' :
+      provider === 'anthropic' ? 'claude-3-5-sonnet-20241022' :
+      provider === 'deepseek' ? 'deepseek-chat' : 'llama3.2'
+    );
+    const customApiKey = agentConfig?.customApiKey;
+    const customApiEndpoint = agentConfig?.customApiEndpoint;
+    const temperature = typeof agentConfig?.temperature === 'number' ? agentConfig.temperature : 0.7;
 
-    // Format previous chat history if provided
-    if (Array.isArray(history) && history.length > 0) {
-      // Pick last 10 messages for conversation context
-      const recentHistory = history.slice(-10);
-      for (const msg of recentHistory) {
-        const role = msg.sender === 'user' ? 'user' : 'model';
-        contents.push({
-          role,
-          parts: [{ text: msg.text || "" }]
-        });
-      }
-    }
+    console.log(`[AI Engine] Provider: ${provider}, Model: ${selectedModel}, Temp: ${temperature}, CustomKey: ${customApiKey ? 'YES' : 'NO'}`);
 
-    // Build the current user message parts
-    const currentParts: any[] = [];
+    let responseText = "";
 
-    // Add attachments (Images, Documents, Video frames/files)
-    if (Array.isArray(attachments) && attachments.length > 0) {
-      for (const att of attachments) {
-        if (att.dataUrl && att.dataUrl.includes(',')) {
-          const base64Data = att.dataUrl.split(',')[1];
-          currentParts.push({
-            inlineData: {
-              mimeType: att.mimeType || 'image/png',
-              data: base64Data
-            }
+    if (provider === 'google') {
+      // Use Google Gemini SDK
+      const googleClient = (customApiKey && customApiKey.trim()) 
+        ? new GoogleGenAI({ apiKey: customApiKey.trim() }) 
+        : ai;
+
+      const contents: any[] = [];
+      if (Array.isArray(history) && history.length > 0) {
+        const recentHistory = history.slice(-10);
+        for (const msg of recentHistory) {
+          const role = msg.sender === 'user' ? 'user' : 'model';
+          contents.push({
+            role,
+            parts: [{ text: msg.text || "" }]
           });
         }
       }
+
+      const currentParts: any[] = [];
+      if (Array.isArray(attachments) && attachments.length > 0) {
+        for (const att of attachments) {
+          if (att.dataUrl && att.dataUrl.includes(',')) {
+            const base64Data = att.dataUrl.split(',')[1];
+            currentParts.push({
+              inlineData: {
+                mimeType: att.mimeType || 'image/png',
+                data: base64Data
+              }
+            });
+          }
+        }
+      }
+
+      currentParts.push({
+        text: message || "Hãy phân tích tệp/hình ảnh/video tôi vừa gửi và hỗ trợ cho tôi."
+      });
+
+      contents.push({
+        role: 'user',
+        parts: currentParts
+      });
+
+      const response = await googleClient.models.generateContent({
+        model: selectedModel,
+        contents,
+        config: {
+          systemInstruction,
+          temperature,
+        }
+      });
+
+      responseText = response.text || "";
+    } else if (provider === 'openai' || provider === 'deepseek' || provider === 'custom_openai') {
+      // OpenAI-compatible Chat Completion API
+      const effectiveApiKey = (customApiKey && customApiKey.trim()) 
+        ? customApiKey.trim() 
+        : (provider === 'openai' ? process.env.OPENAI_API_KEY : provider === 'deepseek' ? process.env.DEEPSEEK_API_KEY : process.env.OPENAI_API_KEY);
+
+      if (!effectiveApiKey && provider !== 'custom_openai') {
+        return res.status(400).json({
+          error: `Chưa nhập API Key cho ${provider.toUpperCase()}`,
+          details: `Vui lòng vào mục "Cấu Hình Agent" để nhập API Key cho ${provider.toUpperCase()} hoặc quay lại chọn Google Gemini.`
+        });
+      }
+
+      let baseUrl = provider === 'deepseek' ? 'https://api.deepseek.com' : 'https://api.openai.com/v1';
+      if (customApiEndpoint && customApiEndpoint.trim()) {
+        baseUrl = customApiEndpoint.trim().replace(/\/$/, '');
+      }
+
+      const openAiMessages: any[] = [
+        { role: 'system', content: systemInstruction }
+      ];
+
+      if (Array.isArray(history) && history.length > 0) {
+        for (const msg of history.slice(-10)) {
+          openAiMessages.push({
+            role: msg.sender === 'user' ? 'user' : 'assistant',
+            content: msg.text || ""
+          });
+        }
+      }
+
+      if (Array.isArray(attachments) && attachments.length > 0) {
+        const userContentArr: any[] = [{ type: 'text', text: message || "Hãy phân tích tệp/hình ảnh tôi vừa gửi." }];
+        for (const att of attachments) {
+          if (att.dataUrl) {
+            userContentArr.push({
+              type: 'image_url',
+              image_url: { url: att.dataUrl }
+            });
+          }
+        }
+        openAiMessages.push({ role: 'user', content: userContentArr });
+      } else {
+        openAiMessages.push({ role: 'user', content: message || "" });
+      }
+
+      const fetchUrl = baseUrl.endsWith('/chat/completions') ? baseUrl : `${baseUrl}/chat/completions`;
+      const resApi = await fetch(fetchUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${effectiveApiKey || 'no-key'}`
+        },
+        body: JSON.stringify({
+          model: selectedModel,
+          messages: openAiMessages,
+          temperature,
+        })
+      });
+
+      const resData = await resApi.json();
+      if (!resApi.ok) {
+        throw new Error(resData?.error?.message || resData?.message || `Lỗi phản hồi từ API ${provider.toUpperCase()} (HTTP ${resApi.status})`);
+      }
+      responseText = resData.choices?.[0]?.message?.content || "";
+    } else if (provider === 'anthropic') {
+      // Anthropic Messages API
+      const effectiveApiKey = (customApiKey && customApiKey.trim()) ? customApiKey.trim() : process.env.ANTHROPIC_API_KEY;
+      if (!effectiveApiKey) {
+        return res.status(400).json({
+          error: "Chưa nhập API Key cho Anthropic Claude",
+          details: "Vui lòng vào mục 'Cấu Hình Agent' để nhập API Key của Anthropic Claude."
+        });
+      }
+
+      let baseUrl = 'https://api.anthropic.com/v1';
+      if (customApiEndpoint && customApiEndpoint.trim()) {
+        baseUrl = customApiEndpoint.trim().replace(/\/$/, '');
+      }
+
+      const claudeMessages: any[] = [];
+      if (Array.isArray(history) && history.length > 0) {
+        for (const msg of history.slice(-10)) {
+          claudeMessages.push({
+            role: msg.sender === 'user' ? 'user' : 'assistant',
+            content: msg.text || ""
+          });
+        }
+      }
+
+      const userContentArr: any[] = [];
+      if (Array.isArray(attachments) && attachments.length > 0) {
+        for (const att of attachments) {
+          if (att.dataUrl && att.dataUrl.includes(',')) {
+            const parts = att.dataUrl.split(',');
+            userContentArr.push({
+              type: 'image',
+              source: {
+                type: 'base64',
+                media_type: att.mimeType || 'image/png',
+                data: parts[1]
+              }
+            });
+          }
+        }
+      }
+      userContentArr.push({ type: 'text', text: message || "Hãy hỗ trợ cho tôi." });
+      claudeMessages.push({ role: 'user', content: userContentArr });
+
+      const fetchUrl = baseUrl.endsWith('/messages') ? baseUrl : `${baseUrl}/messages`;
+      const resApi = await fetch(fetchUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': effectiveApiKey,
+          'anthropic-version': '2023-06-01'
+        },
+        body: JSON.stringify({
+          model: selectedModel,
+          system: systemInstruction,
+          messages: claudeMessages,
+          max_tokens: 2048,
+          temperature,
+        })
+      });
+
+      const resData = await resApi.json();
+      if (!resApi.ok) {
+        throw new Error(resData?.error?.message || `Lỗi phản hồi từ Anthropic Claude API (HTTP ${resApi.status})`);
+      }
+      responseText = resData.content?.[0]?.text || "";
     }
 
-    // Add user text prompt
-    currentParts.push({
-      text: message || "Hãy phân tích tệp/hình ảnh/video tôi vừa gửi và hỗ trợ cho tôi."
-    });
-
-    contents.push({
-      role: 'user',
-      parts: currentParts
-    });
-
-    console.log(`[Gemini API] Processing chat request. Messages count: ${contents.length}, Attachments: ${attachments.length}`);
-
-    // Call Gemini 3.6 Flash
-    const response = await ai.models.generateContent({
-      model: "gemini-3.6-flash",
-      contents,
-      config: {
-        systemInstruction,
-        temperature: 0.7,
-      }
-    });
-
-    const responseText = response.text || "Xin lỗi, em chưa thể đưa ra câu trả lời lúc này. Anh/Chị có thể vui lòng thử lại được không ạ?";
+    if (!responseText) {
+      responseText = "Xin lỗi, em chưa nhận được câu trả lời từ mô hình AI. Anh/Chị có thể vui lòng thử lại được không ạ?";
+    }
 
     // Detect if agent asked a clarifying question
     const clarificationAsked = responseText.includes("?") && (
@@ -1175,19 +1322,19 @@ app.get("/api/widget.js", (req, res) => {
 // Vite middleware setup for Development / Static server for Production
 async function startServer() {
   const distPath = path.join(process.cwd(), 'dist');
-  const isProduction = process.env.NODE_ENV === "production" || fs.existsSync(path.join(distPath, 'index.html'));
+  const hasDist = fs.existsSync(path.join(distPath, 'index.html'));
 
-  if (!isProduction) {
+  if (process.env.NODE_ENV === "production" && hasDist) {
+    app.use(express.static(distPath));
+    app.get('*', (req, res) => {
+      res.sendFile(path.join(distPath, 'index.html'));
+    });
+  } else {
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
     });
     app.use(vite.middlewares);
-  } else {
-    app.use(express.static(distPath));
-    app.get('*', (req, res) => {
-      res.sendFile(path.join(distPath, 'index.html'));
-    });
   }
 
   const server = app.listen(PORT, "0.0.0.0", () => {

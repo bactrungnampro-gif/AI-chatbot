@@ -13,6 +13,11 @@ export const defaultAgentConfig: AgentConfig = {
   clarificationEnabled: true,
   clarificationStyle: 'polite',
   primaryLanguage: 'Vietnamese',
+  selectedProvider: 'google',
+  selectedModel: 'gemini-2.5-flash',
+  customApiKey: '',
+  customApiEndpoint: '',
+  temperature: 0.7,
 };
 
 export const defaultKnowledgeSources: KnowledgeSource[] = [

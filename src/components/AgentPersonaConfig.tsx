@@ -8,9 +8,15 @@ import {
   Sparkles, 
   Check, 
   Save,
-  Languages
+  Cpu,
+  Key,
+  Globe,
+  Eye,
+  EyeOff,
+  Zap,
+  Info
 } from 'lucide-react';
-import { AgentConfig } from '../types';
+import { AgentConfig, AIProvider } from '../types';
 
 interface AgentPersonaConfigProps {
   agentConfig: AgentConfig;
@@ -21,8 +27,16 @@ export const AgentPersonaConfig: React.FC<AgentPersonaConfigProps> = ({
   agentConfig,
   setAgentConfig,
 }) => {
-  const [formData, setFormData] = useState<AgentConfig>({ ...agentConfig });
+  const [formData, setFormData] = useState<AgentConfig>({
+    selectedProvider: 'google',
+    selectedModel: 'gemini-2.5-flash',
+    customApiKey: '',
+    customApiEndpoint: '',
+    temperature: 0.7,
+    ...agentConfig 
+  });
   const [savedSuccess, setSavedSuccess] = useState(false);
+  const [showApiKey, setShowApiKey] = useState(false);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -30,6 +44,88 @@ export const AgentPersonaConfig: React.FC<AgentPersonaConfigProps> = ({
     setSavedSuccess(true);
     setTimeout(() => setSavedSuccess(false), 3000);
   };
+
+  const providersList: {
+    id: AIProvider;
+    name: string;
+    icon: string;
+    description: string;
+    badge: string;
+    badgeColor: string;
+    defaultModel: string;
+    models: { id: string; name: string; tag: string; desc: string }[];
+  }[] = [
+    {
+      id: 'google',
+      name: 'Google Gemini',
+      icon: '✨',
+      description: 'Hệ sinh thái Gemini AI chính thức từ Google. Hỗ trợ đa phương tiện (Hình ảnh, Video, Tài liệu).',
+      badge: 'Mặc định Server',
+      badgeColor: 'bg-blue-100 text-blue-700 border-blue-200',
+      defaultModel: 'gemini-2.5-flash',
+      models: [
+        { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash', tag: 'Khuyên Dùng', desc: 'Tốc độ siêu nhanh, phản hồi tức thì, xử lý ảnh & tài liệu xuất sắc' },
+        { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro', tag: 'Chuyên Sâu', desc: 'Khả năng suy luận tư duy đỉnh cao, giải quyết nghiệp vụ phức tạp' },
+        { id: 'gemini-1.5-flash', name: 'Gemini 1.5 Flash', tag: 'Tốc Độ', desc: 'Mô hình siêu nhẹ, phản hồi nhanh chóng cho hội thoại cơ bản' },
+      ],
+    },
+    {
+      id: 'openai',
+      name: 'OpenAI (ChatGPT)',
+      icon: '🤖',
+      description: 'Dòng mô hình GPT nổi tiếng thế giới. Cần có API Key cá nhân của OpenAI.',
+      badge: 'Yêu cầu API Key',
+      badgeColor: 'bg-emerald-100 text-emerald-700 border-emerald-200',
+      defaultModel: 'gpt-4o',
+      models: [
+        { id: 'gpt-4o', name: 'GPT-4o (Omni)', tag: 'Hàng Đầu', desc: 'Mô hình đa phương tiện thông minh nhất của OpenAI' },
+        { id: 'gpt-4o-mini', name: 'GPT-4o Mini', tag: 'Tiết Kiệm', desc: 'Phản hồi nhanh, chi phí tối ưu cho chat tư vấn' },
+        { id: 'gpt-4-turbo', name: 'GPT-4 Turbo', tag: 'Tư Duy', desc: 'Xử lý văn bản ngữ cảnh dài và chỉ dẫn chi tiết' },
+      ],
+    },
+    {
+      id: 'anthropic',
+      name: 'Anthropic Claude',
+      icon: '🧠',
+      description: 'Mô hình Claude nổi tiếng với khả năng lập luận sắc bén và văn phong giao tiếp tự nhiên.',
+      badge: 'Yêu cầu API Key',
+      badgeColor: 'bg-purple-100 text-purple-700 border-purple-200',
+      defaultModel: 'claude-3-5-sonnet-20241022',
+      models: [
+        { id: 'claude-3-5-sonnet-20241022', name: 'Claude 3.5 Sonnet', tag: 'Văn Phong Chuẩn', desc: 'Khả năng giao tiếp tinh tế, phân tích dữ liệu chuyên nghiệp' },
+        { id: 'claude-3-haiku-20240307', name: 'Claude 3 Haiku', tag: 'Siêu Nhanh', desc: 'Mô hình gọn nhẹ, phản hồi tức thì cho hỗ trợ khách hàng' },
+      ],
+    },
+    {
+      id: 'deepseek',
+      name: 'DeepSeek AI',
+      icon: '⚡',
+      description: 'Mô hình AI thế hệ mới với khả năng hiểu tiếng Việt cực sâu & chi phí cực rẻ.',
+      badge: 'Giá Cực Rẻ',
+      badgeColor: 'bg-amber-100 text-amber-700 border-amber-200',
+      defaultModel: 'deepseek-chat',
+      models: [
+        { id: 'deepseek-chat', name: 'DeepSeek V3 (Chat)', tag: 'Phổ Biến', desc: 'Thông minh, giao tiếp mượt mà, hiểu ngữ cảnh Việt Nam' },
+        { id: 'deepseek-reasoner', name: 'DeepSeek R1 (Reasoner)', tag: 'Suy Luận', desc: 'Mô hình suy luận tư duy từng bước (Chain-of-Thought)' },
+      ],
+    },
+    {
+      id: 'custom_openai',
+      name: 'Custom / Local LLM',
+      icon: '🔌',
+      description: 'Kết nối API tương thích OpenAI hoặc Local LLM (Ollama, LM Studio, LocalAI, Enterprise Proxy).',
+      badge: 'Tự Do Tùy Chỉnh',
+      badgeColor: 'bg-slate-100 text-slate-700 border-slate-200',
+      defaultModel: 'llama3.2',
+      models: [
+        { id: 'llama3.2', name: 'Llama 3.2 (Meta)', tag: 'Local / Cloud', desc: 'Mô hình mã nguồn mở thế hệ mới' },
+        { id: 'mistral-small', name: 'Mistral Small', tag: 'Nhanh Nhẹ', desc: 'Phản hồi nhanh, chuẩn mực' },
+        { id: 'qwen2.5', name: 'Qwen 2.5 (Alibaba)', tag: 'Đa Ngôn Ngữ', desc: 'Khả năng tiếng Việt và Châu Á rất tốt' },
+      ],
+    },
+  ];
+
+  const currentProviderConfig = providersList.find(p => p.id === (formData.selectedProvider || 'google')) || providersList[0];
 
   return (
     <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
@@ -39,11 +135,11 @@ export const AgentPersonaConfig: React.FC<AgentPersonaConfigProps> = ({
         <div>
           <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-indigo-50 text-indigo-700 text-xs font-semibold mb-2">
             <Sliders className="w-3.5 h-3.5" />
-            <span>Cấu Hình Nhân Cách & Quy Tắc AI</span>
+            <span>Cấu Hình Nhân Cách & Động Cơ AI</span>
           </div>
-          <h2 className="text-xl font-bold text-slate-900">Thiết Lập Agent & Tự Động Hỏi Lại</h2>
+          <h2 className="text-xl font-bold text-slate-900">Thiết Lập Động Cơ AI & Giọng Điệu Agent</h2>
           <p className="text-xs text-slate-500 mt-1">
-            Điều chỉnh xưng hô, giọng điệu giao tiếp tự nhiên như người thật và kích hoạt chế độ chủ động đặt câu hỏi gợi mở khi khách hàng cung cấp thiếu thông tin.
+            Lựa chọn nhà cung cấp AI (Google, OpenAI, Claude, DeepSeek...), tùy chỉnh mô hình làm việc và cài đặt xưng hô giao tiếp tự nhiên.
           </p>
         </div>
 
@@ -75,7 +171,7 @@ export const AgentPersonaConfig: React.FC<AgentPersonaConfigProps> = ({
               1. Ưu Tiên Dữ Liệu Tra Cứu
             </div>
             <p className="text-slate-300 text-[11px] leading-relaxed">
-              Agent bắt buộc phải kiểm tra thông tin trong <b>Website đã cào</b>, <b>Tài liệu nạp</b> và <b>Danh mục Sản phẩm</b> trước. Nếu không đủ, tự động dùng <b>Tri thức Gemini AI tích hợp</b>.
+              Agent bắt buộc phải kiểm tra thông tin trong <b>Website đã cào</b>, <b>Tài liệu nạp</b> và <b>Danh mục Sản phẩm</b> trước. Nếu không đủ, tự động dùng <b>Tri thức AI tích hợp</b>.
             </p>
           </div>
 
@@ -94,7 +190,203 @@ export const AgentPersonaConfig: React.FC<AgentPersonaConfigProps> = ({
       </div>
 
       <form onSubmit={handleSubmit} className="space-y-6">
-        
+
+        {/* SECTION 0: Multi-Provider & Model Selection */}
+        <div className="bg-white p-6 rounded-2xl border border-slate-200/80 shadow-2xs space-y-5">
+          <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+            <h3 className="font-bold text-slate-900 text-sm flex items-center gap-2">
+              <Cpu className="w-4 h-4 text-indigo-600" />
+              <span>Cài Đặt Động Cơ AI (AI Model & Provider Selection)</span>
+            </h3>
+            <span className="text-[11px] font-medium text-slate-500 bg-slate-100 px-2.5 py-1 rounded-lg">
+              Hiện tại: <strong className="text-indigo-600 font-bold">{currentProviderConfig.name}</strong> ({formData.selectedModel || currentProviderConfig.defaultModel})
+            </span>
+          </div>
+
+          {/* Provider Tabs/Grid */}
+          <div>
+            <label className="block text-xs font-semibold text-slate-700 mb-2">
+              1. Chọn Nhà Cung Cấp Trí Tuệ Nhân Tạo (AI Provider)
+            </label>
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+              {providersList.map((provider) => {
+                const isSelected = (formData.selectedProvider || 'google') === provider.id;
+                return (
+                  <button
+                    key={provider.id}
+                    type="button"
+                    onClick={() => {
+                      setFormData({
+                        ...formData,
+                        selectedProvider: provider.id,
+                        selectedModel: provider.defaultModel,
+                      });
+                    }}
+                    className={`p-3 rounded-xl border text-left transition-all relative flex flex-col justify-between ${
+                      isSelected
+                        ? 'bg-indigo-50/80 border-indigo-500 ring-2 ring-indigo-500/20 shadow-xs'
+                        : 'bg-white border-slate-200 hover:border-slate-300 hover:bg-slate-50/50'
+                    }`}
+                  >
+                    <div>
+                      <div className="flex items-center justify-between mb-1.5">
+                        <span className="text-lg">{provider.icon}</span>
+                        {isSelected && (
+                          <span className="w-2 h-2 rounded-full bg-indigo-600 animate-pulse"></span>
+                        )}
+                      </div>
+                      <div className={`text-xs font-bold ${isSelected ? 'text-indigo-900' : 'text-slate-800'}`}>
+                        {provider.name}
+                      </div>
+                    </div>
+                    <div className="mt-2">
+                      <span className={`inline-block px-1.5 py-0.5 rounded text-[9px] font-semibold border ${provider.badgeColor}`}>
+                        {provider.badge}
+                      </span>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+            <p className="text-[11px] text-slate-500 mt-2 flex items-center gap-1">
+              <Info className="w-3.5 h-3.5 text-indigo-500" />
+              <span>{currentProviderConfig.description}</span>
+            </p>
+          </div>
+
+          {/* Model Selector for current provider */}
+          <div className="p-4 bg-slate-50 rounded-xl border border-slate-200/80 space-y-3">
+            <label className="block text-xs font-semibold text-slate-700">
+              2. Chọn Mô Hình Cụ Thể (Model)
+            </label>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              {currentProviderConfig.models.map((m) => {
+                const isModelSelected = (formData.selectedModel || currentProviderConfig.defaultModel) === m.id;
+                return (
+                  <button
+                    key={m.id}
+                    type="button"
+                    onClick={() => setFormData({ ...formData, selectedModel: m.id })}
+                    className={`p-3 rounded-xl border text-left transition-all ${
+                      isModelSelected
+                        ? 'bg-white border-indigo-500 ring-2 ring-indigo-500/20 shadow-xs'
+                        : 'bg-white/60 border-slate-200 hover:border-slate-300'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="font-bold text-xs text-slate-900">{m.name}</span>
+                      <span className="text-[10px] px-1.5 py-0.5 bg-indigo-50 text-indigo-700 rounded font-semibold border border-indigo-100">
+                        {m.tag}
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-slate-500 leading-normal">{m.desc}</p>
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Custom Model ID input if Custom provider chosen */}
+            {formData.selectedProvider === 'custom_openai' && (
+              <div className="pt-2">
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Tên Model ID tùy chỉnh</label>
+                <input
+                  type="text"
+                  value={formData.selectedModel || ''}
+                  onChange={(e) => setFormData({ ...formData, selectedModel: e.target.value })}
+                  placeholder="Ví dụ: llama3.2, mistral-7b, qwen2.5-coder"
+                  className="w-full p-2 bg-white border border-slate-300 rounded-lg text-xs focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 focus:outline-none font-mono"
+                />
+              </div>
+            )}
+          </div>
+
+          {/* API Key & Custom Endpoint Input */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs pt-1">
+            <div>
+              <label className="font-semibold text-slate-700 mb-1 flex items-center justify-between">
+                <span className="flex items-center gap-1">
+                  <Key className="w-3.5 h-3.5 text-slate-500" />
+                  API Key Cá Nhân {formData.selectedProvider === 'google' ? '(Tùy chọn)' : '(Bắt buộc)'}
+                </span>
+                {formData.selectedProvider === 'google' && (
+                  <span className="text-[10px] text-emerald-600 font-semibold">Đã có Key hệ thống</span>
+                )}
+              </label>
+              <div className="relative">
+                <input
+                  type={showApiKey ? "text" : "password"}
+                  value={formData.customApiKey || ''}
+                  onChange={(e) => setFormData({ ...formData, customApiKey: e.target.value })}
+                  placeholder={
+                    formData.selectedProvider === 'google' 
+                      ? 'Để trống để dùng Key mặc định của Server' 
+                      : `Nhập API Key cho ${currentProviderConfig.name}...`
+                  }
+                  className="w-full p-2.5 pr-9 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 focus:outline-none font-mono text-[11px]"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowApiKey(!showApiKey)}
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                >
+                  {showApiKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+              </div>
+              <p className="text-[10px] text-slate-400 mt-1">
+                API Key được lưu bảo mật trong trình duyệt và gửi mã hoá tới server.
+              </p>
+            </div>
+
+            <div>
+              <label className="font-semibold text-slate-700 mb-1 flex items-center gap-1">
+                <Globe className="w-3.5 h-3.5 text-slate-500" />
+                Custom Endpoint / Base URL {formData.selectedProvider === 'custom_openai' ? '(Bắt buộc)' : '(Tùy chọn)'}
+              </label>
+              <input
+                type="text"
+                value={formData.customApiEndpoint || ''}
+                onChange={(e) => setFormData({ ...formData, customApiEndpoint: e.target.value })}
+                placeholder={
+                  formData.selectedProvider === 'custom_openai'
+                    ? 'https://my-local-llm.ngrok-free.app/v1 hoặc http://localhost:11434/v1'
+                    : 'Để trống để sử dụng Endpoint mặc định của nhà cung cấp'
+                }
+                className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 focus:outline-none font-mono text-[11px]"
+              />
+              <p className="text-[10px] text-slate-400 mt-1">
+                Dùng khi kết nối với Proxy Server, Ollama, LM Studio hoặc Enterprise Gateway.
+              </p>
+            </div>
+          </div>
+
+          {/* Temperature Slider */}
+          <div className="pt-2">
+            <div className="flex items-center justify-between mb-1.5 text-xs">
+              <label className="font-semibold text-slate-700 flex items-center gap-1">
+                <Zap className="w-3.5 h-3.5 text-amber-500" />
+                Độ Sáng Tạo Phản Hồi (Temperature): <strong className="text-indigo-600">{formData.temperature ?? 0.7}</strong>
+              </label>
+              <span className="text-[11px] text-slate-500">
+                {(formData.temperature ?? 0.7) <= 0.3 ? 'Rất Chuẩn Xác / Lập Luận' : (formData.temperature ?? 0.7) <= 0.7 ? 'Cân Bằng Tư Vấn' : 'Tự Nhiên & Sáng Tạo'}
+              </span>
+            </div>
+            <input
+              type="range"
+              min="0"
+              max="1"
+              step="0.05"
+              value={formData.temperature ?? 0.7}
+              onChange={(e) => setFormData({ ...formData, temperature: parseFloat(e.target.value) })}
+              className="w-full h-2 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-indigo-600"
+            />
+            <div className="flex justify-between text-[10px] text-slate-400 mt-1">
+              <span>0.0 (Chuẩn xác tuyệt đối, tra cứu chính xác)</span>
+              <span>0.5 (Cân bằng)</span>
+              <span>1.0 (Phóng khoáng, tự nhiên)</span>
+            </div>
+          </div>
+        </div>
+
         {/* Section 1: Business Identity & Agent Persona */}
         <div className="bg-white p-6 rounded-2xl border border-slate-200/80 shadow-2xs space-y-4">
           <h3 className="font-bold text-slate-900 text-sm flex items-center gap-2 border-b border-slate-100 pb-3">
@@ -256,7 +548,7 @@ export const AgentPersonaConfig: React.FC<AgentPersonaConfigProps> = ({
         <div className="flex justify-end pt-2">
           <button
             type="submit"
-            className="inline-flex items-center gap-2 px-6 py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-semibold transition-colors shadow-md"
+            className="inline-flex items-center gap-2 px-6 py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-semibold transition-colors shadow-md cursor-pointer"
           >
             <Save className="w-4 h-4" />
             <span>Lưu Thay Đổi Cấu Hình</span>

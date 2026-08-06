@@ -129,7 +129,8 @@ export const ChatSandbox: React.FC<ChatSandboxProps> = ({
       const data = await response.json();
 
       if (!response.ok) {
-        throw new Error(data.error || 'Lỗi xử lý tin nhắn từ server');
+        const errorText = data.details ? `${data.error} (${data.details})` : (data.error || 'Lỗi xử lý tin nhắn từ server');
+        throw new Error(errorText);
       }
 
       const agentMessage: ChatMessage = {

@@ -1,3 +1,5 @@
+export type AIProvider = 'google' | 'openai' | 'anthropic' | 'deepseek' | 'custom_openai';
+
 export interface AgentConfig {
   id: string;
   name: string;
@@ -11,6 +13,12 @@ export interface AgentConfig {
   clarificationEnabled: boolean;
   clarificationStyle: 'polite' | 'direct' | 'guided';
   primaryLanguage: string;
+  // Dynamic AI Provider & Model Configuration
+  selectedProvider?: AIProvider;
+  selectedModel?: string;
+  customApiKey?: string;
+  customApiEndpoint?: string;
+  temperature?: number;
 }
 
 export type KnowledgeType = 'website' | 'document' | 'faq' | 'process_guide' | 'google_sheets' | 'google_drive' | 'api_endpoint';
