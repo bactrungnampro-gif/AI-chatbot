@@ -511,7 +511,7 @@ export const ChatSandbox: React.FC<ChatSandboxProps> = ({
               </button>
             </form>
             <p className="text-[10px] text-slate-400 mt-2 text-center">
-              Mẹo: Bạn có thể ấn Shift + Enter để xuống dòng. Agent sẽ ưu tiên tra cứu dữ liệu từ Cơ sở tri thức TechLife.
+              Mẹo: Bạn có thể ấn Shift + Enter để xuống dòng. Agent sẽ ưu tiên tra cứu dữ liệu từ Cơ sở tri thức của {agentConfig.businessName || 'Doanh Nghiệp'}.
             </p>
           </div>
 

@@ -104,6 +104,19 @@ export const StandaloneWidgetChat: React.FC<StandaloneWidgetChatProps> = ({
     }
   }, [messages]);
 
+  useEffect(() => {
+    if (currentAgent.greetingMessage) {
+      setMessages((prev) => {
+        if (prev.length === 1 && prev[0].id === 'w_welcome_1') {
+          if (prev[0].text !== currentAgent.greetingMessage) {
+            return [{ ...prev[0], text: currentAgent.greetingMessage }];
+          }
+        }
+        return prev;
+      });
+    }
+  }, [currentAgent.greetingMessage]);
+
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   };

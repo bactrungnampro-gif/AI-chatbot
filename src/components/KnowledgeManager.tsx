@@ -397,6 +397,34 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
           </div>
         </div>
 
+        {/* Sample Data Cleanup Banner if sample items exist */}
+        {knowledgeSources.some(k => ['kb_1', 'kb_2', 'kb_3', 'kb_4'].includes(k.id) || k.title.includes('TechLife')) && (
+          <div className="bg-amber-500/15 border border-amber-500/40 rounded-xl p-3.5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs text-amber-200">
+            <div className="flex items-center gap-2">
+              <AlertCircle className="w-4 h-4 text-amber-400 shrink-0" />
+              <span>
+                <b>Mẹo:</b> Danh sách đang chứa dữ liệu mẫu ban đầu (TechLife). Khi bạn nạp dữ liệu thương hiệu mới, hệ thống sẽ tự động ưu tiên dữ liệu mới của bạn. Bạn cũng có thể dọn dẹp dữ liệu mẫu ban đầu để danh sách gọn gàng hơn.
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                if (window.confirm('Xóa tất cả các tài liệu mẫu mặc định ban đầu (TechLife)? các tài liệu do bạn nạp vẫn sẽ được giữ nguyên.')) {
+                  setKnowledgeSources((prev) => prev.filter((item) => !['kb_1', 'kb_2', 'kb_3', 'kb_4'].includes(item.id) && !item.title.includes('TechLife')));
+                  if (setProducts) {
+                    setProducts((prev) => prev.filter((p) => !['prod_1', 'prod_2', 'prod_3'].includes(p.id) && !p.name.includes('TechLife')));
+                  }
+                  setScrapeSuccess('✨ Đã dọn dẹp xong dữ liệu mẫu ban đầu! Hiện tại Agent chỉ sử dụng nguồn dữ liệu mới do bạn cung cấp.');
+                }
+              }}
+              className="px-3 py-1.5 bg-amber-600 hover:bg-amber-500 text-white font-bold rounded-lg transition-colors shrink-0 shadow-sm flex items-center gap-1.5"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              <span>Xóa Dữ Liệu Mẫu (TechLife)</span>
+            </button>
+          </div>
+        )}
+
         {/* Connector Navigation Tabs */}
         <div className="flex flex-wrap items-center gap-2 border-b border-slate-800 pb-4 mb-4">
           <button

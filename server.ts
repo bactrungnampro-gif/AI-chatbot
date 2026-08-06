@@ -952,8 +952,37 @@ app.post("/api/chat", async (req, res) => {
 
     const ai = getGeminiAI();
 
+    // Check if current brand is custom (not default "TechLife Viet Nam")
+    const currentBusinessName = agentConfig?.businessName || 'Doanh Nghiệp';
+    const isDefaultTechLifeBrand = !currentBusinessName || currentBusinessName.trim().toLowerCase() === 'techlife viet nam';
+
+    const defaultKbIds = ['kb_1', 'kb_2', 'kb_3', 'kb_4'];
+    const defaultProductIds = ['prod_1', 'prod_2', 'prod_3'];
+
+    const hasUserKnowledge = knowledgeSources.some((k: any) => !defaultKbIds.includes(k.id) && !k.title?.includes('TechLife'));
+    const hasUserProducts = products.some((p: any) => !defaultProductIds.includes(p.id) && !p.name?.includes('TechLife'));
+
+    // Filter Knowledge Base Sources:
+    // Filter out default sample items IF brand is custom OR IF user has added new knowledge sources
+    const filteredKnowledgeSources = knowledgeSources.filter((k: any) => {
+      if (!isDefaultTechLifeBrand || hasUserKnowledge) {
+        if (defaultKbIds.includes(k.id)) return false;
+        if (k.title?.toLowerCase().includes('techlife') || k.content?.includes('TechLife Việt Nam')) return false;
+      }
+      return true;
+    });
+
+    // Filter Product Catalog Items:
+    const filteredProducts = products.filter((p: any) => {
+      if (!isDefaultTechLifeBrand || hasUserProducts) {
+        if (defaultProductIds.includes(p.id)) return false;
+        if (p.name?.toLowerCase().includes('techlife') || p.description?.includes('TechLife')) return false;
+      }
+      return true;
+    });
+
     // Prepare Knowledge Base Context
-    const activeKnowledge = knowledgeSources
+    const activeKnowledge = filteredKnowledgeSources
       .filter((k: any) => k.active && k.content)
       .map((k: any) => {
         let kText = `=== [CƠ SỞ DỮ LIỆU: ${k.title} (${k.type})] ===\n`;
@@ -974,7 +1003,7 @@ app.post("/api/chat", async (req, res) => {
       .join("\n");
 
     // Prepare Product Catalog Context
-    const activeProducts = products
+    const activeProducts = filteredProducts
       .map((p: any) => {
         let pText = `=== [SẢN PHẨM: ${p.name}] ===\n`;
         pText += `- Danh mục: ${p.category}\n`;
@@ -995,7 +1024,6 @@ app.post("/api/chat", async (req, res) => {
       .join("\n");
 
     // Construct System Instruction with Data Priority Hierarchy
-    const currentBusinessName = agentConfig?.businessName || 'Doanh Nghiệp';
     const currentAgentName = agentConfig?.name || 'Trợ Lý Agent';
     const currentAgentTitle = agentConfig?.title || 'Chuyên viên tư vấn & hỗ trợ khách hàng';
     const currentBusinessIndustry = agentConfig?.businessIndustry || 'Dịch vụ & Sản phẩm';
@@ -1010,11 +1038,12 @@ QUY TẮC BẮT BUỘC SỐ 1: BẢN SẮC VÀ TÊN THƯƠNG HIỆU (KHÔNG TH�
 - Tên Doanh Nghiệp / Thương hiệu: "${currentBusinessName}"
 - Ngành nghề kinh doanh chính: "${currentBusinessIndustry}"
 - Giới thiệu doanh nghiệp: "${currentBusinessDescription}"
-- Phong cách giao tiếp (Tone): "${agentConfig?.tone || 'friendly'}" (Thân thiện, tôn trọng, ân cần như con người thực sự, gọi khách hàng là "Anh/Chị" hoặc "Bạn", xưng "Em" hoặc "Tôi").
+- Phong cách giao tiếp (Tone): "${agentConfig?.tone || 'friendly'}" (Thân thiện, tôn trọng, ân cần như con người thực sự, xưng "${currentAgentName}" đại diện cho "${currentBusinessName}").
 
-TUYỆT ĐỐI KHÔNG TỰ XƯNG BẰNG THƯƠNG HIỆU HOẶC TÊN TRỢ LÝ KHÁC:
-- Kể cả khi Dữ liệu Tri thức (Knowledge Base) hoặc Danh mục Sản phẩm bên dưới có chứa các văn bản mẫu hoặc thương hiệu cũ (như TechLife, Linh, v.v.), BẠN BẮT BUỘC TUYỆT ĐỐI KHÔNG ĐƯỢC TỰ XƯNG LÀ "Linh" HAY "TechLife".
-- TẤT CẢ LỜI CHÀO, CÂU TỰ GIỚI THIỆU VÀ TƯ VẤN BẮT BUỘC PHẢI XƯNG LÀ "${currentAgentName}" ĐẠI DIỆN CHO DOANH NGHIỆP "${currentBusinessName}".
+TUYỆT ĐỐI LOẠI BỎ CÁC THƯƠNG HIỆU VÀ SẢN PHẨM MẪU CŨ:
+- BẠN CHỈ ĐƯỢC TƯ VẤN VÀ CUNG CẤP THÔNG TIN CHO THƯƠNG HIỆU DOANH NGHIỆP "${currentBusinessName}" VỚI NGÀNH NGỀ "${currentBusinessIndustry}".
+- TUYỆT ĐỐI KHÔNG TỰ XƯNG LÀ "Linh" HAY "TechLife", VÀ TUYỆT ĐỐI KHÔNG ĐỀ CẬP ĐẾN CÁC SẢN PHẨM MẪU CŨ (NHƯ ROBOT HÚT BỤI TECHLIFE, TAI NGHE SOUNDBUDS, NỒI CHIÊN) NẾU DỮ LIỆU ĐÓ KHÔNG THUỘC DOANH NGHIỆP "${currentBusinessName}".
+- TẤT CẢ LỜI CHÀO, CÂU TỰ GIỚI THIỆU VÀ TƯ VẤN BẮT BUỘC PHẢI THUỘC VỀ DOANH NGHIỆP "${currentBusinessName}".
 ===================================================================
 
 ===================================================================
@@ -1348,11 +1377,47 @@ YÊU CẦU ĐỊNH DẠNG ĐẦU RA:
   }
 });
 
-// Global In-Memory Config Store for Widget Sync
+// Global In-Memory Config Store for Widget Sync with File Persistence
+const STORE_FILE = path.join(process.cwd(), 'server_store.json');
+
 let serverAgentConfig: any = null;
 let serverWidgetSettings: any = null;
 let serverKnowledgeSources: any[] = [];
 let serverProducts: any[] = [];
+
+function loadServerStore() {
+  try {
+    if (fs.existsSync(STORE_FILE)) {
+      const data = fs.readFileSync(STORE_FILE, 'utf-8');
+      const parsed = JSON.parse(data);
+      if (parsed.agentConfig) serverAgentConfig = parsed.agentConfig;
+      if (parsed.widgetSettings) serverWidgetSettings = parsed.widgetSettings;
+      if (Array.isArray(parsed.knowledgeSources)) serverKnowledgeSources = parsed.knowledgeSources;
+      if (Array.isArray(parsed.products)) serverProducts = parsed.products;
+      console.log("💾 [ServerStore] Loaded configuration from server_store.json");
+    }
+  } catch (e) {
+    console.warn("⚠️ [ServerStore] Failed to load server_store.json:", e);
+  }
+}
+
+function saveServerStore() {
+  try {
+    const data = {
+      agentConfig: serverAgentConfig,
+      widgetSettings: serverWidgetSettings,
+      knowledgeSources: serverKnowledgeSources,
+      products: serverProducts,
+      updatedAt: new Date().toISOString(),
+    };
+    fs.writeFileSync(STORE_FILE, JSON.stringify(data, null, 2), 'utf-8');
+  } catch (e) {
+    console.warn("⚠️ [ServerStore] Failed to save server_store.json:", e);
+  }
+}
+
+// Initial load on server boot
+loadServerStore();
 
 app.get("/api/config", (req, res) => {
   res.json({
@@ -1376,6 +1441,7 @@ app.post("/api/config", (req, res) => {
   if (Array.isArray(req.body?.products)) {
     serverProducts = req.body.products;
   }
+  saveServerStore();
   res.json({
     success: true,
     agentConfig: serverAgentConfig,

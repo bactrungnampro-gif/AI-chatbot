@@ -186,6 +186,20 @@ export const ProductCatalog: React.FC<ProductCatalogProps> = ({
         </div>
 
         <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 w-full sm:w-auto">
+          {products.some(p => ['prod_1', 'prod_2', 'prod_3'].includes(p.id) || p.name.includes('TechLife')) && (
+            <button
+              onClick={() => {
+                if (window.confirm('Xóa các sản phẩm mẫu ban đầu (TechLife)? Các sản phẩm do bạn thêm/trích xuất vẫn sẽ được giữ nguyên.')) {
+                  setProducts(prev => prev.filter(p => !['prod_1', 'prod_2', 'prod_3'].includes(p.id) && !p.name.includes('TechLife')));
+                }
+              }}
+              className="inline-flex items-center justify-center gap-1.5 px-3 py-2 bg-amber-50 hover:bg-amber-100 text-amber-700 border border-amber-200 rounded-xl text-xs font-semibold transition-colors"
+            >
+              <Trash2 className="w-3.5 h-3.5 text-amber-600" />
+              <span>Xóa Sản Phẩm Mẫu (TechLife)</span>
+            </button>
+          )}
+
           <div className="relative">
             <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
             <input

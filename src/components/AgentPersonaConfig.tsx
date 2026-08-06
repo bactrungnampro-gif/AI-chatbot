@@ -35,6 +35,17 @@ export const AgentPersonaConfig: React.FC<AgentPersonaConfigProps> = ({
     temperature: 0.7,
     ...agentConfig 
   });
+
+  React.useEffect(() => {
+    setFormData((prev) => ({
+      selectedProvider: 'google',
+      selectedModel: 'gemini-3.6-flash',
+      customApiKey: '',
+      customApiEndpoint: '',
+      temperature: 0.7,
+      ...agentConfig
+    }));
+  }, [agentConfig]);
   const [savedSuccess, setSavedSuccess] = useState(false);
   const [showApiKey, setShowApiKey] = useState(false);
 
@@ -422,7 +433,7 @@ export const AgentPersonaConfig: React.FC<AgentPersonaConfigProps> = ({
                 type="text"
                 value={formData.name}
                 onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                placeholder="Trợ Lý Linh (TechLife)"
+                placeholder="Trợ Lý Agent AI"
                 className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 focus:outline-none"
                 required
               />

@@ -36,7 +36,7 @@ export default function App() {
       const saved = localStorage.getItem('aistudio_knowledge_sources');
       if (saved) {
         const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+        if (Array.isArray(parsed)) return parsed;
       }
     } catch (e) {
       console.warn('Failed to load knowledgeSources from localStorage:', e);
@@ -87,6 +87,27 @@ export default function App() {
       },
     ];
   });
+
+  // Sync with server store on initial mount
+  useEffect(() => {
+    fetch('/api/config')
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.agentConfig && (data.agentConfig.businessName || data.agentConfig.name)) {
+          setAgentConfig((prev) => ({ ...prev, ...data.agentConfig }));
+        }
+        if (Array.isArray(data.knowledgeSources) && data.knowledgeSources.length > 0) {
+          setKnowledgeSources(data.knowledgeSources);
+        }
+        if (Array.isArray(data.products) && data.products.length > 0) {
+          setProducts(data.products);
+        }
+        if (data.widgetSettings && data.widgetSettings.headerTitle) {
+          setWidgetSettings((prev) => ({ ...prev, ...data.widgetSettings }));
+        }
+      })
+      .catch((err) => console.warn('Could not load initial config from server:', err));
+  }, []);
 
   // Save to LocalStorage and sync to Server whenever core state changes
   useEffect(() => {
