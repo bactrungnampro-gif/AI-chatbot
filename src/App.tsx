@@ -107,6 +107,23 @@ export default function App() {
     }
   }, [agentConfig, widgetSettings, knowledgeSources, products]);
 
+  // Keep initial welcome message in sync with updated agentConfig greetingMessage
+  useEffect(() => {
+    if (agentConfig.greetingMessage) {
+      setMessages((prevMessages) => {
+        if (prevMessages.length === 1 && prevMessages[0].id === 'welcome_1') {
+          if (prevMessages[0].text !== agentConfig.greetingMessage) {
+            return [{
+              ...prevMessages[0],
+              text: agentConfig.greetingMessage,
+            }];
+          }
+        }
+        return prevMessages;
+      });
+    }
+  }, [agentConfig.greetingMessage]);
+
   useEffect(() => {
     try {
       localStorage.setItem('aistudio_chat_messages', JSON.stringify(messages));

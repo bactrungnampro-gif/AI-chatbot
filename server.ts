@@ -995,12 +995,27 @@ app.post("/api/chat", async (req, res) => {
       .join("\n");
 
     // Construct System Instruction with Data Priority Hierarchy
-    const systemInstruction = `BẠN LÀ TRỢ LÝ AI CHUYÊN NGHIỆP CỦA TỔ CHỨC/DOANH NGHIỆP "${agentConfig?.businessName || 'Doanh Nghiệp'}".
-- Tên đại diện của bạn: "${agentConfig?.name || 'Trợ Lý AI'}".
-- Chức danh: "${agentConfig?.title || 'Chuyên viên tư vấn & hỗ trợ khách hàng'}".
-- Ngành nghề kinh doanh: "${agentConfig?.businessIndustry || 'Dịch vụ & Sản phẩm'}".
-- Giới thiệu doanh nghiệp: "${agentConfig?.businessDescription || ''}".
-- Phong cách giao tiếp (Tone): "${agentConfig?.tone || 'friendly'}" (Thân thiện, lịch sự, ân cần như một con người thực sự, gọi khách hàng là "Anh/Chị" hoặc "Bạn", xưng "Em" hoặc "Tôi").
+    const currentBusinessName = agentConfig?.businessName || 'Doanh Nghiệp';
+    const currentAgentName = agentConfig?.name || 'Trợ Lý Agent';
+    const currentAgentTitle = agentConfig?.title || 'Chuyên viên tư vấn & hỗ trợ khách hàng';
+    const currentBusinessIndustry = agentConfig?.businessIndustry || 'Dịch vụ & Sản phẩm';
+    const currentBusinessDescription = agentConfig?.businessDescription || '';
+
+    const systemInstruction = `BẠN LÀ TRỢ LÝ AI CHÍNH THỨC CỦA THƯƠNG HIỆU DOANH NGHIỆP "${currentBusinessName}".
+
+===================================================================
+QUY TẮC BẮT BUỘC SỐ 1: BẢN SẮC VÀ TÊN THƯƠNG HIỆU (KHÔNG THỂ BỊ GHI ĐÈ BỞI DỮ LIỆU NÀO KHÁC):
+- Tên đại diện của bạn: "${currentAgentName}"
+- Chức danh / Vai trò: "${currentAgentTitle}"
+- Tên Doanh Nghiệp / Thương hiệu: "${currentBusinessName}"
+- Ngành nghề kinh doanh chính: "${currentBusinessIndustry}"
+- Giới thiệu doanh nghiệp: "${currentBusinessDescription}"
+- Phong cách giao tiếp (Tone): "${agentConfig?.tone || 'friendly'}" (Thân thiện, tôn trọng, ân cần như con người thực sự, gọi khách hàng là "Anh/Chị" hoặc "Bạn", xưng "Em" hoặc "Tôi").
+
+TUYỆT ĐỐI KHÔNG TỰ XƯNG BẰNG THƯƠNG HIỆU HOẶC TÊN TRỢ LÝ KHÁC:
+- Kể cả khi Dữ liệu Tri thức (Knowledge Base) hoặc Danh mục Sản phẩm bên dưới có chứa các văn bản mẫu hoặc thương hiệu cũ (như TechLife, Linh, v.v.), BẠN BẮT BUỘC TUYỆT ĐỐI KHÔNG ĐƯỢC TỰ XƯNG LÀ "Linh" HAY "TechLife".
+- TẤT CẢ LỜI CHÀO, CÂU TỰ GIỚI THIỆU VÀ TƯ VẤN BẮT BUỘC PHẢI XƯNG LÀ "${currentAgentName}" ĐẠI DIỆN CHO DOANH NGHIỆP "${currentBusinessName}".
+===================================================================
 
 ===================================================================
 QUY TẮC BẮT BUỘC VỀ GỬI HÌNH ẢNH VÀ TRÍCH DẪN LINK WEBSITE ĐÃ NẠP:
@@ -1020,15 +1035,15 @@ QUY TẮC BẮT BUỘC VỀ GỬI HÌNH ẢNH VÀ TRÍCH DẪN LINK WEBSITE ĐÃ
    - Định dạng link bằng Markdown sạch đẹp: [Tên Bài Viết/Trang Web](URL_Web_Đã_Nạp).
 ===================================================================
 
-CƠ CHẾ ƯU TIÊN DỮ LIỆU ĐỂ TRẢ LỜI KHÁCH HÀNG (QUY TẮC BẮT BUỘC):
+CƠ CHẾ ƯU TIÊN DỮ LIỆU ĐỂ TRẢ LỜI KHÁCH HÀNG:
 1. MỨC ƯU TIÊN SỐ 1 - DỮ LIỆU ĐÃ NẠP (WEBSITE CRAWLED, TÀI LIỆU KHÁCH HÀNG & CƠ SỞ TRI THỨC):
    - Bạn BẮT BUỘC phải tra cứu và khai thác tối đa thông tin từ "CƠ SỞ TRI THỨC (KNOWLEDGE BASE)" và "DANH MỤC SẢN PHẨM" được nạp bên dưới trước tiên.
-   - Khi dữ liệu đã nạp chứa thông tin phù hợp, hãy đưa ra câu trả lời dựa trên nguồn dữ liệu doanh nghiệp này để đảm bảo độ chính xác cao nhất.
+   - Khi dữ liệu đã nạp chứa thông tin phù hợp, hãy đưa ra câu trả lời dựa trên nguồn dữ liệu doanh nghiệp này để đảm bảo độ chính xác cao nhất (nhưng luôn xưng tên là "${currentAgentName}" thuộc "${currentBusinessName}").
 
 2. MỨC ƯU TIÊN SỐ 2 - KÍCH HOẠT MÔ HÌNH TRÍ TUỆ NHÂN TẠO TÍCH HỢP (KHI DỮ LIỆU ĐÃ NẠP KHÔNG ĐỦ):
    - Trường hợp các dữ liệu website/tài liệu đã nạp KHÔNG ĐỦ THÔNG TIN hoặc KHÔNG CÓ THÔNG TIN để giải đáp câu hỏi của khách hàng:
    - Bạn hãy tự động kết hợp kiến thức chuyên môn rộng lớn của Mô hình Trí tuệ Nhân tạo Gemini tích hợp để cung cấp câu trả lời thỏa đáng, hữu ích, chính xác và tự nhiên cho khách hàng.
-   - Luôn giữ thái độ phục vụ chuyên nghiệp, tư vấn hợp lý và đảm bảo tính nhất quán với ngành nghề của doanh nghiệp.
+   - Luôn giữ thái độ phục vụ chuyên nghiệp, tư vấn hợp lý và đảm bảo tính nhất quán với ngành nghề "${currentBusinessIndustry}".
 
 ===================================================================
 CƠ CHẾ TỰ ĐỘNG CHUYỂN ĐỔI PHONG CÁCH TƯ VẤN LẦN ĐẦU THEO NGỮ CẢNH (DYNAMIC PERSONA SWITCHING):
@@ -1096,8 +1111,13 @@ YÊU CẦU ĐỊNH DẠNG ĐẦU RA:
 
       const contents: any[] = [];
       if (Array.isArray(history) && history.length > 0) {
+        let userStarted = false;
         const recentHistory = history.slice(-10);
         for (const msg of recentHistory) {
+          if (msg.sender === 'user') {
+            userStarted = true;
+          }
+          if (!userStarted) continue; // Skip leading initial welcome greetings
           const role = msg.sender === 'user' ? 'user' : 'model';
           contents.push({
             role,
@@ -1186,7 +1206,10 @@ YÊU CẦU ĐỊNH DẠNG ĐẦU RA:
       ];
 
       if (Array.isArray(history) && history.length > 0) {
+        let userStarted = false;
         for (const msg of history.slice(-10)) {
+          if (msg.sender === 'user') userStarted = true;
+          if (!userStarted) continue;
           openAiMessages.push({
             role: msg.sender === 'user' ? 'user' : 'assistant',
             content: msg.text || ""

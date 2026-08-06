@@ -171,11 +171,12 @@ export const ChatSandbox: React.FC<ChatSandboxProps> = ({
   };
 
   // Preset Prompts for fast testing
+  const firstProductName = products.length > 0 ? products[0].name : 'sản phẩm';
   const samplePrompts = [
-    '🖼️ Tư vấn Robot hút bụi TechLife Pro X và gửi kèm hình ảnh sản phẩm',
-    '🔗 Robot hút bụi Pro X có tính năng gì? Cho tôi xin link bài viết để xem chi tiết',
-    '🎧 Tư vấn Tai nghe chống ồn SoundBuds Pro kèm hình ảnh & giá bán',
-    '🔧 Hướng dẫn quy trình bảo hành & đổi trả sản phẩm mới',
+    `🖼️ Tư vấn ${firstProductName} và gửi kèm hình ảnh sản phẩm`,
+    `🔗 ${firstProductName} có tính năng gì nổi bật? Cho tôi xin link bài viết chi tiết`,
+    `🛍️ Giới thiệu các sản phẩm đang kinh doanh tại ${agentConfig.businessName || 'cửa hàng'}`,
+    `🔧 Hướng dẫn quy trình bảo hành & hỗ trợ đổi trả sản phẩm`,
   ];
 
   return (
