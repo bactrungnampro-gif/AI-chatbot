@@ -827,7 +827,7 @@ Yêu cầu trả về JSON chuẩn xác:
 `;
 
         const response = await ai.models.generateContent({
-          model: 'gemini-2.5-flash',
+          model: 'gemini-3.6-flash',
           contents: prompt,
           config: {
             responseMimeType: "application/json",
@@ -1054,12 +1054,19 @@ YÊU CẦU ĐỊNH DẠNG ĐẦU RA:
 
     // Extract Model & Provider Configuration
     const provider = agentConfig?.selectedProvider || 'google';
-    const selectedModel = agentConfig?.selectedModel || (
-      provider === 'google' ? 'gemini-2.5-flash' :
+    let selectedModel = agentConfig?.selectedModel || (
+      provider === 'google' ? 'gemini-3.6-flash' :
       provider === 'openai' ? 'gpt-4o' :
       provider === 'anthropic' ? 'claude-3-5-sonnet-20241022' :
       provider === 'deepseek' ? 'deepseek-chat' : 'llama3.2'
     );
+
+    // Auto-normalize deprecated or invalid Gemini model names
+    if (provider === 'google') {
+      if (!selectedModel || selectedModel.includes('gemini-2.5') || selectedModel.includes('gemini-1.5') || selectedModel.includes('gemini-2.0') || selectedModel === 'models/gemini-2.5-flash') {
+        selectedModel = 'gemini-3.6-flash';
+      }
+    }
     const customApiKey = agentConfig?.customApiKey;
     const customApiEndpoint = agentConfig?.customApiEndpoint;
     const temperature = typeof agentConfig?.temperature === 'number' ? agentConfig.temperature : 0.7;
