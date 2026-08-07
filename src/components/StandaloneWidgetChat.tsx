@@ -46,7 +46,9 @@ export const StandaloneWidgetChat: React.FC<StandaloneWidgetChatProps> = ({
   const [currentProducts, setCurrentProducts] = useState<ProductItem[]>(initialProducts);
 
   useEffect(() => {
-    fetch('/api/config')
+    // Hủy request nếu component unmount trước khi resolve để tránh setState sau unmount
+    const controller = new AbortController();
+    fetch('/api/config', { signal: controller.signal })
       .then((res) => res.json())
       .then((data) => {
         if (data.agentConfig && data.agentConfig.name) {
@@ -62,7 +64,12 @@ export const StandaloneWidgetChat: React.FC<StandaloneWidgetChatProps> = ({
           setCurrentProducts(data.products);
         }
       })
-      .catch((err) => console.warn('Could not fetch /api/config in standalone widget:', err));
+      .catch((err) => {
+        if (err?.name !== 'AbortError') {
+          console.warn('Could not fetch /api/config in standalone widget:', err);
+        }
+      });
+    return () => controller.abort();
   }, []);
 
   const primaryColor = currentSettings?.primaryColor || '#2563eb';
@@ -99,7 +106,17 @@ export const StandaloneWidgetChat: React.FC<StandaloneWidgetChatProps> = ({
 
   useEffect(() => {
     try {
-      localStorage.setItem('aistudio_widget_standalone_messages', JSON.stringify(messages));
+      // Loại bỏ dữ liệu base64 (dataUrl) của tệp đính kèm trước khi lưu để tránh vượt
+      // hạn mức ~5MB của localStorage (QuotaExceededError) khi người dùng gửi ảnh.
+      const lightweight = messages.map((m) =>
+        m.attachments && m.attachments.length > 0
+          ? {
+              ...m,
+              attachments: m.attachments.map((a) => ({ ...a, dataUrl: '' })),
+            }
+          : m
+      );
+      localStorage.setItem('aistudio_widget_standalone_messages', JSON.stringify(lightweight));
     } catch (e) {
       console.error('Failed to save standalone widget messages:', e);
     }

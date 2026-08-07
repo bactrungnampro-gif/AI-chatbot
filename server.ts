@@ -1,6 +1,8 @@
 import express from "express";
 import path from "path";
 import fs from "fs";
+import dns from "dns";
+import net from "net";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, Type } from "@google/genai";
 import dotenv from "dotenv";
@@ -14,16 +16,113 @@ const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-// Enable CORS for embeddable widgets across external domains
+// CORS: mặc định cho phép mọi origin (widget nhúng đa domain).
+// Có thể siết lại bằng biến môi trường ALLOWED_ORIGINS="https://a.com,https://b.com".
+const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || '')
+  .split(',')
+  .map((o) => o.trim())
+  .filter(Boolean);
+
 app.use((req, res, next) => {
-  res.setHeader('Access-Control-Allow-Origin', '*');
+  const origin = req.headers.origin;
+  if (ALLOWED_ORIGINS.length === 0) {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+  } else if (origin && ALLOWED_ORIGINS.includes(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Vary', 'Origin');
+  }
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, PUT, DELETE');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-admin-token');
   if (req.method === 'OPTIONS') {
     return res.sendStatus(200);
   }
   next();
 });
+
+// --- BẢO MẬT: CHỐNG SSRF ---
+// Chặn fetch tới địa chỉ nội bộ / loopback / link-local (vd metadata cloud 169.254.169.254).
+function isPrivateIp(ip: string): boolean {
+  const v = net.isIP(ip);
+  if (v === 4) {
+    const p = ip.split('.').map(Number);
+    if (p[0] === 10) return true;
+    if (p[0] === 127) return true;                          // loopback
+    if (p[0] === 169 && p[1] === 254) return true;          // link-local (metadata)
+    if (p[0] === 172 && p[1] >= 16 && p[1] <= 31) return true;
+    if (p[0] === 192 && p[1] === 168) return true;
+    if (p[0] === 0) return true;
+    return false;
+  }
+  if (v === 6) {
+    const lower = ip.toLowerCase();
+    if (lower === '::1') return true;                       // loopback
+    if (lower.startsWith('fc') || lower.startsWith('fd')) return true; // unique local
+    if (lower.startsWith('fe80')) return true;              // link-local
+    if (lower.startsWith('::ffff:')) return isPrivateIp(lower.replace('::ffff:', '')); // IPv4-mapped
+    return false;
+  }
+  return false;
+}
+
+// Kiểm tra URL an toàn để server fetch: chỉ http/https, không trỏ tới host nội bộ.
+async function assertPublicUrl(rawUrl: string): Promise<void> {
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    throw new Error('URL không hợp lệ');
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new Error('Chỉ hỗ trợ URL http/https');
+  }
+  const host = parsed.hostname.toLowerCase();
+  if (host === 'localhost' || host.endsWith('.local') || host.endsWith('.internal')) {
+    throw new Error('Không cho phép truy cập địa chỉ nội bộ');
+  }
+  // Nếu host là IP trực tiếp → kiểm tra ngay
+  if (net.isIP(host)) {
+    if (isPrivateIp(host)) throw new Error('Không cho phép truy cập địa chỉ IP nội bộ');
+    return;
+  }
+  // Nếu là tên miền → phân giải DNS và kiểm tra mọi IP (chống DNS trỏ về nội bộ)
+  try {
+    const records = await dns.promises.lookup(host, { all: true });
+    for (const r of records) {
+      if (isPrivateIp(r.address)) {
+        throw new Error('Tên miền phân giải về địa chỉ nội bộ (bị chặn)');
+      }
+    }
+  } catch (e: any) {
+    if (e?.message?.includes('nội bộ')) throw e;
+    // Lỗi phân giải DNS khác → để fetch tự xử lý/timeout
+  }
+}
+
+// --- BẢO MẬT: GIỚI HẠN TẦN SUẤT (RATE LIMIT) đơn giản theo IP, cửa sổ trượt ---
+const rateBuckets = new Map<string, number[]>();
+function rateLimit(maxRequests: number, windowMs: number) {
+  return (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    const ip = (req.headers['x-forwarded-for'] as string || '').split(',')[0].trim()
+      || req.socket.remoteAddress || 'unknown';
+    const now = Date.now();
+    const arr = (rateBuckets.get(ip) || []).filter((t) => now - t < windowMs);
+    if (arr.length >= maxRequests) {
+      res.status(429).json({
+        error: 'Quá nhiều yêu cầu trong thời gian ngắn. Vui lòng thử lại sau ít phút.'
+      });
+      return;
+    }
+    arr.push(now);
+    rateBuckets.set(ip, arr);
+    // Dọn định kỳ để tránh phình bộ nhớ
+    if (rateBuckets.size > 5000) {
+      for (const [k, v] of rateBuckets) {
+        if (v.every((t) => now - t >= windowMs)) rateBuckets.delete(k);
+      }
+    }
+    next();
+  };
+}
 
 // Initialize Gemini Client
 const getGeminiAI = () => {
@@ -272,7 +371,7 @@ async function fetchSitemapUrls(baseUrlStr: string): Promise<{ urls: string[], s
 }
 
 // Website Content Scraper / Extractor Endpoint (Hybrid Support)
-app.post("/api/knowledge/scrape", async (req, res) => {
+app.post("/api/knowledge/scrape", rateLimit(20, 60000), async (req, res) => {
   const globalRequestStart = Date.now();
   const MAX_GLOBAL_TIME_MS = 42000; // 42 seconds total budget to guarantee response before 502/504 gateway timeout
 
@@ -286,6 +385,14 @@ app.post("/api/knowledge/scrape", async (req, res) => {
     let targetUrl = url.trim();
     if (!targetUrl.startsWith("http://") && !targetUrl.startsWith("https://")) {
       targetUrl = "https://" + targetUrl;
+    }
+
+    // Chống SSRF: chặn URL trỏ tới địa chỉ nội bộ trước khi server fetch
+    try {
+      await assertPublicUrl(targetUrl);
+    } catch (ssrfErr: any) {
+      res.status(400).json({ error: ssrfErr?.message || 'URL không được phép' });
+      return;
     }
 
     // Parse maxPages limit (1 to 1000)
@@ -670,7 +777,7 @@ app.post("/api/knowledge/fetch-google-drive", async (req, res) => {
 
     // Attempt Google Docs txt export
     try {
-      const txtExportUrl = `https://docs.google.com/documents/d/${fileId}/export?format=txt`;
+      const txtExportUrl = `https://docs.google.com/document/d/${fileId}/export?format=txt`;
       const txtRes = await fetch(txtExportUrl, {
         headers: { 'User-Agent': 'Mozilla/5.0' },
         signal: AbortSignal.timeout(10000)
@@ -717,6 +824,15 @@ app.post("/api/knowledge/fetch-api-endpoint", async (req, res) => {
     const { apiUrl, method = "GET", headers = {}, body = null, title } = req.body;
     if (!apiUrl || typeof apiUrl !== "string") {
       res.status(400).json({ success: false, error: "Vui lòng nhập API Endpoint URL hợp lệ." });
+      return;
+    }
+
+    // Chống SSRF: endpoint này cho phép method/headers/body tùy ý nên đặc biệt nguy hiểm.
+    // Chặn mọi URL trỏ tới địa chỉ nội bộ (localhost, IP riêng, metadata cloud...).
+    try {
+      await assertPublicUrl(apiUrl);
+    } catch (ssrfErr: any) {
+      res.status(400).json({ success: false, error: ssrfErr?.message || 'URL không được phép' });
       return;
     }
 
@@ -837,42 +953,53 @@ Yêu cầu trả về JSON chuẩn xác:
   + inStock: boolean (mặc định true)
 `;
 
-        const response = await ai.models.generateContent({
-          model: 'gemini-3.6-flash',
-          contents: prompt,
-          config: {
-            responseMimeType: "application/json",
-            responseSchema: {
-              type: Type.OBJECT,
-              properties: {
-                products: {
-                  type: Type.ARRAY,
-                  items: {
-                    type: Type.OBJECT,
-                    properties: {
-                      name: { type: Type.STRING },
-                      category: { type: Type.STRING },
-                      price: { type: Type.NUMBER },
-                      originalPrice: { type: Type.NUMBER },
-                      description: { type: Type.STRING },
-                      keyFeatures: { type: Type.ARRAY, items: { type: Type.STRING } },
-                      idealFor: { type: Type.STRING },
-                      usageInstructions: { type: Type.STRING },
-                      inStock: { type: Type.BOOLEAN }
-                    },
-                    required: ["name", "category", "price", "description", "keyFeatures"]
-                  }
+        const extractConfig = {
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              products: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    name: { type: Type.STRING },
+                    category: { type: Type.STRING },
+                    price: { type: Type.NUMBER },
+                    originalPrice: { type: Type.NUMBER },
+                    description: { type: Type.STRING },
+                    keyFeatures: { type: Type.ARRAY, items: { type: Type.STRING } },
+                    idealFor: { type: Type.STRING },
+                    usageInstructions: { type: Type.STRING },
+                    inStock: { type: Type.BOOLEAN }
+                  },
+                  required: ["name", "category", "price", "description", "keyFeatures"]
                 }
-              },
-              required: ["products"]
-            }
+              }
+            },
+            required: ["products"]
           }
-        });
+        };
 
-        if (response.text) {
-          const parsed = JSON.parse(response.text);
-          if (Array.isArray(parsed.products) && parsed.products.length > 0) {
-            extractedProducts = parsed.products;
+        // Thử lần lượt nhiều model để không phụ thuộc vào một tên model duy nhất
+        // (nếu tên model không khả dụng thì tự động chuyển sang model dự phòng).
+        const extractModels = Array.from(new Set(['gemini-3.6-flash', 'gemini-2.5-flash', 'gemini-flash-latest']));
+        for (const em of extractModels) {
+          try {
+            const response = await ai.models.generateContent({
+              model: em,
+              contents: prompt,
+              config: extractConfig
+            });
+            if (response.text) {
+              const parsed = JSON.parse(response.text);
+              if (Array.isArray(parsed.products) && parsed.products.length > 0) {
+                extractedProducts = parsed.products;
+                break;
+              }
+            }
+          } catch (modelErr: any) {
+            console.warn(`[Product Extractor] Model ${em} failed:`, modelErr?.message || String(modelErr));
           }
         }
       } catch (geminiError) {
@@ -932,7 +1059,7 @@ Yêu cầu trả về JSON chuẩn xác:
 });
 
 // Main AI Support Chat Endpoint
-app.post("/api/chat", async (req, res) => {
+app.post("/api/chat", rateLimit(30, 60000), async (req, res) => {
   try {
     const {
       message,
@@ -1320,11 +1447,20 @@ YÊU CẦU ĐỊNH DẠNG ĐẦU RA:
 
       const claudeMessages: any[] = [];
       if (Array.isArray(history) && history.length > 0) {
+        // Anthropic yêu cầu tin nhắn ĐẦU TIÊN phải có role 'user' và các role phải xen kẽ.
+        // Bỏ qua lời chào mở đầu của agent, và tránh hai tin cùng role liên tiếp.
+        let userStarted = false;
         for (const msg of history.slice(-10)) {
-          claudeMessages.push({
-            role: msg.sender === 'user' ? 'user' : 'assistant',
-            content: msg.text || ""
-          });
+          if (msg.sender === 'user') userStarted = true;
+          if (!userStarted) continue; // Bỏ tin chào của agent ở đầu lịch sử
+          const role = msg.sender === 'user' ? 'user' : 'assistant';
+          const prev = claudeMessages[claudeMessages.length - 1];
+          if (prev && prev.role === role) {
+            // Gộp nội dung nếu trùng role liên tiếp để giữ tính xen kẽ
+            prev.content = `${prev.content}\n${msg.text || ''}`.trim();
+          } else {
+            claudeMessages.push({ role, content: msg.text || "" });
+          }
         }
       }
 
@@ -1452,6 +1588,17 @@ app.get("/api/config", (req, res) => {
 });
 
 app.post("/api/config", (req, res) => {
+  // Bảo vệ ghi cấu hình (tùy chọn): nếu đặt biến môi trường ADMIN_TOKEN thì mọi request
+  // ghi /api/config phải gửi header 'x-admin-token' khớp. Nếu KHÔNG đặt ADMIN_TOKEN,
+  // endpoint mở như cũ (tương thích ngược) — khuyến nghị đặt token khi chạy production.
+  const adminToken = process.env.ADMIN_TOKEN;
+  if (adminToken) {
+    const provided = req.headers['x-admin-token'];
+    if (provided !== adminToken) {
+      res.status(401).json({ success: false, error: 'Không có quyền cập nhật cấu hình (thiếu hoặc sai x-admin-token).' });
+      return;
+    }
+  }
   if (req.body?.agentConfig) {
     serverAgentConfig = { ...(serverAgentConfig || {}), ...req.body.agentConfig };
   }
@@ -1479,7 +1626,7 @@ app.get("/api/widget.js", (req, res) => {
   const host = req.get('host') || 'localhost:3000';
   const protocol = req.protocol || 'http';
   const baseUrl = `${protocol}://${host}`;
-  const launcherText = serverWidgetSettings.buttonText || 'Hỏi Trợ Lý AI';
+  const launcherText = serverWidgetSettings?.buttonText || 'Hỏi Trợ Lý AI';
 
   const jsCode = `
 (function() {

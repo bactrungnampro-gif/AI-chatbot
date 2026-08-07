@@ -20,7 +20,7 @@ export const ConversationHistory: React.FC<ConversationHistoryProps> = ({ messag
   const [searchTerm, setSearchTerm] = useState('');
 
   const filtered = messages.filter((m) =>
-    m.text.toLowerCase().includes(searchTerm.toLowerCase())
+    (m.text || '').toLowerCase().includes(searchTerm.toLowerCase())
   );
 
   const totalUserMessages = messages.filter((m) => m.sender === 'user').length;
@@ -110,7 +110,7 @@ export const ConversationHistory: React.FC<ConversationHistoryProps> = ({ messag
                     </span>
                   </div>
 
-                  <p className="text-slate-700 leading-relaxed whitespace-pre-wrap">{msg.text}</p>
+                  <p className="text-slate-700 leading-relaxed whitespace-pre-wrap">{msg.text || ''}</p>
 
                   {msg.clarificationAsked && (
                     <span className="inline-flex items-center gap-1 text-[10px] text-amber-700 bg-amber-50 px-2 py-0.5 rounded font-medium mt-1">

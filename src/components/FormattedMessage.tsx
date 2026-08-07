@@ -6,6 +6,21 @@ interface FormattedMessageProps {
   isAgent?: boolean;
 }
 
+// Chỉ cho phép các scheme URL an toàn để tránh XSS (javascript:, data:, vbscript:, ...)
+const isSafeUrl = (url: string): boolean => {
+  if (!url) return false;
+  const trimmed = url.trim();
+  // Cho phép link tương đối và neo trong trang
+  if (trimmed.startsWith('/') || trimmed.startsWith('#')) return true;
+  try {
+    // new URL cần base cho link tương đối; ở đây link đã là tuyệt đối hoặc đã xử lý ở trên
+    const parsed = new URL(trimmed, 'https://placeholder.local');
+    return ['http:', 'https:', 'mailto:', 'tel:'].includes(parsed.protocol);
+  } catch {
+    return false;
+  }
+};
+
 export const FormattedMessage: React.FC<FormattedMessageProps> = ({ content }) => {
   const [selectedImage, setSelectedImage] = useState<{ src: string; alt: string } | null>(null);
 
@@ -31,8 +46,10 @@ export const FormattedMessage: React.FC<FormattedMessageProps> = ({ content }) =
 
         // Check if URL is a Google Drive or Google Sheet link (blocked as per requirement)
         const isGoogleDriveOrSheet = linkUrl.includes('docs.google.com') || linkUrl.includes('drive.google.com');
+        // Chặn các URL không an toàn (javascript:, data:, ...) để tránh XSS
+        const safeLink = isSafeUrl(linkUrl);
 
-        if (!isGoogleDriveOrSheet) {
+        if (!isGoogleDriveOrSheet && safeLink) {
           parts.push(
             <a
               key={`link_${matchIndex}`}
@@ -76,6 +93,12 @@ export const FormattedMessage: React.FC<FormattedMessageProps> = ({ content }) =
             </div>
           );
         }
+      }
+
+      // Bỏ qua ảnh có URL không an toàn (chống XSS qua data:/javascript:)
+      if (!isSafeUrl(imgUrl)) {
+        lastIndex = matchIndex + fullMatch.length;
+        continue;
       }
 
       blocks.push(
