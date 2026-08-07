@@ -1120,22 +1120,23 @@ YÊU CẦU ĐỊNH DẠNG ĐẦU RA:
 
     // Auto-normalize Gemini model names to valid production models
     if (provider === 'google') {
-      if (!selectedModel || selectedModel.includes('1.5') || selectedModel.includes('2.0') || selectedModel.includes('2.5')) {
-        selectedModel = 'gemini-3.6-flash';
+      if (!selectedModel || selectedModel.includes('3.6') || selectedModel.includes('3.1') || selectedModel.includes('1.5')) {
+        selectedModel = 'gemini-2.5-flash';
       }
     }
     const customApiKey = agentConfig?.customApiKey;
     const customApiEndpoint = agentConfig?.customApiEndpoint;
     const temperature = typeof agentConfig?.temperature === 'number' ? agentConfig.temperature : 0.7;
 
-    console.log(`[AI Engine] Provider: ${provider}, Model: ${selectedModel}, Temp: ${temperature}, CustomKey: ${customApiKey ? 'YES' : 'NO'}`);
+    const trimmedCustomKey = customApiKey ? customApiKey.trim() : '';
+    console.log(`[AI Engine] Provider: ${provider}, Model: ${selectedModel}, Temp: ${temperature}, CustomKey: ${trimmedCustomKey ? 'YES' : 'NO'}`);
 
     let responseText = "";
 
     if (provider === 'google') {
-      // Use Google Gemini SDK
-      const googleClient = (customApiKey && customApiKey.trim()) 
-        ? new GoogleGenAI({ apiKey: customApiKey.trim() }) 
+      // Use Google Gemini SDK with custom API key or default server key
+      const googleClient = trimmedCustomKey 
+        ? new GoogleGenAI({ apiKey: trimmedCustomKey }) 
         : ai;
 
       const contents: any[] = [];
@@ -1179,8 +1180,8 @@ YÊU CẦU ĐỊNH DẠNG ĐẦU RA:
         parts: currentParts
       });
 
-      // Try model cascade sequence with valid Gemini models
-      const modelsToTry = Array.from(new Set([selectedModel, 'gemini-3.6-flash', 'gemini-3.1-flash-lite', 'gemini-flash-latest']));
+      // Try model cascade sequence with valid official Gemini model aliases
+      const modelsToTry = Array.from(new Set([selectedModel, 'gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.0-flash']));
       let geminiSuccess = false;
       let lastGeminiErr: any = null;
 
@@ -1209,11 +1210,11 @@ YÊU CẦU ĐỊNH DẠNG ĐẦU RA:
 
       if (!geminiSuccess) {
         const errStr = lastGeminiErr?.message || String(lastGeminiErr);
-        const isCustomKeyUsed = Boolean(customApiKey && customApiKey.trim());
+        const isCustomKeyUsed = Boolean(trimmedCustomKey);
 
         if (errStr.includes("429") || errStr.includes("RESOURCE_EXHAUSTED") || errStr.includes("Quota exceeded") || errStr.includes("quota")) {
           if (isCustomKeyUsed) {
-            throw new Error(`API Key cá nhân bạn vừa nhập đã chạm giới hạn lượt gọi miễn phí của Google (Rate Limit 429 / Quota Exhausted). Vui lòng đợi 1-2 phút rồi thử lại, hoặc chọn model 'Gemini 3.1 Flash Lite' / đổi sang nhà cung cấp DeepSeek / OpenAI.`);
+            throw new Error(`API Key cá nhân bạn vừa nhập đã chạm giới hạn lượt gọi miễn phí của Google (Rate Limit 429 / Quota Exhausted). Vui lòng đợi 1-2 phút rồi thử lại, hoặc đổi sang nhà cung cấp DeepSeek / OpenAI trong mục Cấu Hình Agent.`);
           } else {
             throw new Error("Tài khoản đã đạt giới hạn gọi API miễn phí chung của hệ thống (Rate Limit 429). Vui lòng nhập API Key cá nhân trong phần 'Cấu Hình Agent' (lấy miễn phí tại Google AI Studio) hoặc đổi sang mô hình khác (OpenAI, DeepSeek, Claude) để không bị gián đoạn.");
           }
