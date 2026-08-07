@@ -14,6 +14,17 @@ const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
+// Enable CORS for embeddable widgets across external domains
+app.use((req, res, next) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, PUT, DELETE');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
+  next();
+});
+
 // Initialize Gemini Client
 const getGeminiAI = () => {
   const apiKey = process.env.GEMINI_API_KEY;
@@ -1118,10 +1129,10 @@ YÊU CẦU ĐỊNH DẠNG ĐẦU RA:
       provider === 'deepseek' ? 'deepseek-chat' : 'llama3.2'
     );
 
-    // Auto-normalize Gemini model names to valid production models
+    // Auto-normalize Gemini model names
     if (provider === 'google') {
-      if (!selectedModel || selectedModel.includes('3.6') || selectedModel.includes('3.1') || selectedModel.includes('1.5')) {
-        selectedModel = 'gemini-2.5-flash';
+      if (!selectedModel) {
+        selectedModel = 'gemini-3.6-flash';
       }
     }
     const customApiKey = agentConfig?.customApiKey;
@@ -1181,7 +1192,7 @@ YÊU CẦU ĐỊNH DẠNG ĐẦU RA:
       });
 
       // Try model cascade sequence with valid official Gemini model aliases
-      const modelsToTry = Array.from(new Set([selectedModel, 'gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.0-flash']));
+      const modelsToTry = Array.from(new Set([selectedModel, 'gemini-3.6-flash', 'gemini-2.5-flash', 'gemini-flash-latest', 'gemini-3.1-flash-lite']));
       let geminiSuccess = false;
       let lastGeminiErr: any = null;
 

@@ -18,6 +18,8 @@ export interface AgentConfig {
   selectedModel?: string;
   customApiKey?: string;
   customApiEndpoint?: string;
+  providerApiKeys?: Record<string, string>;
+  providerEndpoints?: Record<string, string>;
   temperature?: number;
 }
 

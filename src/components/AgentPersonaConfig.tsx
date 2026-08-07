@@ -49,9 +49,45 @@ export const AgentPersonaConfig: React.FC<AgentPersonaConfigProps> = ({
   const [savedSuccess, setSavedSuccess] = useState(false);
   const [showApiKey, setShowApiKey] = useState(false);
 
+  const handleSelectProvider = (newProvider: AIProvider) => {
+    const provConfig = providersList.find((p) => p.id === newProvider) || providersList[0];
+    const currentProv = formData.selectedProvider || 'google';
+
+    const updatedKeys = {
+      ...(formData.providerApiKeys || {}),
+      [currentProv]: formData.customApiKey || '',
+    };
+    const updatedEndpoints = {
+      ...(formData.providerEndpoints || {}),
+      [currentProv]: formData.customApiEndpoint || '',
+    };
+
+    setFormData({
+      ...formData,
+      selectedProvider: newProvider,
+      selectedModel: provConfig.defaultModel,
+      customApiKey: updatedKeys[newProvider] || '',
+      customApiEndpoint: updatedEndpoints[newProvider] || '',
+      providerApiKeys: updatedKeys,
+      providerEndpoints: updatedEndpoints,
+    });
+  };
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    setAgentConfig(formData);
+    const currentProv = formData.selectedProvider || 'google';
+    const finalData = {
+      ...formData,
+      providerApiKeys: {
+        ...(formData.providerApiKeys || {}),
+        [currentProv]: formData.customApiKey || '',
+      },
+      providerEndpoints: {
+        ...(formData.providerEndpoints || {}),
+        [currentProv]: formData.customApiEndpoint || '',
+      },
+    };
+    setAgentConfig(finalData);
     setSavedSuccess(true);
     setTimeout(() => setSavedSuccess(false), 3000);
   };
@@ -73,11 +109,13 @@ export const AgentPersonaConfig: React.FC<AgentPersonaConfigProps> = ({
       description: 'Hệ sinh thái Gemini AI chính thức từ Google. Hỗ trợ đa phương tiện (Hình ảnh, Video, Tài liệu).',
       badge: 'Mặc định Server',
       badgeColor: 'bg-blue-100 text-blue-700 border-blue-200',
-      defaultModel: 'gemini-2.5-flash',
+      defaultModel: 'gemini-3.6-flash',
       models: [
-        { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash', tag: 'Khuyên Dùng', desc: 'Tốc độ siêu nhanh, phản hồi tức thì, xử lý ảnh & tài liệu xuất sắc' },
-        { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro', tag: 'Chuyên Sâu', desc: 'Khả năng suy luận tư duy đỉnh cao, giải quyết nghiệp vụ phức tạp' },
-        { id: 'gemini-2.0-flash', name: 'Gemini 2.0 Flash', tag: 'Gọn Nhẹ', desc: 'Mô hình tốc độ cao, tối ưu quota lượt gọi' },
+        { id: 'gemini-3.6-flash', name: 'Gemini 3.6 Flash', tag: 'Khuyên Dùng', desc: 'Tốc độ siêu nhanh, phản hồi tức thì, xử lý ảnh & tài liệu xuất sắc' },
+        { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash', tag: 'Phổ Biến', desc: 'Mô hình Gemini 2.5 Flash ổn định và nhanh chóng' },
+        { id: 'gemini-flash-latest', name: 'Gemini Flash Latest', tag: 'Mới Nhất', desc: 'Phiên bản Gemini Flash mới nhất, tự động nâng cấp' },
+        { id: 'gemini-3.1-flash-lite', name: 'Gemini 3.1 Flash Lite', tag: 'Tiết Kiệm Quota', desc: 'Mô hình siêu nhẹ, tiết kiệm quota lượt gọi miễn phí' },
+        { id: 'gemini-3.1-pro-preview', name: 'Gemini 3.1 Pro', tag: 'Chuyên Sâu', desc: 'Khả năng suy luận tư duy đỉnh cao, giải quyết nghiệp vụ phức tạp' },
       ],
     },
     {
@@ -226,13 +264,7 @@ export const AgentPersonaConfig: React.FC<AgentPersonaConfigProps> = ({
                   <button
                     key={provider.id}
                     type="button"
-                    onClick={() => {
-                      setFormData({
-                        ...formData,
-                        selectedProvider: provider.id,
-                        selectedModel: provider.defaultModel,
-                      });
-                    }}
+                    onClick={() => handleSelectProvider(provider.id)}
                     className={`p-3 rounded-xl border text-left transition-all relative flex flex-col justify-between ${
                       isSelected
                         ? 'bg-indigo-50/80 border-indigo-500 ring-2 ring-indigo-500/20 shadow-xs'
@@ -327,7 +359,18 @@ export const AgentPersonaConfig: React.FC<AgentPersonaConfigProps> = ({
                 <input
                   type={showApiKey ? "text" : "password"}
                   value={formData.customApiKey || ''}
-                  onChange={(e) => setFormData({ ...formData, customApiKey: e.target.value })}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    const currentProv = formData.selectedProvider || 'google';
+                    setFormData({
+                      ...formData,
+                      customApiKey: val,
+                      providerApiKeys: {
+                        ...(formData.providerApiKeys || {}),
+                        [currentProv]: val,
+                      },
+                    });
+                  }}
                   placeholder={
                     formData.selectedProvider === 'google' 
                       ? 'Để trống để dùng Key mặc định của Server' 
@@ -344,7 +387,7 @@ export const AgentPersonaConfig: React.FC<AgentPersonaConfigProps> = ({
                 </button>
               </div>
               <p className="text-[10px] text-slate-400 mt-1 flex items-center justify-between flex-wrap gap-1">
-                <span>API Key được lưu bảo mật trong trình duyệt và gửi mã hoá tới server.</span>
+                <span>API Key được tự động lưu cho từng nhà cung cấp trên trình duyệt của bạn.</span>
                 {formData.selectedProvider === 'google' && (
                   <a
                     href="https://aistudio.google.com/app/apikey"
@@ -353,6 +396,26 @@ export const AgentPersonaConfig: React.FC<AgentPersonaConfigProps> = ({
                     className="text-indigo-600 hover:underline font-medium inline-flex items-center gap-0.5"
                   >
                     <span>Lấy Gemini Key Miễn Phí (Google AI Studio) ↗</span>
+                  </a>
+                )}
+                {formData.selectedProvider === 'openai' && (
+                  <a
+                    href="https://platform.openai.com/api-keys"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-indigo-600 hover:underline font-medium inline-flex items-center gap-0.5"
+                  >
+                    <span>Lấy API Key trên OpenAI Platform ↗</span>
+                  </a>
+                )}
+                {formData.selectedProvider === 'deepseek' && (
+                  <a
+                    href="https://platform.deepseek.com/api_keys"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-indigo-600 hover:underline font-medium inline-flex items-center gap-0.5"
+                  >
+                    <span>Lấy API Key trên DeepSeek Platform ↗</span>
                   </a>
                 )}
                 {formData.selectedProvider === 'anthropic' && (
@@ -376,7 +439,18 @@ export const AgentPersonaConfig: React.FC<AgentPersonaConfigProps> = ({
               <input
                 type="text"
                 value={formData.customApiEndpoint || ''}
-                onChange={(e) => setFormData({ ...formData, customApiEndpoint: e.target.value })}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  const currentProv = formData.selectedProvider || 'google';
+                  setFormData({
+                    ...formData,
+                    customApiEndpoint: val,
+                    providerEndpoints: {
+                      ...(formData.providerEndpoints || {}),
+                      [currentProv]: val,
+                    },
+                  });
+                }}
                 placeholder={
                   formData.selectedProvider === 'custom_openai'
                     ? 'https://my-local-llm.ngrok-free.app/v1 hoặc http://localhost:11434/v1'

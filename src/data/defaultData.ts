@@ -14,9 +14,11 @@ export const defaultAgentConfig: AgentConfig = {
   clarificationStyle: 'polite',
   primaryLanguage: 'Vietnamese',
   selectedProvider: 'google',
-  selectedModel: 'gemini-2.5-flash',
+  selectedModel: 'gemini-3.6-flash',
   customApiKey: '',
   customApiEndpoint: '',
+  providerApiKeys: {},
+  providerEndpoints: {},
   temperature: 0.7,
 };
 

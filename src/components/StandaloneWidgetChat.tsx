@@ -255,7 +255,7 @@ export const StandaloneWidgetChat: React.FC<StandaloneWidgetChatProps> = ({
           {avatarUrl ? (
             <img
               src={avatarUrl}
-              alt={agentName}
+              alt={agentDisplayName}
               className="w-9 h-9 rounded-full object-cover ring-2 ring-white/30 shrink-0"
             />
           ) : (
@@ -310,7 +310,7 @@ export const StandaloneWidgetChat: React.FC<StandaloneWidgetChatProps> = ({
               avatarUrl ? (
                 <img
                   src={avatarUrl}
-                  alt={agentName}
+                  alt={agentDisplayName}
                   className="w-7 h-7 rounded-full object-cover mt-0.5 shadow-xs shrink-0 ring-1 ring-slate-200"
                 />
               ) : (
