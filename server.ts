@@ -2048,7 +2048,42 @@ app.post("/api/auth/google/logout", (req, res) => {
   res.json({ success: true, message: "Đã ngắt kết nối tài khoản Google OAuth 2.0" });
 });
 
-// 5. List Files in Google Drive
+// Helper to extract text content from a Google Drive file
+async function extractTextFromDriveFile(fileId: string, mimeType: string, accessToken: string): Promise<string> {
+  let extractedText = "";
+  if (mimeType === 'application/vnd.google-apps.document') {
+    const exportUrl = `https://www.googleapis.com/drive/v3/files/${fileId}/export?mimeType=text/plain`;
+    const docRes = await fetch(exportUrl, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    extractedText = await docRes.text();
+  } else if (mimeType === 'application/vnd.google-apps.spreadsheet') {
+    const exportUrl = `https://www.googleapis.com/drive/v3/files/${fileId}/export?mimeType=text/csv`;
+    const sheetRes = await fetch(exportUrl, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    extractedText = await sheetRes.text();
+  } else {
+    const downloadUrl = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media&supportsAllDrives=true`;
+    const fileRes = await fetch(downloadUrl, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+
+    if (mimeType === 'application/pdf') {
+      const arrayBuf = await fileRes.arrayBuffer();
+      const buffer = Buffer.from(arrayBuf);
+      const parser = new PDFParse({ data: buffer });
+      const pdfData = await parser.getText();
+      extractedText = pdfData.text || '';
+      await parser.destroy();
+    } else {
+      extractedText = await fileRes.text();
+    }
+  }
+  return extractedText ? extractedText.trim() : "";
+}
+
+// 5. List Files & Folders in Google Drive (including Shared Drives & Shared with Me)
 app.get("/api/google/drive/files", async (req, res) => {
   try {
     const accessToken = await getValidGoogleAccessToken();
@@ -2056,8 +2091,15 @@ app.get("/api/google/drive/files", async (req, res) => {
       return res.status(401).json({ error: "Chưa kết nối hoặc hết hạn phiên Google OAuth 2.0." });
     }
 
-    const query = encodeURIComponent("trashed = false and (mimeType = 'application/vnd.google-apps.document' or mimeType = 'application/vnd.google-apps.spreadsheet' or mimeType = 'application/pdf' or mimeType = 'text/plain')");
-    const url = `https://www.googleapis.com/drive/v3/files?pageSize=50&q=${query}&fields=files(id,name,mimeType,modifiedTime,size,iconLink,webViewLink)`;
+    const folderId = req.query.folderId as string;
+    let query = "trashed = false and (mimeType = 'application/vnd.google-apps.folder' or mimeType = 'application/vnd.google-apps.document' or mimeType = 'application/vnd.google-apps.spreadsheet' or mimeType = 'application/pdf' or mimeType = 'text/plain')";
+    
+    if (folderId && folderId.trim()) {
+      const cleanId = folderId.replace(/.*folders\//, '').replace(/\?.*/, '').trim();
+      query = `'${cleanId}' in parents and trashed = false`;
+    }
+
+    const url = `https://www.googleapis.com/drive/v3/files?pageSize=100&q=${encodeURIComponent(query)}&supportsAllDrives=true&includeItemsFromAllDrives=true&fields=files(id,name,mimeType,modifiedTime,size,iconLink,webViewLink,shared,parents)`;
 
     const driveRes = await fetch(url, {
       headers: { Authorization: `Bearer ${accessToken}` },
@@ -2087,39 +2129,9 @@ app.post("/api/google/drive/import", async (req, res) => {
       return res.status(401).json({ error: "Chưa kết nối tài khoản Google OAuth 2.0" });
     }
 
-    let extractedText = "";
+    const extractedText = await extractTextFromDriveFile(fileId, mimeType, accessToken);
 
-    if (mimeType === 'application/vnd.google-apps.document') {
-      const exportUrl = `https://www.googleapis.com/drive/v3/files/${fileId}/export?mimeType=text/plain`;
-      const docRes = await fetch(exportUrl, {
-        headers: { Authorization: `Bearer ${accessToken}` },
-      });
-      extractedText = await docRes.text();
-    } else if (mimeType === 'application/vnd.google-apps.spreadsheet') {
-      const exportUrl = `https://www.googleapis.com/drive/v3/files/${fileId}/export?mimeType=text/csv`;
-      const sheetRes = await fetch(exportUrl, {
-        headers: { Authorization: `Bearer ${accessToken}` },
-      });
-      extractedText = await sheetRes.text();
-    } else {
-      const downloadUrl = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`;
-      const fileRes = await fetch(downloadUrl, {
-        headers: { Authorization: `Bearer ${accessToken}` },
-      });
-
-      if (mimeType === 'application/pdf') {
-        const arrayBuf = await fileRes.arrayBuffer();
-        const buffer = Buffer.from(arrayBuf);
-        const parser = new PDFParse({ data: buffer });
-        const pdfData = await parser.getText();
-        extractedText = pdfData.text || '';
-        await parser.destroy();
-      } else {
-        extractedText = await fileRes.text();
-      }
-    }
-
-    if (!extractedText || !extractedText.trim()) {
+    if (!extractedText) {
       return res.status(400).json({ error: "Tệp không chứa nội dung văn bản có thể trích xuất." });
     }
 
@@ -2129,8 +2141,8 @@ app.post("/api/google/drive/import", async (req, res) => {
     const newKnowledge: any = {
       id: sourceId,
       title: title,
-      type: 'drive' as any,
-      content: extractedText.trim(),
+      type: 'google_drive' as any,
+      content: extractedText,
       url: `https://drive.google.com/file/d/${fileId}/view`,
       status: 'active',
       itemCount: 1,
@@ -2147,6 +2159,86 @@ app.post("/api/google/drive/import", async (req, res) => {
     });
   } catch (e: any) {
     res.status(500).json({ error: e.message || "Lỗi nạp tệp từ Google Drive" });
+  }
+});
+
+// 7. Import Entire Google Drive Folder (including Shared Folders)
+app.post("/api/google/drive/folder/import", async (req, res) => {
+  try {
+    let { folderIdUrl, folderName } = req.body;
+    if (!folderIdUrl || !folderIdUrl.trim()) {
+      return res.status(400).json({ error: "Thiếu đường dẫn hoặc ID Thư mục Google Drive" });
+    }
+
+    const accessToken = await getValidGoogleAccessToken();
+    if (!accessToken) {
+      return res.status(401).json({ error: "Chưa kết nối tài khoản Google OAuth 2.0" });
+    }
+
+    // Extract raw folderId if full URL is passed (e.g. https://drive.google.com/drive/folders/1XYZ...)
+    let cleanFolderId = folderIdUrl.trim();
+    const match = cleanFolderId.match(/folders\/([a-zA-Z0-9_-]+)/);
+    if (match && match[1]) {
+      cleanFolderId = match[1];
+    }
+
+    // Recursive helper to fetch all items in folder
+    const processedFiles: any[] = [];
+    
+    async function scanFolder(currentFolderId: string, depth = 0) {
+      if (depth > 3) return; // limit depth to prevent infinite loops
+
+      const query = encodeURIComponent(`'${currentFolderId}' in parents and trashed = false`);
+      const url = `https://www.googleapis.com/drive/v3/files?pageSize=100&q=${query}&supportsAllDrives=true&includeItemsFromAllDrives=true&fields=files(id,name,mimeType)`;
+
+      const listRes = await fetch(url, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      const listData = await listRes.json();
+      const files = listData.files || [];
+
+      for (const item of files) {
+        if (item.mimeType === 'application/vnd.google-apps.folder') {
+          await scanFolder(item.id, depth + 1);
+        } else {
+          try {
+            const text = await extractTextFromDriveFile(item.id, item.mimeType, accessToken);
+            if (text && text.trim()) {
+              const newSource: any = {
+                id: `drive-${item.id}-${Date.now()}`,
+                title: item.name || `Tệp ${item.id}`,
+                type: 'google_drive',
+                content: text,
+                url: `https://drive.google.com/file/d/${item.id}/view`,
+                status: 'active',
+                lastUpdated: new Date().toISOString(),
+              };
+              serverKnowledgeSources.push(newSource);
+              processedFiles.push(newSource);
+            }
+          } catch (err) {
+            console.warn(`[Drive Folder Import] Skip unreadable file ${item.name}:`, err);
+          }
+        }
+      }
+    }
+
+    await scanFolder(cleanFolderId, 0);
+
+    if (processedFiles.length === 0) {
+      return res.status(400).json({ error: "Thư mục rỗng hoặc không tìm thấy tệp văn bản/PDF/Doc/Sheet có thể đọc được." });
+    }
+
+    saveServerStore();
+
+    res.json({
+      success: true,
+      importedCount: processedFiles.length,
+      importedSources: processedFiles,
+      message: `🎉 Đã nạp thành công ${processedFiles.length} tệp từ Thư mục Google Drive!`
+    });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message || "Lỗi xử lý nạp Thư mục Google Drive" });
   }
 });
 

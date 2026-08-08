@@ -69,6 +69,8 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
 
   // Google Drive & OAuth 2.0 Integration State
   const [driveUrl, setDriveUrl] = useState('');
+  const [folderUrlInput, setFolderUrlInput] = useState('');
+  const [isImportingFolder, setIsImportingFolder] = useState(false);
   const [isFetchingDrive, setIsFetchingDrive] = useState(false);
   const [googleUser, setGoogleUser] = useState<{ email: string; name: string; picture?: string } | null>(null);
   const [isGoogleConnected, setIsGoogleConnected] = useState(false);
@@ -192,6 +194,51 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
       setScrapeError("Lỗi kết nối khi nạp tệp Drive: " + e.message);
     } finally {
       setImportingDriveFileId(null);
+    }
+  };
+
+  // Import Entire Google Drive Folder / Shared Folder
+  const handleImportDriveFolder = async (folderIdUrlParam?: string, folderNameParam?: string) => {
+    const targetFolder = folderIdUrlParam || folderUrlInput;
+    if (!targetFolder || !targetFolder.trim()) return;
+
+    setIsImportingFolder(true);
+    setScrapeError(null);
+    setScrapeSuccess(null);
+
+    try {
+      const res = await fetch('/api/google/drive/folder/import', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          folderIdUrl: targetFolder.trim(),
+          folderName: folderNameParam
+        }),
+      });
+      const data = await res.json();
+      if (data.success && Array.isArray(data.importedSources)) {
+        const newSources: KnowledgeSource[] = data.importedSources.map((s: any) => ({
+          id: s.id,
+          title: s.title,
+          type: 'google_drive',
+          url: s.url,
+          content: s.content,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          active: true,
+          wordCount: s.content.split(/\s+/).length,
+        }));
+
+        setKnowledgeSources((prev) => [...newSources, ...prev]);
+        setScrapeSuccess(data.message || `🎉 Đã nạp thành công toàn bộ ${newSources.length} tệp từ Thư mục Google Drive vào Tri thức AI!`);
+        setFolderUrlInput('');
+      } else {
+        setScrapeError(data.error || "Không thể trích xuất tệp từ Thư mục Google Drive.");
+      }
+    } catch (e: any) {
+      setScrapeError("Lỗi khi nạp Thư mục Drive: " + e.message);
+    } finally {
+      setIsImportingFolder(false);
     }
   };
 
@@ -462,25 +509,35 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
     }
   };
 
-  // Handle Direct Document/PDF File Upload
+  // Handle Direct Document/PDF Multi-File Upload
   const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
+    const files = Array.from(event.target.files || []);
+    if (files.length === 0) return;
 
     setIsUploadingFile(true);
     setScrapeError(null);
     setScrapeSuccess(null);
     setExtractedNotice(null);
-    setUploadedFileName(file.name);
+
+    let successCount = 0;
+    const newSources: KnowledgeSource[] = [];
 
     try {
-      const reader = new FileReader();
-      reader.onload = async (e) => {
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i] as File;
+        setUploadedFileName(`[Tệp ${i + 1}/${files.length}] ${file.name}`);
+
         try {
-          const base64Data = (e.target?.result as string)?.split(',')[1];
-          if (!base64Data) {
-            throw new Error('Không thể đọc tập tin dưới dạng mã Base64.');
-          }
+          const base64Data = await new Promise<string>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = (e) => {
+              const res = (e.target?.result as string)?.split(',')[1];
+              if (res) resolve(res);
+              else reject(new Error('Lỗi đọc dữ liệu Base64'));
+            };
+            reader.onerror = () => reject(new Error('Lỗi đọc tập tin từ thiết bị'));
+            reader.readAsDataURL(file);
+          });
 
           const data = await safeFetchJson('/api/knowledge/upload-file', {
             method: 'POST',
@@ -494,7 +551,7 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
 
           if (data.success && data.content) {
             const newSource: KnowledgeSource = {
-              id: `kb_file_${Date.now()}`,
+              id: `kb_file_${Date.now()}_${i}`,
               title: data.title || `Tài liệu: ${file.name}`,
               type: 'document',
               url: undefined,
@@ -504,31 +561,27 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
               active: true,
               wordCount: data.wordCount || 0,
             };
-
-            setKnowledgeSources((prev) => [newSource, ...prev]);
-            setScrapeSuccess(`🎉 Đã nạp thành công tài liệu "${file.name}" (~${data.wordCount} từ) vào Tri thức Agent AI!`);
+            newSources.push(newSource);
+            successCount++;
 
             if (setProducts) {
               handleExtractProducts(newSource);
             }
-          } else {
-            setScrapeError(data.error || 'Không thể trích xuất nội dung từ tệp tin này.');
           }
-        } catch (err: any) {
-          setScrapeError('Lỗi xử lý tệp: ' + (err.message || String(err)));
-        } finally {
-          setIsUploadingFile(false);
-          event.target.value = '';
+        } catch (fileErr: any) {
+          console.error(`Lỗi trích xuất tệp ${file.name}:`, fileErr);
         }
-      };
-      reader.onerror = () => {
-        setScrapeError('Không thể đọc tập tin từ thiết bị.');
-        setIsUploadingFile(false);
-        event.target.value = '';
-      };
-      reader.readAsDataURL(file);
+      }
+
+      if (newSources.length > 0) {
+        setKnowledgeSources((prev) => [...newSources, ...prev]);
+        setScrapeSuccess(`🎉 Đã nạp thành công ${successCount}/${files.length} tệp tin vào Tri thức Agent AI!`);
+      } else {
+        setScrapeError('Không thể trích xuất nội dung từ các tệp đã chọn.');
+      }
     } catch (err: any) {
       setScrapeError('Lỗi tải tệp tin: ' + (err.message || String(err)));
+    } finally {
       setIsUploadingFile(false);
       event.target.value = '';
     }
@@ -718,6 +771,7 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
             <div className="bg-slate-800/90 border-2 border-dashed border-amber-500/40 rounded-2xl p-6 sm:p-8 text-center hover:border-amber-400/80 transition-all group relative overflow-hidden">
               <input
                 type="file"
+                multiple
                 accept=".pdf,.docx,.doc,.txt,.csv,.md,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,text/csv"
                 onChange={handleFileUpload}
                 disabled={isUploadingFile}
@@ -735,10 +789,10 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
 
                 <div>
                   <h3 className="font-bold text-slate-100 text-sm sm:text-base mb-1">
-                    {isUploadingFile ? `Đang xử lý và bóc tách dữ liệu tệp ${uploadedFileName}...` : 'Nhấp hoặc Kéo thả tệp tin PDF/Word/CSV vào đây'}
+                    {isUploadingFile ? `Đang xử lý và bóc tách dữ liệu tệp ${uploadedFileName}...` : 'Nhấp hoặc Kéo thả NHIỀU TỆP TIN (PDF, Word, CSV, TXT) vào đây'}
                   </h3>
                   <p className="text-xs text-slate-400 max-w-md mx-auto">
-                    Định dạng hỗ trợ: PDF (.pdf), Word (.docx, .doc), Text (.txt, .csv, .md). Kích thước tối đa 20MB.
+                    Hỗ trợ chọn hoặc kéo thả <b>nhiều tệp cùng lúc (Multi-file upload)</b>: PDF (.pdf), Word (.docx), CSV (.csv), Text (.txt, .md).
                   </p>
                 </div>
 
@@ -1055,9 +1109,9 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
                     <div className="flex items-center justify-between mb-3">
                       <h3 className="text-sm font-bold text-slate-200 flex items-center gap-2">
                         <Folder className="w-4 h-4 text-blue-400" />
-                        Danh sách tài liệu khả dụng trên Google Drive
+                        Danh sách tệp & Thư mục trên Google Drive
                       </h3>
-                      <span className="text-xs text-slate-400">{driveFiles.length} tệp tìm thấy</span>
+                      <span className="text-xs text-slate-400">{driveFiles.length} mục tìm thấy</span>
                     </div>
 
                     {isLoadingDriveFiles ? (
@@ -1080,7 +1134,9 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
                           >
                             <div className="flex items-center gap-3 min-w-0">
                               <div className="p-2 rounded-lg bg-blue-500/10 border border-blue-500/20 text-blue-400 shrink-0">
-                                {f.mimeType.includes('document') ? (
+                                {f.mimeType === 'application/vnd.google-apps.folder' ? (
+                                  <Folder className="w-4 h-4 text-amber-400" />
+                                ) : f.mimeType.includes('document') ? (
                                   <FileText className="w-4 h-4 text-blue-400" />
                                 ) : f.mimeType.includes('spreadsheet') ? (
                                   <FileSpreadsheet className="w-4 h-4 text-emerald-400" />
@@ -1091,30 +1147,51 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
                               <div className="min-w-0">
                                 <p className="text-xs font-bold text-slate-100 truncate">{f.name}</p>
                                 <p className="text-[10px] text-slate-400 truncate">
-                                  {f.mimeType.includes('document') ? 'Google Doc' : f.mimeType.includes('spreadsheet') ? 'Google Sheet' : f.mimeType}
+                                  {f.mimeType === 'application/vnd.google-apps.folder' ? 'Thư mục Google Drive' : f.mimeType.includes('document') ? 'Google Doc' : f.mimeType.includes('spreadsheet') ? 'Google Sheet' : f.mimeType}
                                   {f.modifiedTime ? ` • Cập nhật: ${new Date(f.modifiedTime).toLocaleDateString('vi-VN')}` : ''}
                                 </p>
                               </div>
                             </div>
 
-                            <button
-                              type="button"
-                              onClick={() => handleImportDriveFile(f)}
-                              disabled={importingDriveFileId === f.id}
-                              className="px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 disabled:bg-slate-700 text-white text-xs font-semibold shrink-0 transition-all flex items-center gap-1.5 shadow-xs"
-                            >
-                              {importingDriveFileId === f.id ? (
-                                <>
-                                  <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                                  <span>Đang nạp...</span>
-                                </>
-                              ) : (
-                                <>
-                                  <Plus className="w-3.5 h-3.5" />
-                                  <span>Nạp vào Tri Thức</span>
-                                </>
-                              )}
-                            </button>
+                            {f.mimeType === 'application/vnd.google-apps.folder' ? (
+                              <button
+                                type="button"
+                                onClick={() => handleImportDriveFolder(f.id, f.name)}
+                                disabled={isImportingFolder}
+                                className="px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-500 disabled:bg-slate-700 text-white text-xs font-semibold shrink-0 transition-all flex items-center gap-1.5 shadow-xs"
+                              >
+                                {isImportingFolder ? (
+                                  <>
+                                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                                    <span>Đang đọc...</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <Folder className="w-3.5 h-3.5" />
+                                    <span>Nạp Thư Mục Này</span>
+                                  </>
+                                )}
+                              </button>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => handleImportDriveFile(f)}
+                                disabled={importingDriveFileId === f.id}
+                                className="px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 disabled:bg-slate-700 text-white text-xs font-semibold shrink-0 transition-all flex items-center gap-1.5 shadow-xs"
+                              >
+                                {importingDriveFileId === f.id ? (
+                                  <>
+                                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                                    <span>Đang nạp...</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <Plus className="w-3.5 h-3.5" />
+                                    <span>Nạp vào Tri Thức</span>
+                                  </>
+                                )}
+                              </button>
+                            )}
                           </div>
                         ))}
                       </div>
@@ -1148,6 +1225,49 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
                   </button>
                 </div>
               )}
+            </div>
+
+            {/* Google Drive Folder & Shared Folder Import Form */}
+            <div className="pt-2">
+              <h3 className="text-xs font-bold text-blue-300 uppercase tracking-wider mb-2 flex items-center gap-2">
+                <Folder className="w-4 h-4 text-blue-400" />
+                Nạp Nguyên Thư Mục Google Drive (Bao gồm Thư mục được chia sẻ / Shared Folder)
+              </h3>
+              <form onSubmit={(e) => { e.preventDefault(); handleImportDriveFolder(); }} className="space-y-3">
+                <div className="relative">
+                  <Folder className="w-5 h-5 absolute left-3.5 top-1/2 -translate-y-1/2 text-blue-400" />
+                  <input
+                    type="text"
+                    value={folderUrlInput}
+                    onChange={(e) => setFolderUrlInput(e.target.value)}
+                    placeholder="Dán URL thư mục Google Drive (VD: https://drive.google.com/drive/folders/1XYZ...) hoặc Folder ID"
+                    className="w-full pl-10 pr-4 py-3 rounded-xl bg-slate-800 border border-slate-700 text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 text-xs sm:text-sm"
+                  />
+                </div>
+
+                <div className="flex items-center justify-between gap-4">
+                  <p className="text-[11px] text-slate-400">
+                    💡 Tự động duyệt qua tất cả các tệp Google Docs, Sheet, PDF, TXT bên trong Thư mục được chia sẻ (kể cả thư mục con).
+                  </p>
+                  <button
+                    type="submit"
+                    disabled={isImportingFolder || !folderUrlInput.trim()}
+                    className="inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 disabled:bg-slate-800 text-white text-xs font-semibold transition-colors shadow-xs shrink-0"
+                  >
+                    {isImportingFolder ? (
+                      <>
+                        <RefreshCw className="w-4 h-4 animate-spin" />
+                        <span>Đang nạp toàn bộ thư mục...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Folder className="w-4 h-4" />
+                        <span>Nạp Thư Mục Drive</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              </form>
             </div>
 
             {/* Manual Google Docs URL Input Fallback */}
