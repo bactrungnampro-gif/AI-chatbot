@@ -1,6 +1,7 @@
 import express from "express";
 import path from "path";
 import fs from "fs";
+import { Firestore } from "@google-cloud/firestore";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, Type } from "@google/genai";
 import dotenv from "dotenv";
@@ -2017,6 +2018,23 @@ async function getValidGoogleAccessToken() {
   return access_token;
 }
 
+// --- FIREBASE FIRESTORE PERSISTENT STORE ---
+let firestoreDb: Firestore | null = null;
+try {
+  const firebaseConfigFile = path.join(process.cwd(), 'firebase-applet-config.json');
+  if (fs.existsSync(firebaseConfigFile)) {
+    const firebaseConfig = JSON.parse(fs.readFileSync(firebaseConfigFile, 'utf-8'));
+    if (firebaseConfig.projectId) {
+      firestoreDb = new Firestore({
+        projectId: firebaseConfig.projectId,
+      });
+      console.log("🔥 [Firebase] Firestore initialized for persistent data storage.");
+    }
+  }
+} catch (e) {
+  console.warn("⚠️ [Firebase] Could not initialize Firestore:", e);
+}
+
 function loadServerStore() {
   try {
     if (fs.existsSync(STORE_FILE)) {
@@ -2037,21 +2055,63 @@ function loadServerStore() {
   } catch (e) {
     console.warn("⚠️ [ServerStore] Failed to load server_store.json:", e);
   }
+
+  // Asynchronously sync from Firestore if available
+  if (firestoreDb) {
+    firestoreDb.collection('app_config').doc('main_store').get()
+      .then((doc) => {
+        if (doc.exists) {
+          const cloudData = doc.data();
+          if (cloudData) {
+            if (cloudData.agentConfig) serverAgentConfig = cloudData.agentConfig;
+            if (cloudData.widgetSettings) serverWidgetSettings = cloudData.widgetSettings;
+            if (Array.isArray(cloudData.knowledgeSources)) serverKnowledgeSources = cloudData.knowledgeSources;
+            if (Array.isArray(cloudData.products)) serverProducts = cloudData.products;
+            if (cloudData.googleSession) serverGoogleSession = cloudData.googleSession;
+
+            // Write back to local store file
+            try {
+              fs.writeFileSync(STORE_FILE, JSON.stringify({
+                agentConfig: serverAgentConfig,
+                widgetSettings: serverWidgetSettings,
+                knowledgeSources: serverKnowledgeSources,
+                products: serverProducts,
+                googleSession: serverGoogleSession,
+                updatedAt: new Date().toISOString(),
+              }, null, 2), 'utf-8');
+            } catch (err) {}
+            console.log("🔥 [ServerStore] Successfully restored configuration from Firestore.");
+          }
+        }
+      })
+      .catch((err) => {
+        console.warn("⚠️ [ServerStore] Could not load store from Firestore:", err.message);
+      });
+  }
 }
 
 function saveServerStore() {
+  const data = {
+    agentConfig: serverAgentConfig,
+    widgetSettings: serverWidgetSettings,
+    knowledgeSources: serverKnowledgeSources,
+    products: serverProducts,
+    googleSession: serverGoogleSession,
+    updatedAt: new Date().toISOString(),
+  };
+
   try {
-    const data = {
-      agentConfig: serverAgentConfig,
-      widgetSettings: serverWidgetSettings,
-      knowledgeSources: serverKnowledgeSources,
-      products: serverProducts,
-      googleSession: serverGoogleSession,
-      updatedAt: new Date().toISOString(),
-    };
     fs.writeFileSync(STORE_FILE, JSON.stringify(data, null, 2), 'utf-8');
   } catch (e) {
     console.warn("⚠️ [ServerStore] Failed to save server_store.json:", e);
+  }
+
+  // Asynchronously persist to Firestore
+  if (firestoreDb) {
+    firestoreDb.collection('app_config').doc('main_store').set(data, { merge: true })
+      .catch((err) => {
+        console.warn("⚠️ [ServerStore] Could not persist store to Firestore:", err.message);
+      });
   }
 }
 
