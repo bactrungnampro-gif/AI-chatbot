@@ -36,20 +36,16 @@ export const AgentPersonaConfig: React.FC<AgentPersonaConfigProps> = ({
     ...agentConfig 
   });
 
-  // Chỉ đồng bộ lại form khi CHUYỂN sang một agent khác (id đổi),
-  // không reset theo mọi thay đổi của agentConfig để tránh xóa nội dung người dùng đang nhập
-  // (và tránh vòng lặp re-render nếu prop không được memo hóa).
   React.useEffect(() => {
-    setFormData({
+    setFormData((prev) => ({
       selectedProvider: 'google',
       selectedModel: 'gemini-2.5-flash',
       customApiKey: '',
       customApiEndpoint: '',
       temperature: 0.7,
       ...agentConfig
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [agentConfig?.id]);
+    }));
+  }, [agentConfig]);
   const [savedSuccess, setSavedSuccess] = useState(false);
   const [showApiKey, setShowApiKey] = useState(false);
 

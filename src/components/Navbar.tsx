@@ -9,7 +9,8 @@ import {
   History,
   Sparkles,
   ExternalLink,
-  ShieldCheck
+  ShieldCheck,
+  FileText
 } from 'lucide-react';
 
 interface NavbarProps {
@@ -62,7 +63,17 @@ export const Navbar: React.FC<NavbarProps> = ({
 
           {/* Right Controls */}
           <div className="flex items-center gap-3">
-            <div className={`hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium border ${
+            <a
+              href="/api/export-docx"
+              download="Tong_Hop_Yeu_Cau_Va_He_Thong_AI.docx"
+              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold transition-colors border border-slate-200 shadow-2xs"
+              title="Tải file Word (.docx) tổng hợp yêu cầu"
+            >
+              <FileText className="w-4 h-4 text-blue-600" />
+              <span className="hidden sm:inline">Tải File Word (.docx)</span>
+            </a>
+
+            <div className={`hidden lg:flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium border ${
               hasApiKey 
                 ? 'bg-indigo-50 text-indigo-700 border-indigo-100' 
                 : 'bg-amber-50 text-amber-700 border-amber-200'

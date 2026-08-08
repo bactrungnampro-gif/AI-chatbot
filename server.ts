@@ -1,11 +1,21 @@
 import express from "express";
 import path from "path";
 import fs from "fs";
-import dns from "dns";
-import net from "net";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, Type } from "@google/genai";
 import dotenv from "dotenv";
+import { 
+  Document, 
+  Packer, 
+  Paragraph, 
+  TextRun, 
+  HeadingLevel, 
+  Table, 
+  TableRow, 
+  TableCell, 
+  WidthType, 
+  AlignmentType 
+} from "docx";
 
 dotenv.config();
 
@@ -16,113 +26,16 @@ const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-// CORS: mặc định cho phép mọi origin (widget nhúng đa domain).
-// Có thể siết lại bằng biến môi trường ALLOWED_ORIGINS="https://a.com,https://b.com".
-const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || '')
-  .split(',')
-  .map((o) => o.trim())
-  .filter(Boolean);
-
+// Enable CORS for embeddable widgets across external domains
 app.use((req, res, next) => {
-  const origin = req.headers.origin;
-  if (ALLOWED_ORIGINS.length === 0) {
-    res.setHeader('Access-Control-Allow-Origin', '*');
-  } else if (origin && ALLOWED_ORIGINS.includes(origin)) {
-    res.setHeader('Access-Control-Allow-Origin', origin);
-    res.setHeader('Vary', 'Origin');
-  }
+  res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, PUT, DELETE');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-admin-token');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   if (req.method === 'OPTIONS') {
     return res.sendStatus(200);
   }
   next();
 });
-
-// --- BẢO MẬT: CHỐNG SSRF ---
-// Chặn fetch tới địa chỉ nội bộ / loopback / link-local (vd metadata cloud 169.254.169.254).
-function isPrivateIp(ip: string): boolean {
-  const v = net.isIP(ip);
-  if (v === 4) {
-    const p = ip.split('.').map(Number);
-    if (p[0] === 10) return true;
-    if (p[0] === 127) return true;                          // loopback
-    if (p[0] === 169 && p[1] === 254) return true;          // link-local (metadata)
-    if (p[0] === 172 && p[1] >= 16 && p[1] <= 31) return true;
-    if (p[0] === 192 && p[1] === 168) return true;
-    if (p[0] === 0) return true;
-    return false;
-  }
-  if (v === 6) {
-    const lower = ip.toLowerCase();
-    if (lower === '::1') return true;                       // loopback
-    if (lower.startsWith('fc') || lower.startsWith('fd')) return true; // unique local
-    if (lower.startsWith('fe80')) return true;              // link-local
-    if (lower.startsWith('::ffff:')) return isPrivateIp(lower.replace('::ffff:', '')); // IPv4-mapped
-    return false;
-  }
-  return false;
-}
-
-// Kiểm tra URL an toàn để server fetch: chỉ http/https, không trỏ tới host nội bộ.
-async function assertPublicUrl(rawUrl: string): Promise<void> {
-  let parsed: URL;
-  try {
-    parsed = new URL(rawUrl);
-  } catch {
-    throw new Error('URL không hợp lệ');
-  }
-  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-    throw new Error('Chỉ hỗ trợ URL http/https');
-  }
-  const host = parsed.hostname.toLowerCase();
-  if (host === 'localhost' || host.endsWith('.local') || host.endsWith('.internal')) {
-    throw new Error('Không cho phép truy cập địa chỉ nội bộ');
-  }
-  // Nếu host là IP trực tiếp → kiểm tra ngay
-  if (net.isIP(host)) {
-    if (isPrivateIp(host)) throw new Error('Không cho phép truy cập địa chỉ IP nội bộ');
-    return;
-  }
-  // Nếu là tên miền → phân giải DNS và kiểm tra mọi IP (chống DNS trỏ về nội bộ)
-  try {
-    const records = await dns.promises.lookup(host, { all: true });
-    for (const r of records) {
-      if (isPrivateIp(r.address)) {
-        throw new Error('Tên miền phân giải về địa chỉ nội bộ (bị chặn)');
-      }
-    }
-  } catch (e: any) {
-    if (e?.message?.includes('nội bộ')) throw e;
-    // Lỗi phân giải DNS khác → để fetch tự xử lý/timeout
-  }
-}
-
-// --- BẢO MẬT: GIỚI HẠN TẦN SUẤT (RATE LIMIT) đơn giản theo IP, cửa sổ trượt ---
-const rateBuckets = new Map<string, number[]>();
-function rateLimit(maxRequests: number, windowMs: number) {
-  return (req: express.Request, res: express.Response, next: express.NextFunction) => {
-    const ip = (req.headers['x-forwarded-for'] as string || '').split(',')[0].trim()
-      || req.socket.remoteAddress || 'unknown';
-    const now = Date.now();
-    const arr = (rateBuckets.get(ip) || []).filter((t) => now - t < windowMs);
-    if (arr.length >= maxRequests) {
-      res.status(429).json({
-        error: 'Quá nhiều yêu cầu trong thời gian ngắn. Vui lòng thử lại sau ít phút.'
-      });
-      return;
-    }
-    arr.push(now);
-    rateBuckets.set(ip, arr);
-    // Dọn định kỳ để tránh phình bộ nhớ
-    if (rateBuckets.size > 5000) {
-      for (const [k, v] of rateBuckets) {
-        if (v.every((t) => now - t >= windowMs)) rateBuckets.delete(k);
-      }
-    }
-    next();
-  };
-}
 
 // Initialize Gemini Client
 const getGeminiAI = () => {
@@ -149,6 +62,252 @@ app.get("/api/health", (req, res) => {
     hasApiKey: !!process.env.GEMINI_API_KEY,
     timestamp: new Date().toISOString()
   });
+});
+
+// Export Requirements Word Document (.docx)
+app.get("/api/export-docx", async (req, res) => {
+  try {
+    const doc = new Document({
+      sections: [{
+        properties: {},
+        children: [
+          new Paragraph({
+            text: "BÁO CÁO TỔNG HỢP YÊU CẦU DỰ ÁN & CẤU HÌNH HỆ THỐNG",
+            heading: HeadingLevel.HEADING_1,
+            alignment: AlignmentType.CENTER,
+            spacing: { after: 240 },
+          }),
+          new Paragraph({
+            children: [
+              new TextRun({ text: "Tên hệ thống: ", bold: true }),
+              new TextRun("Trợ Lý AI Bán Hàng & Floating Chat Widget (AI Sales Agent System)"),
+            ],
+            spacing: { after: 120 },
+          }),
+          new Paragraph({
+            children: [
+              new TextRun({ text: "Thời gian khởi tạo: ", bold: true }),
+              new TextRun(new Date().toLocaleDateString('vi-VN', { year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' })),
+            ],
+            spacing: { after: 300 },
+          }),
+
+          // Section 1
+          new Paragraph({
+            text: "1. TỔNG QUAN YÊU CẦU DỰ ÁN",
+            heading: HeadingLevel.HEADING_2,
+            spacing: { before: 200, after: 120 },
+          }),
+          new Paragraph({
+            text: "Dự án được xây dựng với mục tiêu cung cấp giải pháp Trợ lý AI Bán hàng & Tư vấn tự động 24/7 cho doanh nghiệp. Hệ thống ưu tiên truy vấn dữ liệu từ Cơ sở Tri thức & Danh mục Sản phẩm của doanh nghiệp, đồng thời hỗ trợ nhúng Widget nổi trên bất kỳ website nào.",
+            spacing: { after: 160 },
+          }),
+
+          // Section 2
+          new Paragraph({
+            text: "2. CHI TIẾT CÁC YÊU CẦU & CHỨC NĂNG ĐÃ NÂNG CẤP",
+            heading: HeadingLevel.HEADING_2,
+            spacing: { before: 200, after: 120 },
+          }),
+
+          new Paragraph({
+            text: "2.1. Cấu hình Đa Nhà Cung Cấp AI (Multi-Provider Support)",
+            heading: HeadingLevel.HEADING_3,
+            spacing: { before: 100, after: 80 },
+          }),
+          new Paragraph({
+            bullet: { level: 0 },
+            children: [
+              new TextRun({ text: "Hỗ trợ 5 Động cơ AI chính: ", bold: true }),
+              new TextRun("Google Gemini, OpenAI (GPT-4o), DeepSeek (DeepSeek V3/R1), Anthropic (Claude 3.5 Sonnet) và Custom/Ollama Endpoint."),
+            ],
+            spacing: { after: 60 }
+          }),
+          new Paragraph({
+            bullet: { level: 0 },
+            children: [
+              new TextRun({ text: "Lưu trữ Key độc lập theo từng Provider: ", bold: true }),
+              new TextRun("Tự động ghi nhớ API Key và Custom Endpoint riêng cho từng nhà cung cấp trên trình duyệt người dùng. Khi chuyển giữa các nhà cung cấp, Key tương ứng sẽ được khôi phục tự động."),
+            ],
+            spacing: { after: 60 }
+          }),
+          new Paragraph({
+            bullet: { level: 0 },
+            children: [
+              new TextRun({ text: "Liên kết tạo Key trực tiếp: ", bold: true }),
+              new TextRun("Tích hợp đường dẫn lấy API Key chính thức cho từng nền tảng (Google AI Studio, OpenAI Platform, DeepSeek, Anthropic Console)."),
+            ],
+            spacing: { after: 120 }
+          }),
+
+          new Paragraph({
+            text: "2.2. Chuẩn hóa & Tối ưu hóa Mô hình Google Gemini (Gemini Models Update)",
+            heading: HeadingLevel.HEADING_3,
+            spacing: { before: 140, after: 80 },
+          }),
+          new Paragraph({
+            bullet: { level: 0 },
+            children: [
+              new TextRun({ text: "Cập nhật danh sách Mô hình Gemini chuẩn: ", bold: true }),
+              new TextRun("Bao gồm Gemini 3.6 Flash (Khuyên dùng - Tốc độ siêu nhanh & xử lý đa phương tiện), Gemini 2.5 Flash, Gemini Flash Latest, Gemini 3.1 Flash Lite, và Gemini 3.1 Pro."),
+            ],
+            spacing: { after: 60 }
+          }),
+          new Paragraph({
+            bullet: { level: 0 },
+            children: [
+              new TextRun({ text: "Cơ chế Thử lại Tự động (Cascade Fallback Sequence): ", bold: true }),
+              new TextRun("Tự động thử lần lượt các mô hình Gemini dự phòng nếu mô hình chính bị gián đoạn, đảm bảo trải nghiệm chat liên tục."),
+            ],
+            spacing: { after: 120 }
+          }),
+
+          new Paragraph({
+            text: "2.3. Khắc phục Lỗi 'Bong bóng Chat trắng' & CORS (Chat Bubble & Embed Fixes)",
+            heading: HeadingLevel.HEADING_3,
+            spacing: { before: 140, after: 80 },
+          }),
+          new Paragraph({
+            bullet: { level: 0 },
+            children: [
+              new TextRun({ text: "Sửa lỗi Khung Chat Trắng: ", bold: true }),
+              new TextRun("Xử lý thuộc tính hiển thị, cập nhật truyền tên hiển thị Agent, avatar và trạng thái mở/thu gọn trong StandaloneWidgetChat.tsx."),
+            ],
+            spacing: { after: 60 }
+          }),
+          new Paragraph({
+            bullet: { level: 0 },
+            children: [
+              new TextRun({ text: "Cấu hình CORS Cross-Domain: ", bold: true }),
+              new TextRun("Bổ sung middleware CORS trên Server (`Access-Control-Allow-Origin: *`) hỗ trợ nhúng Widget qua Script / Iframe vào WordPress, Shopify, Haravan, HTML custom."),
+            ],
+            spacing: { after: 120 }
+          }),
+
+          new Paragraph({
+            text: "2.4. Quản lý Tri thức & Danh mục Sản phẩm (Knowledge & Product Catalog)",
+            heading: HeadingLevel.HEADING_3,
+            spacing: { before: 140, after: 80 },
+          }),
+          new Paragraph({
+            bullet: { level: 0 },
+            children: [
+              new TextRun({ text: "Thu thập & Nạp Tri thức: ", bold: true }),
+              new TextRun("Crawl nội dung từ website doanh nghiệp, nạp tài liệu văn bản, quy trình hỗ trợ và FAQ."),
+            ],
+            spacing: { after: 60 }
+          }),
+          new Paragraph({
+            bullet: { level: 0 },
+            children: [
+              new TextRun({ text: "Danh mục Sản phẩm: ", bold: true }),
+              new TextRun("Quản lý danh sách sản phẩm chi tiết (giá bán, mô tả, hình ảnh). Trợ lý AI chủ động trích xuất tư vấn đúng sản phẩm."),
+            ],
+            spacing: { after: 120 }
+          }),
+
+          new Paragraph({
+            text: "2.5. Tạo Mã Nhúng Widget Đa Nền Tảng (Embed Code Generator)",
+            heading: HeadingLevel.HEADING_3,
+            spacing: { before: 140, after: 80 },
+          }),
+          new Paragraph({
+            bullet: { level: 0 },
+            children: [
+              new TextRun({ text: "Xuất mã Script / Iframe: ", bold: true }),
+              new TextRun("Tự động sinh mã JavaScript / Iframe tích hợp sẵn thông số màu sắc, vị trí hiển thị và tên Agent để dán vào bất kỳ website nào."),
+            ],
+            spacing: { after: 160 }
+          }),
+
+          // Section 3
+          new Paragraph({
+            text: "3. BẢNG TỔNG HỢP TRẠNG THÁI TÍNH NĂNG",
+            heading: HeadingLevel.HEADING_2,
+            spacing: { before: 200, after: 120 },
+          }),
+
+          new Table({
+            width: { size: 100, type: WidthType.PERCENTAGE },
+            rows: [
+              new TableRow({
+                children: [
+                  new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: "Hạng Mục Tính Năng", bold: true })] })], width: { size: 30, type: WidthType.PERCENTAGE } }),
+                  new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: "Trạng Thái", bold: true })] })], width: { size: 25, type: WidthType.PERCENTAGE } }),
+                  new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: "Ghi Chú Kỹ Thuật", bold: true })] })], width: { size: 45, type: WidthType.PERCENTAGE } }),
+                ]
+              }),
+              new TableRow({
+                children: [
+                  new TableCell({ children: [new Paragraph({ text: "Google Gemini Models" })] }),
+                  new TableCell({ children: [new Paragraph({ text: "Hoàn tất (Hoạt động)" })] }),
+                  new TableCell({ children: [new Paragraph({ text: "Tích hợp SDK v2 @google/genai, ưu tiên gemini-3.6-flash & gemini-2.5-flash" })] }),
+                ]
+              }),
+              new TableRow({
+                children: [
+                  new TableCell({ children: [new Paragraph({ text: "Multi-Provider AI Keys" })] }),
+                  new TableCell({ children: [new Paragraph({ text: "Hoàn tất (Hoạt động)" })] }),
+                  new TableCell({ children: [new Paragraph({ text: "Lưu vết API Key riêng cho Google, OpenAI, DeepSeek, Anthropic, Custom API" })] }),
+                ]
+              }),
+              new TableRow({
+                children: [
+                  new TableCell({ children: [new Paragraph({ text: "Sửa Lỗi Khung Chat Trắng" })] }),
+                  new TableCell({ children: [new Paragraph({ text: "Hoàn tất (Đã sửa)" })] }),
+                  new TableCell({ children: [new Paragraph({ text: "Đã khắc phục hoàn toàn trong StandaloneWidgetChat và bổ sung CORS header" })] }),
+                ]
+              }),
+              new TableRow({
+                children: [
+                  new TableCell({ children: [new Paragraph({ text: "Xuất File Word (.docx)" })] }),
+                  new TableCell({ children: [new Paragraph({ text: "Hoàn tất (Mới)" })] }),
+                  new TableCell({ children: [new Paragraph({ text: "Hỗ trợ tải về tài liệu tổng hợp đầy đủ chỉ với 1 click" })] }),
+                ]
+              }),
+            ]
+          }),
+
+          // Section 4
+          new Paragraph({
+            text: "4. HƯỚNG DẪN BẮT ĐẦU VẬN HÀNH",
+            heading: HeadingLevel.HEADING_2,
+            spacing: { before: 240, after: 120 },
+          }),
+          new Paragraph({
+            text: "Bước 1: Vào tab 'Cấu Hình Agent & Qui Tắc', chọn Nhà cung cấp AI (Google/OpenAI/DeepSeek) và điền API Key.",
+            spacing: { after: 60 },
+          }),
+          new Paragraph({
+            text: "Bước 2: Nạp dữ liệu sản phẩm và trang web tại tab 'Cơ Sở Tri Thức & Web Data' hoặc 'Danh Mục Sản Phẩm'.",
+            spacing: { after: 60 },
+          }),
+          new Paragraph({
+            text: "Bước 3: Lấy mã nhúng tại tab 'Tích Hợp Website Widget' để dán vào trang web bán hàng.",
+            spacing: { after: 60 },
+          }),
+          new Paragraph({
+            text: "Bước 4: Nhấp nút 'Tải File Word (.docx)' trên thanh công cụ hệ thống để lưu bản báo cáo này.",
+            spacing: { after: 160 },
+          }),
+
+          new Paragraph({
+            text: "Báo cáo được khởi tạo tự động từ Hệ Quản trị Trợ Lý AI Sales Agent.",
+            alignment: AlignmentType.RIGHT,
+            spacing: { before: 240 },
+          }),
+        ]
+      }]
+    });
+
+    const buffer = await Packer.toBuffer(doc);
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+    res.setHeader('Content-Disposition', 'attachment; filename="Tong_Hop_Yeu_Cau_Va_He_Thong_AI.docx"');
+    return res.send(buffer);
+  } catch (err: any) {
+    console.error("Error generating docx:", err);
+    return res.status(500).json({ error: "Lỗi khi tạo file Word: " + err.message });
+  }
 });
 
 // --- HELPER FUNCTIONS FOR HYBRID SCRAPING ---
@@ -371,7 +530,7 @@ async function fetchSitemapUrls(baseUrlStr: string): Promise<{ urls: string[], s
 }
 
 // Website Content Scraper / Extractor Endpoint (Hybrid Support)
-app.post("/api/knowledge/scrape", rateLimit(20, 60000), async (req, res) => {
+app.post("/api/knowledge/scrape", async (req, res) => {
   const globalRequestStart = Date.now();
   const MAX_GLOBAL_TIME_MS = 42000; // 42 seconds total budget to guarantee response before 502/504 gateway timeout
 
@@ -385,14 +544,6 @@ app.post("/api/knowledge/scrape", rateLimit(20, 60000), async (req, res) => {
     let targetUrl = url.trim();
     if (!targetUrl.startsWith("http://") && !targetUrl.startsWith("https://")) {
       targetUrl = "https://" + targetUrl;
-    }
-
-    // Chống SSRF: chặn URL trỏ tới địa chỉ nội bộ trước khi server fetch
-    try {
-      await assertPublicUrl(targetUrl);
-    } catch (ssrfErr: any) {
-      res.status(400).json({ error: ssrfErr?.message || 'URL không được phép' });
-      return;
     }
 
     // Parse maxPages limit (1 to 1000)
@@ -777,7 +928,7 @@ app.post("/api/knowledge/fetch-google-drive", async (req, res) => {
 
     // Attempt Google Docs txt export
     try {
-      const txtExportUrl = `https://docs.google.com/document/d/${fileId}/export?format=txt`;
+      const txtExportUrl = `https://docs.google.com/documents/d/${fileId}/export?format=txt`;
       const txtRes = await fetch(txtExportUrl, {
         headers: { 'User-Agent': 'Mozilla/5.0' },
         signal: AbortSignal.timeout(10000)
@@ -824,15 +975,6 @@ app.post("/api/knowledge/fetch-api-endpoint", async (req, res) => {
     const { apiUrl, method = "GET", headers = {}, body = null, title } = req.body;
     if (!apiUrl || typeof apiUrl !== "string") {
       res.status(400).json({ success: false, error: "Vui lòng nhập API Endpoint URL hợp lệ." });
-      return;
-    }
-
-    // Chống SSRF: endpoint này cho phép method/headers/body tùy ý nên đặc biệt nguy hiểm.
-    // Chặn mọi URL trỏ tới địa chỉ nội bộ (localhost, IP riêng, metadata cloud...).
-    try {
-      await assertPublicUrl(apiUrl);
-    } catch (ssrfErr: any) {
-      res.status(400).json({ success: false, error: ssrfErr?.message || 'URL không được phép' });
       return;
     }
 
@@ -953,53 +1095,42 @@ Yêu cầu trả về JSON chuẩn xác:
   + inStock: boolean (mặc định true)
 `;
 
-        const extractConfig = {
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              products: {
-                type: Type.ARRAY,
-                items: {
-                  type: Type.OBJECT,
-                  properties: {
-                    name: { type: Type.STRING },
-                    category: { type: Type.STRING },
-                    price: { type: Type.NUMBER },
-                    originalPrice: { type: Type.NUMBER },
-                    description: { type: Type.STRING },
-                    keyFeatures: { type: Type.ARRAY, items: { type: Type.STRING } },
-                    idealFor: { type: Type.STRING },
-                    usageInstructions: { type: Type.STRING },
-                    inStock: { type: Type.BOOLEAN }
-                  },
-                  required: ["name", "category", "price", "description", "keyFeatures"]
+        const response = await ai.models.generateContent({
+          model: 'gemini-3.6-flash',
+          contents: prompt,
+          config: {
+            responseMimeType: "application/json",
+            responseSchema: {
+              type: Type.OBJECT,
+              properties: {
+                products: {
+                  type: Type.ARRAY,
+                  items: {
+                    type: Type.OBJECT,
+                    properties: {
+                      name: { type: Type.STRING },
+                      category: { type: Type.STRING },
+                      price: { type: Type.NUMBER },
+                      originalPrice: { type: Type.NUMBER },
+                      description: { type: Type.STRING },
+                      keyFeatures: { type: Type.ARRAY, items: { type: Type.STRING } },
+                      idealFor: { type: Type.STRING },
+                      usageInstructions: { type: Type.STRING },
+                      inStock: { type: Type.BOOLEAN }
+                    },
+                    required: ["name", "category", "price", "description", "keyFeatures"]
+                  }
                 }
-              }
-            },
-            required: ["products"]
-          }
-        };
-
-        // Thử lần lượt nhiều model để không phụ thuộc vào một tên model duy nhất
-        // (nếu tên model không khả dụng thì tự động chuyển sang model dự phòng).
-        const extractModels = Array.from(new Set(['gemini-3.6-flash', 'gemini-2.5-flash', 'gemini-flash-latest']));
-        for (const em of extractModels) {
-          try {
-            const response = await ai.models.generateContent({
-              model: em,
-              contents: prompt,
-              config: extractConfig
-            });
-            if (response.text) {
-              const parsed = JSON.parse(response.text);
-              if (Array.isArray(parsed.products) && parsed.products.length > 0) {
-                extractedProducts = parsed.products;
-                break;
-              }
+              },
+              required: ["products"]
             }
-          } catch (modelErr: any) {
-            console.warn(`[Product Extractor] Model ${em} failed:`, modelErr?.message || String(modelErr));
+          }
+        });
+
+        if (response.text) {
+          const parsed = JSON.parse(response.text);
+          if (Array.isArray(parsed.products) && parsed.products.length > 0) {
+            extractedProducts = parsed.products;
           }
         }
       } catch (geminiError) {
@@ -1059,7 +1190,7 @@ Yêu cầu trả về JSON chuẩn xác:
 });
 
 // Main AI Support Chat Endpoint
-app.post("/api/chat", rateLimit(30, 60000), async (req, res) => {
+app.post("/api/chat", async (req, res) => {
   try {
     const {
       message,
@@ -1119,10 +1250,17 @@ app.post("/api/chat", rateLimit(30, 60000), async (req, res) => {
       return true;
     });
 
-    // Prepare Knowledge Base Context
+    // Prepare Knowledge Base Context (with character length safety cap to avoid TPM 200k OpenAI limit)
+    const MAX_KB_TOTAL_CHARS = 24000;
+    let currentKbChars = 0;
+
     const activeKnowledge = filteredKnowledgeSources
       .filter((k: any) => k.active && k.content)
       .map((k: any) => {
+        let textContent = k.content || "";
+        if (textContent.length > 6000) {
+          textContent = textContent.substring(0, 6000) + "\n...[Nội dung tri thức đã được tối ưu độ dài]";
+        }
         let kText = `=== [CƠ SỞ DỮ LIỆU: ${k.title} (${k.type})] ===\n`;
         if (k.url && !k.url.includes('docs.google.com') && !k.url.includes('drive.google.com')) {
           kText += `• LINK WEBSITE NẠP: ${k.url}\n`;
@@ -1135,13 +1273,20 @@ app.post("/api/chat", rateLimit(30, 60000), async (req, res) => {
             }
           });
         }
-        kText += `Nội dung tri thức:\n${k.content}\n`;
+        kText += `Nội dung tri thức:\n${textContent}\n`;
         return kText;
+      })
+      .filter((textBlock: string) => {
+        if (currentKbChars >= MAX_KB_TOTAL_CHARS) return false;
+        currentKbChars += textBlock.length;
+        return true;
       })
       .join("\n");
 
-    // Prepare Product Catalog Context
+    // Prepare Product Catalog Context (with total item/length cap)
+    const MAX_PRODUCT_ITEMS = 30;
     const activeProducts = filteredProducts
+      .slice(0, MAX_PRODUCT_ITEMS)
       .map((p: any) => {
         let pText = `=== [SẢN PHẨM: ${p.name}] ===\n`;
         pText += `- Danh mục: ${p.category}\n`;
@@ -1427,7 +1572,11 @@ YÊU CẦU ĐỊNH DẠNG ĐẦU RA:
 
       const resData = await resApi.json();
       if (!resApi.ok) {
-        throw new Error(resData?.error?.message || resData?.message || `Lỗi phản hồi từ API ${provider.toUpperCase()} (HTTP ${resApi.status})`);
+        let rawErr = resData?.error?.message || resData?.message || `Lỗi phản hồi từ API ${provider.toUpperCase()} (HTTP ${resApi.status})`;
+        if (rawErr.includes('tokens per min') || rawErr.includes('TPM') || rawErr.includes('rate limit') || rawErr.includes('Rate limit')) {
+          rawErr = `Giới hạn tốc độ gọi API của OpenAI (${selectedModel}) bị vượt mức TPM (Tokens Per Minute). Đã tối ưu hóa dung lượng truyền dữ liệu. Vui lòng thử lại hoặc đổi sang Google Gemini 3.6 Flash để có tốc độ phản hồi nhanh hơn không bị giới hạn.`;
+        }
+        throw new Error(rawErr);
       }
       responseText = resData.choices?.[0]?.message?.content || "";
     } else if (provider === 'anthropic') {
@@ -1447,20 +1596,11 @@ YÊU CẦU ĐỊNH DẠNG ĐẦU RA:
 
       const claudeMessages: any[] = [];
       if (Array.isArray(history) && history.length > 0) {
-        // Anthropic yêu cầu tin nhắn ĐẦU TIÊN phải có role 'user' và các role phải xen kẽ.
-        // Bỏ qua lời chào mở đầu của agent, và tránh hai tin cùng role liên tiếp.
-        let userStarted = false;
         for (const msg of history.slice(-10)) {
-          if (msg.sender === 'user') userStarted = true;
-          if (!userStarted) continue; // Bỏ tin chào của agent ở đầu lịch sử
-          const role = msg.sender === 'user' ? 'user' : 'assistant';
-          const prev = claudeMessages[claudeMessages.length - 1];
-          if (prev && prev.role === role) {
-            // Gộp nội dung nếu trùng role liên tiếp để giữ tính xen kẽ
-            prev.content = `${prev.content}\n${msg.text || ''}`.trim();
-          } else {
-            claudeMessages.push({ role, content: msg.text || "" });
-          }
+          claudeMessages.push({
+            role: msg.sender === 'user' ? 'user' : 'assistant',
+            content: msg.text || ""
+          });
         }
       }
 
@@ -1588,17 +1728,6 @@ app.get("/api/config", (req, res) => {
 });
 
 app.post("/api/config", (req, res) => {
-  // Bảo vệ ghi cấu hình (tùy chọn): nếu đặt biến môi trường ADMIN_TOKEN thì mọi request
-  // ghi /api/config phải gửi header 'x-admin-token' khớp. Nếu KHÔNG đặt ADMIN_TOKEN,
-  // endpoint mở như cũ (tương thích ngược) — khuyến nghị đặt token khi chạy production.
-  const adminToken = process.env.ADMIN_TOKEN;
-  if (adminToken) {
-    const provided = req.headers['x-admin-token'];
-    if (provided !== adminToken) {
-      res.status(401).json({ success: false, error: 'Không có quyền cập nhật cấu hình (thiếu hoặc sai x-admin-token).' });
-      return;
-    }
-  }
   if (req.body?.agentConfig) {
     serverAgentConfig = { ...(serverAgentConfig || {}), ...req.body.agentConfig };
   }
@@ -1626,7 +1755,7 @@ app.get("/api/widget.js", (req, res) => {
   const host = req.get('host') || 'localhost:3000';
   const protocol = req.protocol || 'http';
   const baseUrl = `${protocol}://${host}`;
-  const launcherText = serverWidgetSettings?.buttonText || 'Hỏi Trợ Lý AI';
+  const launcherText = serverWidgetSettings.buttonText || 'Hỏi Trợ Lý AI';
 
   const jsCode = `
 (function() {

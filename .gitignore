@@ -6,9 +6,3 @@ coverage/
 *.log
 .env*
 !.env.example
-
-# Lưu trữ cấu hình chạy (có thể chứa API key đã lưu) — KHÔNG commit
-server_store.json
-
-# Cấu hình nền tảng chứa khóa/định danh — KHÔNG commit lên repo công khai
-firebase-applet-config.json

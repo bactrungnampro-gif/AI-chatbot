@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from 'react';
-import {
-  Code2,
+import React, { useState } from 'react';
+import { 
+  Code2, 
   Copy, 
   Check, 
   Bot, 
@@ -58,53 +58,8 @@ export const IntegrationWidget: React.FC<IntegrationWidgetProps> = ({
   allow="microphone; camera"
 ></iframe>`;
 
-  // Đồng bộ lời chào xem trước khi người dùng đổi greetingMessage ở tab Cấu Hình,
-  // chỉ cập nhật tin chào đầu tiên (không đụng vào các tin đã trao đổi).
-  useEffect(() => {
-    setWidgetMessages((prev) => {
-      if (prev.length === 0) return prev;
-      const [first, ...rest] = prev;
-      if (first.sender !== 'agent') return prev;
-      return [{ ...first, text: agentConfig.greetingMessage }, ...rest];
-    });
-  }, [agentConfig.greetingMessage]);
-
-  const fallbackCopy = (text: string) => {
-    try {
-      const ta = document.createElement('textarea');
-      ta.value = text;
-      ta.style.position = 'fixed';
-      ta.style.opacity = '0';
-      document.body.appendChild(ta);
-      ta.focus();
-      ta.select();
-      document.execCommand('copy');
-      document.body.removeChild(ta);
-      return true;
-    } catch {
-      return false;
-    }
-  };
-
-  const copyToClipboard = async (text: string, type: 'script' | 'iframe') => {
-    let ok = false;
-    // navigator.clipboard chỉ khả dụng trên HTTPS/localhost; có fallback cho http/trình duyệt cũ
-    try {
-      if (navigator.clipboard && window.isSecureContext) {
-        await navigator.clipboard.writeText(text);
-        ok = true;
-      } else {
-        ok = fallbackCopy(text);
-      }
-    } catch {
-      ok = fallbackCopy(text);
-    }
-
-    if (!ok) {
-      alert('Không thể tự động sao chép. Vui lòng chọn và sao chép mã thủ công.');
-      return;
-    }
-
+  const copyToClipboard = (text: string, type: 'script' | 'iframe') => {
+    navigator.clipboard.writeText(text);
     if (type === 'script') {
       setCopiedScript(true);
       setTimeout(() => setCopiedScript(false), 2000);

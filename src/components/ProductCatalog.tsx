@@ -54,27 +54,9 @@ export const ProductCatalog: React.FC<ProductCatalogProps> = ({
         }),
       });
 
-      // Kiểm tra response.ok và body rỗng trước khi parse JSON để tránh crash
-      const rawText = await response.text();
-      let data: any = null;
-      try {
-        data = rawText ? JSON.parse(rawText) : null;
-      } catch {
-        data = null;
-      }
-
-      if (!response.ok || !data) {
-        alert((data && data.error) || `Không thể đồng bộ sản phẩm (HTTP ${response.status}).`);
-        return;
-      }
-
+      const data = await response.json();
       if (data.success && Array.isArray(data.products) && data.products.length > 0) {
-        setProducts((prev) => {
-          // Loại bỏ id trùng để tránh cảnh báo duplicate key và nhân bản sản phẩm
-          const existingIds = new Set(prev.map((p) => p.id));
-          const newItems = data.products.filter((p: ProductItem) => p && p.id && !existingIds.has(p.id));
-          return [...newItems, ...prev];
-        });
+        setProducts((prev) => [...data.products, ...prev]);
         setSyncMessage(`Đã trích xuất & đồng bộ thành công ${data.products.length} sản phẩm từ "${source.title}"`);
       } else {
         alert(data.error || 'Không tìm thấy thông tin sản phẩm trong dữ liệu website này.');
