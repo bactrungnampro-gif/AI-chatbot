@@ -38,11 +38,16 @@ export const ChatSandbox: React.FC<ChatSandboxProps> = ({
   const [isLoading, setIsLoading] = useState(false);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const chatContainerRef = useRef<HTMLDivElement>(null);
 
   // Auto scroll to bottom of chat
   const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (chatContainerRef.current) {
+      chatContainerRef.current.scrollTo({
+        top: chatContainerRef.current.scrollHeight,
+        behavior: 'smooth'
+      });
+    }
   };
 
   useEffect(() => {
@@ -335,7 +340,7 @@ export const ChatSandbox: React.FC<ChatSandboxProps> = ({
           </div>
 
           {/* Chat Messages Body */}
-          <div className="flex-1 overflow-y-auto p-6 space-y-5">
+          <div ref={chatContainerRef} className="flex-1 overflow-y-auto p-6 space-y-5">
             {messages.map((msg) => {
               const isAgent = msg.sender === 'agent';
               const isSystem = msg.sender === 'system';
@@ -438,8 +443,6 @@ export const ChatSandbox: React.FC<ChatSandboxProps> = ({
                 </div>
               </div>
             )}
-
-            <div ref={messagesEndRef} />
           </div>
 
           {/* Attached Files Banner Before Send */}

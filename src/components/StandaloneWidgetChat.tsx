@@ -83,7 +83,7 @@ export const StandaloneWidgetChat: React.FC<StandaloneWidgetChatProps> = ({
   const [isLoading, setIsLoading] = useState(false);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const chatContainerRef = useRef<HTMLDivElement>(null);
 
   const [messages, setMessages] = useState<ChatMessage[]>(() => {
     try {
@@ -127,7 +127,12 @@ export const StandaloneWidgetChat: React.FC<StandaloneWidgetChatProps> = ({
   }, [currentAgent.greetingMessage]);
 
   const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (chatContainerRef.current) {
+      chatContainerRef.current.scrollTo({
+        top: chatContainerRef.current.scrollHeight,
+        behavior: 'smooth'
+      });
+    }
   };
 
   useEffect(() => {
@@ -305,7 +310,7 @@ export const StandaloneWidgetChat: React.FC<StandaloneWidgetChatProps> = ({
       </header>
 
       {/* Chat Messages List */}
-      <div className="flex-1 overflow-y-auto p-3 sm:p-4 space-y-3.5 bg-slate-50">
+      <div ref={chatContainerRef} className="flex-1 overflow-y-auto p-3 sm:p-4 space-y-3.5 bg-slate-50">
         {messages.map((msg) => (
           <div
             key={msg.id}
@@ -403,8 +408,6 @@ export const StandaloneWidgetChat: React.FC<StandaloneWidgetChatProps> = ({
             </div>
           </div>
         )}
-
-        <div ref={messagesEndRef} />
       </div>
 
       {/* Pending Attachments */}
