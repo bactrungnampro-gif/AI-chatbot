@@ -89,6 +89,7 @@ export default function App() {
   });
 
   const [isConfigLoaded, setIsConfigLoaded] = useState(false);
+  const isInitialSyncRef = React.useRef(true);
 
   // Sync with server store on initial mount
   useEffect(() => {
@@ -106,52 +107,49 @@ export default function App() {
       })
       .catch((err) => console.warn('Could not verify API health status:', err));
 
-    // Fetch initial configuration from server and merge with localStorage without losing custom data
+    // Fetch initial configuration from server and overwrite stale local storage with server source of truth
     fetch('/api/config')
       .then((res) => res.json())
       .then((data) => {
-        if (data.agentConfig && typeof data.agentConfig === 'object') {
+        if (data.agentConfig && typeof data.agentConfig === 'object' && Object.keys(data.agentConfig).length > 0) {
           setAgentConfig((prev) => {
-            return {
+            const merged = {
+              ...defaultAgentConfig,
               ...data.agentConfig,
-              ...prev,
-              avatarUrl: prev.avatarUrl || data.agentConfig.avatarUrl || '',
-              customApiKey: prev.customApiKey || data.agentConfig.customApiKey || '',
+              customApiKey: data.agentConfig.customApiKey || prev.customApiKey || '',
             };
+            try {
+              localStorage.setItem('aistudio_agent_config', JSON.stringify(merged));
+            } catch (e) {}
+            return merged;
           });
         }
+
+        if (data.widgetSettings && typeof data.widgetSettings === 'object' && Object.keys(data.widgetSettings).length > 0) {
+          setWidgetSettings(() => {
+            const merged = {
+              ...defaultWidgetSettings,
+              ...data.widgetSettings,
+            };
+            try {
+              localStorage.setItem('aistudio_widget_settings', JSON.stringify(merged));
+            } catch (e) {}
+            return merged;
+          });
+        }
+
         if (Array.isArray(data.knowledgeSources) && data.knowledgeSources.length > 0) {
-          setKnowledgeSources((prev) => {
-            // Smart Union Merge: keep all local items and merge server items without losing custom local items
-            const existingIds = new Set(prev.map((item) => item.id));
-            const serverOnly = data.knowledgeSources.filter((item: any) => item && item.id && !existingIds.has(item.id));
-            
-            const mergedLocal = prev.map((localItem) => {
-              const serverMatch = data.knowledgeSources.find((s: any) => s && s.id === localItem.id);
-              return serverMatch ? { ...serverMatch, ...localItem } : localItem;
-            });
-
-            return [...mergedLocal, ...serverOnly];
-          });
+          setKnowledgeSources(data.knowledgeSources);
+          try {
+            localStorage.setItem('aistudio_knowledge_sources', JSON.stringify(data.knowledgeSources));
+          } catch (e) {}
         }
+
         if (Array.isArray(data.products) && data.products.length > 0) {
-          setProducts((prev) => {
-            const existingIds = new Set(prev.map((item) => item.id));
-            const serverOnly = data.products.filter((item: any) => item && item.id && !existingIds.has(item.id));
-
-            const mergedLocal = prev.map((localItem) => {
-              const serverMatch = data.products.find((s: any) => s && s.id === localItem.id);
-              return serverMatch ? { ...serverMatch, ...localItem } : localItem;
-            });
-
-            return [...mergedLocal, ...serverOnly];
-          });
-        }
-        if (data.widgetSettings && typeof data.widgetSettings === 'object') {
-          setWidgetSettings((prev) => ({
-            ...data.widgetSettings,
-            ...prev,
-          }));
+          setProducts(data.products);
+          try {
+            localStorage.setItem('aistudio_products', JSON.stringify(data.products));
+          } catch (e) {}
         }
       })
       .catch((err) => console.warn('Could not load initial config from server:', err))
@@ -163,6 +161,12 @@ export default function App() {
   // Save to LocalStorage and sync to Server whenever core state changes AFTER initial load
   useEffect(() => {
     if (!isConfigLoaded) return;
+
+    // Skip the very first sync trigger after config load to prevent overwriting server store with initial state
+    if (isInitialSyncRef.current) {
+      isInitialSyncRef.current = false;
+      return;
+    }
 
     try {
       localStorage.setItem('aistudio_knowledge_sources', JSON.stringify(knowledgeSources));
