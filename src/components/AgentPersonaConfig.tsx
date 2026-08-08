@@ -101,14 +101,6 @@ export const AgentPersonaConfig: React.FC<AgentPersonaConfigProps> = ({
       console.warn('Failed to sync agentConfig to backend', err);
     }
 
-    if (setWidgetSettings) {
-      setWidgetSettings((prev) => ({
-        ...prev,
-        headerTitle: finalData.businessName ? `Hỗ Trợ Khách Hàng ${finalData.businessName}` : (finalData.name || prev.headerTitle),
-        subtitle: finalData.title || prev.subtitle,
-      }));
-    }
-
     setSavedSuccess(true);
     setTimeout(() => setSavedSuccess(false), 3000);
   };
