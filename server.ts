@@ -1,7 +1,6 @@
 import express from "express";
 import path from "path";
 import fs from "fs";
-import { Firestore } from "@google-cloud/firestore";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, Type } from "@google/genai";
 import dotenv from "dotenv";
@@ -2018,21 +2017,71 @@ async function getValidGoogleAccessToken() {
   return access_token;
 }
 
-// --- FIREBASE FIRESTORE PERSISTENT STORE ---
-let firestoreDb: Firestore | null = null;
+// --- FIREBASE FIRESTORE REST PERSISTENT STORE ---
+let firebaseConfig: { projectId?: string; apiKey?: string } | null = null;
 try {
   const firebaseConfigFile = path.join(process.cwd(), 'firebase-applet-config.json');
   if (fs.existsSync(firebaseConfigFile)) {
-    const firebaseConfig = JSON.parse(fs.readFileSync(firebaseConfigFile, 'utf-8'));
-    if (firebaseConfig.projectId) {
-      firestoreDb = new Firestore({
-        projectId: firebaseConfig.projectId,
-      });
-      console.log("🔥 [Firebase] Firestore initialized for persistent data storage.");
+    firebaseConfig = JSON.parse(fs.readFileSync(firebaseConfigFile, 'utf-8'));
+    if (firebaseConfig?.projectId && firebaseConfig?.apiKey) {
+      console.log("🔥 [Firebase] Firestore REST initialized for persistent data storage.");
     }
   }
 } catch (e) {
-  console.warn("⚠️ [Firebase] Could not initialize Firestore:", e);
+  console.warn("⚠️ [Firebase] Could not initialize Firestore REST config:", e);
+}
+
+async function loadStoreFromFirestoreRest() {
+  if (!firebaseConfig?.projectId || !firebaseConfig?.apiKey) return;
+  try {
+    const url = `https://firestore.googleapis.com/v1/projects/${firebaseConfig.projectId}/databases/(default)/documents/app_config/main_store?key=${firebaseConfig.apiKey}`;
+    const res = await fetch(url);
+    if (!res.ok) return;
+    const docData = await res.json();
+    const rawJson = docData?.fields?.configJson?.stringValue;
+    if (rawJson) {
+      const parsed = JSON.parse(rawJson);
+      if (parsed.agentConfig) serverAgentConfig = parsed.agentConfig;
+      if (parsed.widgetSettings) serverWidgetSettings = parsed.widgetSettings;
+      if (Array.isArray(parsed.knowledgeSources)) serverKnowledgeSources = parsed.knowledgeSources;
+      if (Array.isArray(parsed.products)) serverProducts = parsed.products;
+      if (parsed.googleSession) serverGoogleSession = parsed.googleSession;
+
+      try {
+        fs.writeFileSync(STORE_FILE, JSON.stringify({
+          agentConfig: serverAgentConfig,
+          widgetSettings: serverWidgetSettings,
+          knowledgeSources: serverKnowledgeSources,
+          products: serverProducts,
+          googleSession: serverGoogleSession,
+          updatedAt: new Date().toISOString(),
+        }, null, 2), 'utf-8');
+      } catch (err) {}
+      console.log("🔥 [ServerStore] Successfully restored configuration from Firestore via REST.");
+    }
+  } catch (err: any) {
+    console.warn("⚠️ [ServerStore] Could not load store from Firestore REST:", err.message);
+  }
+}
+
+async function saveStoreToFirestoreRest(data: any) {
+  if (!firebaseConfig?.projectId || !firebaseConfig?.apiKey) return;
+  try {
+    const url = `https://firestore.googleapis.com/v1/projects/${firebaseConfig.projectId}/databases/(default)/documents/app_config/main_store?key=${firebaseConfig.apiKey}`;
+    await fetch(url, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        fields: {
+          configJson: {
+            stringValue: JSON.stringify(data)
+          }
+        }
+      })
+    });
+  } catch (err: any) {
+    console.warn("⚠️ [ServerStore] Could not persist store to Firestore REST:", err.message);
+  }
 }
 
 function loadServerStore() {
@@ -2056,38 +2105,8 @@ function loadServerStore() {
     console.warn("⚠️ [ServerStore] Failed to load server_store.json:", e);
   }
 
-  // Asynchronously sync from Firestore if available
-  if (firestoreDb) {
-    firestoreDb.collection('app_config').doc('main_store').get()
-      .then((doc) => {
-        if (doc.exists) {
-          const cloudData = doc.data();
-          if (cloudData) {
-            if (cloudData.agentConfig) serverAgentConfig = cloudData.agentConfig;
-            if (cloudData.widgetSettings) serverWidgetSettings = cloudData.widgetSettings;
-            if (Array.isArray(cloudData.knowledgeSources)) serverKnowledgeSources = cloudData.knowledgeSources;
-            if (Array.isArray(cloudData.products)) serverProducts = cloudData.products;
-            if (cloudData.googleSession) serverGoogleSession = cloudData.googleSession;
-
-            // Write back to local store file
-            try {
-              fs.writeFileSync(STORE_FILE, JSON.stringify({
-                agentConfig: serverAgentConfig,
-                widgetSettings: serverWidgetSettings,
-                knowledgeSources: serverKnowledgeSources,
-                products: serverProducts,
-                googleSession: serverGoogleSession,
-                updatedAt: new Date().toISOString(),
-              }, null, 2), 'utf-8');
-            } catch (err) {}
-            console.log("🔥 [ServerStore] Successfully restored configuration from Firestore.");
-          }
-        }
-      })
-      .catch((err) => {
-        console.warn("⚠️ [ServerStore] Could not load store from Firestore:", err.message);
-      });
-  }
+  // Asynchronously sync from Firestore REST if available
+  loadStoreFromFirestoreRest();
 }
 
 function saveServerStore() {
@@ -2106,13 +2125,8 @@ function saveServerStore() {
     console.warn("⚠️ [ServerStore] Failed to save server_store.json:", e);
   }
 
-  // Asynchronously persist to Firestore
-  if (firestoreDb) {
-    firestoreDb.collection('app_config').doc('main_store').set(data, { merge: true })
-      .catch((err) => {
-        console.warn("⚠️ [ServerStore] Could not persist store to Firestore:", err.message);
-      });
-  }
+  // Asynchronously persist to Firestore REST
+  saveStoreToFirestoreRest(data);
 }
 
 // Initial load on server boot
