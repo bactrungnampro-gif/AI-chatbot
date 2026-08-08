@@ -112,37 +112,46 @@ export default function App() {
       .then((data) => {
         if (data.agentConfig && typeof data.agentConfig === 'object') {
           setAgentConfig((prev) => {
-            // Merge server agentConfig into local state without losing local customApiKey unless server has a key
             return {
-              ...prev,
               ...data.agentConfig,
+              ...prev,
+              avatarUrl: prev.avatarUrl || data.agentConfig.avatarUrl || '',
               customApiKey: prev.customApiKey || data.agentConfig.customApiKey || '',
             };
           });
         }
         if (Array.isArray(data.knowledgeSources) && data.knowledgeSources.length > 0) {
           setKnowledgeSources((prev) => {
-            // Check if local has custom items
-            const localHasCustom = prev.some((item) => !['kb_1', 'kb_2', 'kb_3', 'kb_4'].includes(item.id));
-            const serverHasCustom = data.knowledgeSources.some((item: any) => !['kb_1', 'kb_2', 'kb_3', 'kb_4'].includes(item.id));
-            if (localHasCustom && !serverHasCustom) {
-              return prev; // keep user's local custom sources
-            }
-            return data.knowledgeSources;
+            // Smart Union Merge: keep all local items and merge server items without losing custom local items
+            const existingIds = new Set(prev.map((item) => item.id));
+            const serverOnly = data.knowledgeSources.filter((item: any) => item && item.id && !existingIds.has(item.id));
+            
+            const mergedLocal = prev.map((localItem) => {
+              const serverMatch = data.knowledgeSources.find((s: any) => s && s.id === localItem.id);
+              return serverMatch ? { ...serverMatch, ...localItem } : localItem;
+            });
+
+            return [...mergedLocal, ...serverOnly];
           });
         }
         if (Array.isArray(data.products) && data.products.length > 0) {
           setProducts((prev) => {
-            const localHasCustom = prev.some((item) => !['prod_1', 'prod_2', 'prod_3'].includes(item.id));
-            const serverHasCustom = data.products.some((item: any) => !['prod_1', 'prod_2', 'prod_3'].includes(item.id));
-            if (localHasCustom && !serverHasCustom) {
-              return prev; // keep user's local custom products
-            }
-            return data.products;
+            const existingIds = new Set(prev.map((item) => item.id));
+            const serverOnly = data.products.filter((item: any) => item && item.id && !existingIds.has(item.id));
+
+            const mergedLocal = prev.map((localItem) => {
+              const serverMatch = data.products.find((s: any) => s && s.id === localItem.id);
+              return serverMatch ? { ...serverMatch, ...localItem } : localItem;
+            });
+
+            return [...mergedLocal, ...serverOnly];
           });
         }
-        if (data.widgetSettings && data.widgetSettings.headerTitle) {
-          setWidgetSettings((prev) => ({ ...prev, ...data.widgetSettings }));
+        if (data.widgetSettings && typeof data.widgetSettings === 'object') {
+          setWidgetSettings((prev) => ({
+            ...data.widgetSettings,
+            ...prev,
+          }));
         }
       })
       .catch((err) => console.warn('Could not load initial config from server:', err))
@@ -160,6 +169,7 @@ export default function App() {
       localStorage.setItem('aistudio_products', JSON.stringify(products));
       localStorage.setItem('aistudio_agent_config', JSON.stringify(agentConfig));
       localStorage.setItem('aistudio_widget_settings', JSON.stringify(widgetSettings));
+      localStorage.setItem('aistudio_chat_messages', JSON.stringify(messages));
 
       // Post full configuration to server store so embedded widgets and /api/chat endpoints use actual data
       fetch('/api/config', {
@@ -170,7 +180,7 @@ export default function App() {
     } catch (e) {
       console.error('Failed to save config to localStorage or sync server:', e);
     }
-  }, [agentConfig, widgetSettings, knowledgeSources, products, isConfigLoaded]);
+  }, [agentConfig, widgetSettings, knowledgeSources, products, messages, isConfigLoaded]);
 
   // Check if URL requests standalone widget mode (e.g., when embedded on Sapo, WordPress, etc.)
   const isWidgetMode = typeof window !== 'undefined' && (
