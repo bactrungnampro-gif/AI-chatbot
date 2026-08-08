@@ -241,7 +241,7 @@ export const ChatSandbox: React.FC<ChatSandboxProps> = ({
           <div className="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-xs">
             <div className="flex items-center gap-3 pb-3 border-b border-slate-100">
               <img
-                src={agentConfig.avatarUrl || 'https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?w=150&auto=format&fit=crop&q=80'}
+                src={agentConfig.avatarUrl || 'https://bizweb.dktcdn.net/100/460/752/files/them_logo_tren_ao_co_202606181532.jpeg?v=1786018615920'}
                 alt={agentConfig.name}
                 className="w-12 h-12 rounded-xl object-cover ring-2 ring-indigo-500/20"
               />

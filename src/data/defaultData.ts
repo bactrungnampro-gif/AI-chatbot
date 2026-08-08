@@ -4,7 +4,7 @@ export const defaultAgentConfig: AgentConfig = {
   id: 'agent_default',
   name: 'Trợ Lý AI',
   title: 'Chuyên viên Tư Vấn & Hỗ Trợ Khách Hàng',
-  avatarUrl: 'https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?w=150&auto=format&fit=crop&q=80',
+  avatarUrl: 'https://bizweb.dktcdn.net/100/460/752/files/them_logo_tren_ao_co_202606181532.jpeg?v=1786018615920',
   greetingMessage: 'Xin chào! Tôi là Trợ lý AI tư vấn. Tôi có thể giải đáp thắc mắc, tư vấn sản phẩm, dịch vụ và hỗ trợ nghiệp vụ cho bạn. Bạn cần hỗ trợ thông tin gì ạ?',
   tone: 'friendly',
   businessName: 'Doanh Nghiệp AI',

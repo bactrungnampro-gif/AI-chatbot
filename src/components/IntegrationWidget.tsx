@@ -16,7 +16,8 @@ import {
   HelpCircle,
   ExternalLink,
   ChevronRight,
-  BookOpen
+  BookOpen,
+  Save
 } from 'lucide-react';
 import { AgentConfig, ChatMessage, WidgetSettings } from '../types';
 import { FormattedMessage } from './FormattedMessage';
@@ -36,6 +37,22 @@ export const IntegrationWidget: React.FC<IntegrationWidgetProps> = ({
   const [copiedIframe, setCopiedIframe] = useState(false);
   const [isWidgetOpen, setIsWidgetOpen] = useState(false);
   const [activePlatform, setActivePlatform] = useState<'sapo' | 'haravan' | 'wordpress' | 'ladipage'>('sapo');
+  const [widgetSaveSuccess, setWidgetSaveSuccess] = useState(false);
+
+  const handleSaveWidgetSettings = () => {
+    try {
+      localStorage.setItem('aistudio_widget_settings', JSON.stringify(widgetSettings));
+      fetch('/api/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ widgetSettings }),
+      }).catch(() => {});
+    } catch (e) {
+      console.error('Failed to save widget settings:', e);
+    }
+    setWidgetSaveSuccess(true);
+    setTimeout(() => setWidgetSaveSuccess(false), 3000);
+  };
 
   // Widget preview messaging
   const [widgetInput, setWidgetInput] = useState('');
@@ -365,6 +382,26 @@ export const IntegrationWidget: React.FC<IntegrationWidgetProps> = ({
                   />
                 </div>
               </div>
+
+              {/* Save Button */}
+              <div className="pt-3 border-t border-slate-100 flex items-center justify-between gap-3">
+                <div className="flex-1">
+                  {widgetSaveSuccess && (
+                    <span className="text-xs text-emerald-600 font-semibold flex items-center gap-1.5 animate-fadeIn">
+                      <Check className="w-4 h-4 text-emerald-600" />
+                      🎉 Đã lưu tùy chỉnh Widget thành công!
+                    </span>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  onClick={handleSaveWidgetSettings}
+                  className="px-5 py-2.5 bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white rounded-xl text-xs font-bold transition-all shadow-sm flex items-center gap-2 cursor-pointer"
+                >
+                  <Save className="w-4 h-4" />
+                  <span>Lưu Tùy Chỉnh Widget</span>
+                </button>
+              </div>
             </div>
           </div>
 
@@ -413,7 +450,7 @@ export const IntegrationWidget: React.FC<IntegrationWidgetProps> = ({
               >
                 <div className="flex items-center gap-2.5">
                   <img
-                    src={agentConfig.avatarUrl || 'https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?w=150&auto=format&fit=crop&q=80'}
+                    src={agentConfig.avatarUrl || 'https://bizweb.dktcdn.net/100/460/752/files/them_logo_tren_ao_co_202606181532.jpeg?v=1786018615920'}
                     alt={agentConfig.name}
                     className="w-9 h-9 rounded-xl object-cover ring-2 ring-white/30"
                   />

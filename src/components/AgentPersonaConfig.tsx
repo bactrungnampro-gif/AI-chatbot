@@ -91,6 +91,16 @@ export const AgentPersonaConfig: React.FC<AgentPersonaConfigProps> = ({
     };
     setAgentConfig(finalData);
 
+    try {
+      fetch('/api/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ agentConfig: finalData }),
+      }).catch(() => {});
+    } catch (err) {
+      console.warn('Failed to sync agentConfig to backend', err);
+    }
+
     if (setWidgetSettings) {
       setWidgetSettings((prev) => ({
         ...prev,

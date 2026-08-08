@@ -3,7 +3,7 @@
     "id": "agent_default",
     "name": "Agent AI",
     "title": "Chuyên viên Tư Vấn & Hỗ Trợ Khách Hàng",
-    "avatarUrl": "https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?w=150&auto=format&fit=crop&q=80",
+    "avatarUrl": "https://bizweb.dktcdn.net/100/460/752/files/them_logo_tren_ao_co_202606181532.jpeg?v=1786018615920",
     "greetingMessage": "Xin chào! Em là Agent AI đại diện hỗ trợ khách hàng của Amall.vn. Em có thể tư vấn sản phẩm, báo giá sỉ/lẻ và hỗ trợ đơn hàng cho anh/chị ạ!",
     "tone": "friendly",
     "businessName": "Amall.vn",
@@ -130,5 +130,6 @@
       "inStock": true
     }
   ],
-  "updatedAt": "2026-08-08T07:23:58.807Z"
+  "googleSession": {},
+  "updatedAt": "2026-08-08T11:51:29.094Z"
 }

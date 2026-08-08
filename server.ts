@@ -1962,7 +1962,9 @@ YÊU CẦU ĐỊNH DẠNG ĐẦU RA:
 // Global In-Memory Config Store for Widget Sync with File Persistence
 const STORE_FILE = path.join(process.cwd(), 'server_store.json');
 
-let serverAgentConfig: any = null;
+const DEFAULT_AVATAR_URL = 'https://bizweb.dktcdn.net/100/460/752/files/them_logo_tren_ao_co_202606181532.jpeg?v=1786018615920';
+
+let serverAgentConfig: any = { avatarUrl: DEFAULT_AVATAR_URL };
 let serverWidgetSettings: any = null;
 let serverKnowledgeSources: any[] = [];
 let serverProducts: any[] = [];
@@ -2020,7 +2022,12 @@ function loadServerStore() {
     if (fs.existsSync(STORE_FILE)) {
       const data = fs.readFileSync(STORE_FILE, 'utf-8');
       const parsed = JSON.parse(data);
-      if (parsed.agentConfig) serverAgentConfig = parsed.agentConfig;
+      if (parsed.agentConfig) {
+        serverAgentConfig = parsed.agentConfig;
+        if (!serverAgentConfig.avatarUrl || serverAgentConfig.avatarUrl.includes('unsplash.com')) {
+          serverAgentConfig.avatarUrl = DEFAULT_AVATAR_URL;
+        }
+      }
       if (parsed.widgetSettings) serverWidgetSettings = parsed.widgetSettings;
       if (Array.isArray(parsed.knowledgeSources)) serverKnowledgeSources = parsed.knowledgeSources;
       if (Array.isArray(parsed.products)) serverProducts = parsed.products;
