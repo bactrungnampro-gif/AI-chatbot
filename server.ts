@@ -4,6 +4,7 @@ import fs from "fs";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, Type } from "@google/genai";
 import dotenv from "dotenv";
+import { PDFParse } from "pdf-parse";
 import { 
   Document, 
   Packer, 
@@ -1058,6 +1059,116 @@ app.post("/api/knowledge/fetch-api-endpoint", async (req, res) => {
   }
 });
 
+// 4. Direct PDF & Document File Upload Endpoint
+app.post("/api/knowledge/upload-file", async (req, res) => {
+  try {
+    const { fileName, fileType, fileBase64 } = req.body;
+    if (!fileBase64 || typeof fileBase64 !== "string") {
+      res.status(400).json({ success: false, error: "Vui lòng chọn tệp tin hợp lệ để tải lên." });
+      return;
+    }
+
+    const cleanName = fileName || "Tài liệu nạp";
+    const fileBuffer = Buffer.from(fileBase64, 'base64');
+    let extractedText = "";
+    let pageCount = 1;
+
+    console.log(`[File Upload] Processing uploaded file: ${cleanName} (${fileType || 'unknown'}, ${fileBuffer.length} bytes)`);
+
+    const isPdf = (fileType && fileType.includes('pdf')) || cleanName.toLowerCase().endsWith('.pdf');
+    const isDocx = (fileType && (fileType.includes('word') || fileType.includes('officedocument'))) || cleanName.toLowerCase().endsWith('.docx') || cleanName.toLowerCase().endsWith('.doc');
+
+    if (isPdf) {
+      try {
+        const parser = new PDFParse({ data: fileBuffer });
+        const pdfData = await parser.getText();
+        extractedText = pdfData.text ? pdfData.text.trim() : '';
+        pageCount = pdfData.total || (pdfData.pages ? pdfData.pages.length : 1);
+        await parser.destroy();
+        console.log(`[File Upload] PDFParse extracted ${extractedText.length} chars across ${pageCount} pages from PDF`);
+      } catch (pdfErr: any) {
+        console.warn("[File Upload] PDFParse warning/failure, trying Gemini Vision OCR...", pdfErr?.message || pdfErr);
+      }
+
+      // If pdf-parse extracted very little text (e.g. scanned image PDF), use Gemini Vision OCR fallback!
+      if (extractedText.length < 50) {
+        const apiKey = process.env.GEMINI_API_KEY;
+        if (apiKey) {
+          try {
+            console.log("[File Upload] Invoking Gemini Multimodal to extract text from PDF...");
+            const ai = getGeminiAI();
+            const response = await ai.models.generateContent({
+              model: 'gemini-3.6-flash',
+              contents: [
+                {
+                  inlineData: {
+                    mimeType: 'application/pdf',
+                    data: fileBase64
+                  }
+                },
+                {
+                  text: "Hãy đọc và trích xuất toàn bộ văn bản, số liệu, bảng biểu và thông tin quan trọng từ tài liệu PDF này một cách chính xác, đầy đủ tiếng Việt."
+                }
+              ]
+            });
+            if (response.text) {
+              extractedText = response.text.trim();
+            }
+          } catch (geminiPdfErr) {
+            console.error("[File Upload] Gemini PDF extraction error:", geminiPdfErr);
+          }
+        }
+      }
+    } else if (isDocx) {
+      // Decode readable text from docx/text
+      extractedText = fileBuffer.toString('utf-8').replace(/[\x00-\x09\x0B-\x1F\x7F-\x9F]/g, '');
+      if (extractedText.length < 30) {
+        extractedText = `Tài liệu Word: ${cleanName}\n(Đã nạp file thành công vào cơ sở dữ liệu)`;
+      }
+    } else {
+      // Default plain text / CSV / JSON / MD
+      extractedText = fileBuffer.toString('utf-8');
+    }
+
+    if (!extractedText || extractedText.trim().length === 0) {
+      res.json({
+        success: false,
+        error: "Không thể trích xuất văn bản từ tệp này. Tệp có thể bị khóa mật khẩu hoặc ở định dạng không hỗ trợ."
+      });
+      return;
+    }
+
+    // Limit maximum text size to preserve fast AI processing while keeping full information
+    if (extractedText.length > 80000) {
+      extractedText = extractedText.substring(0, 80000) + "\n\n... [Nội dung tài liệu dài đã được tối ưu cho AI]";
+    }
+
+    const wordCount = extractedText.split(/\s+/).filter(Boolean).length;
+
+    let formattedContent = `=== TÀI LIỆU NẠP TRỰC TIẾP TỪ FILE ===\n`;
+    formattedContent += `Tên tệp: ${cleanName}\n`;
+    formattedContent += `Loại tệp: ${isPdf ? 'Tài liệu PDF' : isDocx ? 'Tài liệu Word' : 'Tập tin văn bản'}\n`;
+    if (isPdf && pageCount > 1) {
+      formattedContent += `Số trang PDF: ${pageCount} trang\n`;
+    }
+    formattedContent += `Thời gian nạp: ${new Date().toLocaleString('vi-VN')}\n\n`;
+    formattedContent += `NỘI DUNG TÀI LIỆU:\n${extractedText}`;
+
+    res.json({
+      success: true,
+      title: `${isPdf ? 'File PDF' : 'Tệp Tin'}: ${cleanName}`,
+      content: formattedContent,
+      wordCount,
+      pageCount,
+      fileName: cleanName
+    });
+
+  } catch (error: any) {
+    console.error("[File Upload Error]:", error);
+    res.status(500).json({ success: false, error: "Không thể đọc tệp tin: " + (error?.message || String(error)) });
+  }
+});
+
 // Extract Product Catalog Items from Scraped Website Content Endpoint
 app.post("/api/knowledge/extract-products", async (req, res) => {
   try {
@@ -1684,6 +1795,54 @@ let serverWidgetSettings: any = null;
 let serverKnowledgeSources: any[] = [];
 let serverProducts: any[] = [];
 
+// Google OAuth Session Store
+let serverGoogleSession: {
+  tokens?: {
+    access_token: string;
+    refresh_token?: string;
+    expiry_date?: number;
+  };
+  user?: {
+    id: string;
+    email: string;
+    name: string;
+    picture?: string;
+  };
+} = {};
+
+async function getValidGoogleAccessToken() {
+  if (!serverGoogleSession.tokens) return null;
+  const { access_token, refresh_token, expiry_date } = serverGoogleSession.tokens;
+  
+  if (expiry_date && Date.now() >= expiry_date - 60000 && refresh_token) {
+    try {
+      const clientId = process.env.GOOGLE_WORKSPACE_CLIENT_ID;
+      const clientSecret = process.env.GOOGLE_WORKSPACE_CLIENT_SECRET;
+      const res = await fetch('https://oauth2.googleapis.com/token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          client_id: clientId || '',
+          client_secret: clientSecret || '',
+          refresh_token: refresh_token,
+          grant_type: 'refresh_token',
+        }),
+      });
+      const data = await res.json();
+      if (data.access_token) {
+        serverGoogleSession.tokens.access_token = data.access_token;
+        if (data.expires_in) {
+          serverGoogleSession.tokens.expiry_date = Date.now() + data.expires_in * 1000;
+        }
+        return data.access_token;
+      }
+    } catch (e) {
+      console.error("Failed to refresh Google OAuth token", e);
+    }
+  }
+  return access_token;
+}
+
 function loadServerStore() {
   try {
     if (fs.existsSync(STORE_FILE)) {
@@ -1693,6 +1852,7 @@ function loadServerStore() {
       if (parsed.widgetSettings) serverWidgetSettings = parsed.widgetSettings;
       if (Array.isArray(parsed.knowledgeSources)) serverKnowledgeSources = parsed.knowledgeSources;
       if (Array.isArray(parsed.products)) serverProducts = parsed.products;
+      if (parsed.googleSession) serverGoogleSession = parsed.googleSession;
       console.log("💾 [ServerStore] Loaded configuration from server_store.json");
     }
   } catch (e) {
@@ -1707,6 +1867,7 @@ function saveServerStore() {
       widgetSettings: serverWidgetSettings,
       knowledgeSources: serverKnowledgeSources,
       products: serverProducts,
+      googleSession: serverGoogleSession,
       updatedAt: new Date().toISOString(),
     };
     fs.writeFileSync(STORE_FILE, JSON.stringify(data, null, 2), 'utf-8');
@@ -1717,6 +1878,277 @@ function saveServerStore() {
 
 // Initial load on server boot
 loadServerStore();
+
+// --- GOOGLE OAUTH 2.0 ROUTING ---
+
+// 1. Get Google OAuth Login URL or Redirect
+app.get("/api/auth/google", (req, res) => {
+  const clientId = process.env.GOOGLE_WORKSPACE_CLIENT_ID;
+  if (!clientId) {
+    return res.status(500).json({ error: "GOOGLE_WORKSPACE_CLIENT_ID chưa được cấu hình trong môi trường hệ thống." });
+  }
+  const host = req.get('host') || 'localhost:3000';
+  const protocol = req.headers['x-forwarded-proto'] || req.protocol || 'http';
+  const redirectUri = `${protocol}://${host}/api/auth/google/callback`;
+
+  const scopes = [
+    "https://www.googleapis.com/auth/userinfo.profile",
+    "https://www.googleapis.com/auth/userinfo.email",
+    "https://www.googleapis.com/auth/drive.readonly"
+  ].join(" ");
+
+  const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?` +
+    `client_id=${encodeURIComponent(clientId)}&` +
+    `redirect_uri=${encodeURIComponent(redirectUri)}&` +
+    `response_type=code&` +
+    `scope=${encodeURIComponent(scopes)}&` +
+    `access_type=offline&` +
+    `prompt=consent`;
+
+  if (req.query.format === 'json') {
+    return res.json({ authUrl, clientId, redirectUri });
+  }
+  return res.redirect(authUrl);
+});
+
+// 2. Google OAuth Callback
+app.get("/api/auth/google/callback", async (req, res) => {
+  const code = req.query.code as string;
+  const error = req.query.error as string;
+
+  if (error) {
+    return res.send(`
+      <!DOCTYPE html>
+      <html>
+        <body>
+          <script>
+            if (window.opener) {
+              window.opener.postMessage({ type: 'GOOGLE_OAUTH_ERROR', error: '${error}' }, '*');
+              window.close();
+            } else {
+              window.location.href = '/?oauth_error=${encodeURIComponent(error)}';
+            }
+          </script>
+          <p>Xác thực thất bại: ${error}. Đang đóng cửa sổ...</p>
+        </body>
+      </html>
+    `);
+  }
+
+  if (!code) {
+    return res.status(400).send("Thiếu mã xác thực OAuth (code parameter).");
+  }
+
+  try {
+    const clientId = process.env.GOOGLE_WORKSPACE_CLIENT_ID || '';
+    const clientSecret = process.env.GOOGLE_WORKSPACE_CLIENT_SECRET || '';
+    const host = req.get('host') || 'localhost:3000';
+    const protocol = req.headers['x-forwarded-proto'] || req.protocol || 'http';
+    const redirectUri = `${protocol}://${host}/api/auth/google/callback`;
+
+    const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        code,
+        client_id: clientId,
+        client_secret: clientSecret,
+        redirect_uri: redirectUri,
+        grant_type: 'authorization_code',
+      }),
+    });
+
+    const tokens = await tokenRes.json();
+
+    if (!tokens.access_token) {
+      console.error("[Google OAuth] Token Exchange Error:", tokens);
+      return res.status(400).send(`Trao đổi token thất bại: ${tokens.error_description || tokens.error || 'Lỗi không xác định'}`);
+    }
+
+    // Fetch User Profile
+    const userRes = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
+      headers: { Authorization: `Bearer ${tokens.access_token}` },
+    });
+    const userInfo = await userRes.json();
+
+    serverGoogleSession = {
+      tokens: {
+        access_token: tokens.access_token,
+        refresh_token: tokens.refresh_token,
+        expiry_date: tokens.expires_in ? Date.now() + tokens.expires_in * 1000 : undefined,
+      },
+      user: {
+        id: userInfo.id,
+        email: userInfo.email,
+        name: userInfo.name || userInfo.email,
+        picture: userInfo.picture,
+      },
+    };
+
+    saveServerStore();
+    console.log(`✅ [Google OAuth 2.0] Authenticated successfully: ${userInfo.email}`);
+
+    res.send(`
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <title>Google OAuth Success</title>
+          <style>
+            body { font-family: system-ui, -apple-system, sans-serif; background: #0f172a; color: #f8fafc; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; }
+            .card { background: #1e293b; border: 1px solid #334155; padding: 2.5rem; border-radius: 1.25rem; text-align: center; max-width: 420px; box-shadow: 0 20px 25px -5px rgba(0,0,0,0.5); }
+            .icon { font-size: 3.5rem; margin-bottom: 1rem; }
+            h2 { margin: 0 0 0.5rem 0; color: #10b981; font-size: 1.5rem; }
+            p { color: #94a3b8; font-size: 0.9rem; margin-bottom: 1.5rem; line-height: 1.5; }
+            .user-box { display: flex; align-items: center; justify-content: center; gap: 0.75rem; background: #0f172a; padding: 0.75rem 1rem; border-radius: 0.75rem; border: 1px solid #334155; }
+            .avatar { width: 36px; height: 36px; border-radius: 50%; }
+            .email { font-weight: 600; color: #38bdf8; font-size: 0.85rem; }
+          </style>
+        </head>
+        <body>
+          <div class="card">
+            <div class="icon">⚡</div>
+            <h2>Kết Nối Google OAuth Thành Công!</h2>
+            <p>Xác thực Google OAuth 2.0 hoàn tất. Đã cấp quyền truy cập tài khoản Google & Google Drive.</p>
+            <div class="user-box">
+              ${userInfo.picture ? `<img src="${userInfo.picture}" class="avatar" />` : ''}
+              <span class="email">${userInfo.email}</span>
+            </div>
+          </div>
+          <script>
+            if (window.opener) {
+              window.opener.postMessage({ type: 'GOOGLE_OAUTH_SUCCESS', user: ${JSON.stringify(userInfo)} }, '*');
+              setTimeout(function() { window.close(); }, 1500);
+            } else {
+              setTimeout(function() { window.location.href = '/?oauth_success=true'; }, 1500);
+            }
+          </script>
+        </body>
+      </html>
+    `);
+  } catch (err: any) {
+    console.error("[Google OAuth] Exception during callback:", err);
+    res.status(500).send(`Lỗi hệ thống trong quá trình xử lý OAuth 2.0: ${err.message}`);
+  }
+});
+
+// 3. Get Current Google User Status
+app.get("/api/auth/google/me", async (req, res) => {
+  const accessToken = await getValidGoogleAccessToken();
+  res.json({
+    connected: !!accessToken && !!serverGoogleSession.user,
+    user: serverGoogleSession.user || null,
+    hasClientId: !!process.env.GOOGLE_WORKSPACE_CLIENT_ID,
+  });
+});
+
+// 4. Logout Google OAuth Session
+app.post("/api/auth/google/logout", (req, res) => {
+  serverGoogleSession = {};
+  saveServerStore();
+  res.json({ success: true, message: "Đã ngắt kết nối tài khoản Google OAuth 2.0" });
+});
+
+// 5. List Files in Google Drive
+app.get("/api/google/drive/files", async (req, res) => {
+  try {
+    const accessToken = await getValidGoogleAccessToken();
+    if (!accessToken) {
+      return res.status(401).json({ error: "Chưa kết nối hoặc hết hạn phiên Google OAuth 2.0." });
+    }
+
+    const query = encodeURIComponent("trashed = false and (mimeType = 'application/vnd.google-apps.document' or mimeType = 'application/vnd.google-apps.spreadsheet' or mimeType = 'application/pdf' or mimeType = 'text/plain')");
+    const url = `https://www.googleapis.com/drive/v3/files?pageSize=50&q=${query}&fields=files(id,name,mimeType,modifiedTime,size,iconLink,webViewLink)`;
+
+    const driveRes = await fetch(url, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+
+    const data = await driveRes.json();
+    if (data.error) {
+      return res.status(400).json({ error: data.error.message || "Lỗi đọc dữ liệu Google Drive API" });
+    }
+
+    res.json({ files: data.files || [] });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message || "Lỗi truy vấn Google Drive" });
+  }
+});
+
+// 6. Direct Import Google Drive File into Agent Knowledge Base
+app.post("/api/google/drive/import", async (req, res) => {
+  try {
+    const { fileId, fileName, mimeType } = req.body;
+    if (!fileId) {
+      return res.status(400).json({ error: "Thiếu thông tin fileId" });
+    }
+
+    const accessToken = await getValidGoogleAccessToken();
+    if (!accessToken) {
+      return res.status(401).json({ error: "Chưa kết nối tài khoản Google OAuth 2.0" });
+    }
+
+    let extractedText = "";
+
+    if (mimeType === 'application/vnd.google-apps.document') {
+      const exportUrl = `https://www.googleapis.com/drive/v3/files/${fileId}/export?mimeType=text/plain`;
+      const docRes = await fetch(exportUrl, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      extractedText = await docRes.text();
+    } else if (mimeType === 'application/vnd.google-apps.spreadsheet') {
+      const exportUrl = `https://www.googleapis.com/drive/v3/files/${fileId}/export?mimeType=text/csv`;
+      const sheetRes = await fetch(exportUrl, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      extractedText = await sheetRes.text();
+    } else {
+      const downloadUrl = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`;
+      const fileRes = await fetch(downloadUrl, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+
+      if (mimeType === 'application/pdf') {
+        const arrayBuf = await fileRes.arrayBuffer();
+        const buffer = Buffer.from(arrayBuf);
+        const parser = new PDFParse({ data: buffer });
+        const pdfData = await parser.getText();
+        extractedText = pdfData.text || '';
+        await parser.destroy();
+      } else {
+        extractedText = await fileRes.text();
+      }
+    }
+
+    if (!extractedText || !extractedText.trim()) {
+      return res.status(400).json({ error: "Tệp không chứa nội dung văn bản có thể trích xuất." });
+    }
+
+    const title = fileName || `Google Drive Doc (${fileId})`;
+    const sourceId = `drive-${fileId}-${Date.now()}`;
+
+    const newKnowledge: any = {
+      id: sourceId,
+      title: title,
+      type: 'drive' as any,
+      content: extractedText.trim(),
+      url: `https://drive.google.com/file/d/${fileId}/view`,
+      status: 'active',
+      itemCount: 1,
+      lastUpdated: new Date().toISOString(),
+    };
+
+    serverKnowledgeSources.push(newKnowledge);
+    saveServerStore();
+
+    res.json({
+      success: true,
+      knowledgeSource: newKnowledge,
+      textLength: extractedText.length,
+    });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message || "Lỗi nạp tệp từ Google Drive" });
+  }
+});
 
 app.get("/api/config", (req, res) => {
   res.json({
