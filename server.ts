@@ -530,13 +530,115 @@ async function fetchSitemapUrls(baseUrlStr: string): Promise<{ urls: string[], s
   return { urls: Array.from(foundUrls), sitemapLocation: sitemapLoc };
 }
 
-// Website Content Scraper / Extractor Endpoint (Hybrid Support)
+// --- FIRECRAWL INTEGRATION HELPERS & ENDPOINTS ---
+
+async function testFirecrawlApiKey(apiKey: string): Promise<{ success: boolean; message?: string; error?: string }> {
+  if (!apiKey || !apiKey.trim()) {
+    return { success: false, error: "API Key Firecrawl không được để trống." };
+  }
+  try {
+    const res = await fetch("https://api.firecrawl.dev/v1/scrape", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${apiKey.trim()}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        url: "https://example.com",
+        formats: ["markdown"]
+      }),
+      signal: AbortSignal.timeout(10000)
+    });
+
+    const data = await res.json();
+    if (res.ok && data.success !== false) {
+      return { success: true, message: "🎉 XÁC THỰC THÀNH CÔNG! API Key Firecrawl hoạt động hoàn hảo." };
+    } else {
+      return { 
+        success: false, 
+        error: data.error || data.message || `Xác thực Firecrawl thất bại (Mã HTTP ${res.status}). Vui lòng kiểm tra lại Key hoặc hạn ngạch tài khoản.` 
+      };
+    }
+  } catch (err: any) {
+    return { success: false, error: "Lỗi kết nối tới máy chủ Firecrawl API: " + (err.message || String(err)) };
+  }
+}
+
+async function scrapeSingleWithFirecrawl(targetUrl: string, apiKey: string) {
+  const res = await fetch("https://api.firecrawl.dev/v1/scrape", {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${apiKey.trim()}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      url: targetUrl,
+      formats: ["markdown", "html"],
+      onlyMainContent: true
+    }),
+    signal: AbortSignal.timeout(22000)
+  });
+
+  const data = await res.json();
+  if (!res.ok || data.success === false) {
+    throw new Error(data.error || data.message || `Lỗi Firecrawl Scrape (HTTP ${res.status})`);
+  }
+
+  const markdown = data.data?.markdown || "";
+  const html = data.data?.html || "";
+  const metadata = data.data?.metadata || {};
+  const title = metadata.title || extractPageTitle(html, targetUrl) || targetUrl;
+  const description = metadata.description || "";
+  const finalContent = markdown.trim() ? markdown : cleanHtmlContent(html);
+
+  return {
+    title,
+    description,
+    content: finalContent,
+    url: metadata.sourceURL || targetUrl
+  };
+}
+
+async function mapUrlsWithFirecrawl(targetUrl: string, apiKey: string, limit: number = 50): Promise<string[]> {
+  try {
+    const res = await fetch("https://api.firecrawl.dev/v1/map", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${apiKey.trim()}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        url: targetUrl,
+        limit: Math.min(limit, 300)
+      }),
+      signal: AbortSignal.timeout(15000)
+    });
+
+    const data = await res.json();
+    if (res.ok && data.success !== false && Array.isArray(data.links)) {
+      return data.links;
+    }
+  } catch (e) {
+    console.warn("[Firecrawl Map Error]", e);
+  }
+  return [];
+}
+
+// Firecrawl API Key Verification Endpoint
+app.post("/api/firecrawl/test", async (req, res) => {
+  const { apiKey } = req.body;
+  const effectiveKey = apiKey || process.env.FIRECRAWL_API_KEY;
+  const result = await testFirecrawlApiKey(effectiveKey || "");
+  res.json(result);
+});
+
+// Website Content Scraper / Extractor Endpoint (Hybrid Support & Firecrawl AI)
 app.post("/api/knowledge/scrape", async (req, res) => {
   const globalRequestStart = Date.now();
   const MAX_GLOBAL_TIME_MS = 42000; // 42 seconds total budget to guarantee response before 502/504 gateway timeout
 
   try {
-    const { url, mode = 'hybrid', maxPages = 10 } = req.body;
+    const { url, mode = 'hybrid', maxPages = 10, firecrawlApiKey: customFirecrawlKey, engine = 'auto' } = req.body;
     if (!url || typeof url !== "string") {
       res.status(400).json({ error: "URL không hợp lệ hoặc thiếu" });
       return;
@@ -547,43 +649,90 @@ app.post("/api/knowledge/scrape", async (req, res) => {
       targetUrl = "https://" + targetUrl;
     }
 
+    // Determine Firecrawl API Key (User provided in UI or Environment Variable)
+    const firecrawlApiKey = (customFirecrawlKey || process.env.FIRECRAWL_API_KEY || "").trim();
+    const useFirecrawlEngine = (engine === 'firecrawl' || (engine === 'auto' && firecrawlApiKey.length > 0)) && firecrawlApiKey.length > 0;
+
     // Parse maxPages limit (1 to 1000)
     const pageLimit = Math.min(Math.max(parseInt(String(maxPages), 10) || 10, 1), 1000);
     const crawlMode = ['hybrid', 'sitemap', 'sublinks', 'single'].includes(mode) ? mode : 'hybrid';
 
-    console.log(`[Scraper] Starting ${crawlMode.toUpperCase()} crawl for: ${targetUrl} (Max pages: ${pageLimit})`);
+    console.log(`[Scraper] Starting ${crawlMode.toUpperCase()} crawl for: ${targetUrl} (Max pages: ${pageLimit}, Engine: ${useFirecrawlEngine ? 'FIRECRAWL AI' : 'NATIVE HYBRID'})`);
 
-    // Step 1: Fetch Main Entry Page
-    const mainResponse = await fetch(targetUrl, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Accept-Language': 'vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7'
-      },
-      signal: AbortSignal.timeout(8000)
-    });
+    // --- FIRECRAWL SINGLE PAGE STRATEGY ---
+    if (useFirecrawlEngine && (crawlMode === 'single' || pageLimit === 1)) {
+      try {
+        console.log(`[Scraper] Using Firecrawl AI Scraper for single page: ${targetUrl}`);
+        const fcResult = await scrapeSingleWithFirecrawl(targetUrl, firecrawlApiKey);
+        const wordCount = fcResult.content.split(/\s+/).filter(Boolean).length;
 
-    if (!mainResponse.ok) {
-      throw new Error(`HTTP ${mainResponse.status}: ${mainResponse.statusText}`);
+        res.json({
+          success: true,
+          title: fcResult.title,
+          url: fcResult.url,
+          content: fcResult.content,
+          wordCount,
+          pagesScrapedCount: 1,
+          crawlMode: 'single',
+          crawlEngine: 'firecrawl',
+          subPages: [{ title: fcResult.title, url: fcResult.url }]
+        });
+        return;
+      } catch (fcErr: any) {
+        console.warn(`[Scraper] Firecrawl single scrape failed, falling back to Native engine:`, fcErr.message);
+      }
     }
 
-    const mainHtml = await mainResponse.text();
-    const isXmlSitemap = targetUrl.toLowerCase().endsWith('.xml') || mainHtml.includes('<urlset') || mainHtml.includes('<sitemapindex');
-    
-    let mainTitle = extractPageTitle(mainHtml, targetUrl);
-    let mainText = cleanHtmlContent(mainHtml);
+    // Step 1: Fetch Main Entry Page
+    let mainTitle = '';
+    let mainText = '';
+    let mainHtml = '';
+    let isXmlSitemap = false;
+    let mainScrapedWithFc = false;
 
-    if (isXmlSitemap) {
-      const fileName = targetUrl.split('/').pop() || targetUrl;
-      mainTitle = `Sitemap XML: ${fileName}`;
-      mainText = `Sitemap XML chứa danh sách liên kết từ ${targetUrl}`;
+    if (useFirecrawlEngine) {
+      try {
+        const fcMain = await scrapeSingleWithFirecrawl(targetUrl, firecrawlApiKey);
+        mainTitle = fcMain.title;
+        mainText = fcMain.content;
+        mainScrapedWithFc = true;
+      } catch (e) {
+        console.warn("[Scraper] Firecrawl main page fetch failed, falling back to native fetch:", e);
+      }
+    }
+
+    if (!mainText) {
+      const mainResponse = await fetch(targetUrl, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Accept-Language': 'vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7'
+        },
+        signal: AbortSignal.timeout(8000)
+      });
+
+      if (!mainResponse.ok) {
+        throw new Error(`HTTP ${mainResponse.status}: ${mainResponse.statusText}`);
+      }
+
+      mainHtml = await mainResponse.text();
+      isXmlSitemap = targetUrl.toLowerCase().endsWith('.xml') || mainHtml.includes('<urlset') || mainHtml.includes('<sitemapindex');
+      
+      mainTitle = extractPageTitle(mainHtml, targetUrl);
+      mainText = cleanHtmlContent(mainHtml);
+
+      if (isXmlSitemap) {
+        const fileName = targetUrl.split('/').pop() || targetUrl;
+        mainTitle = `Sitemap XML: ${fileName}`;
+        mainText = `Sitemap XML chứa danh sách liên kết từ ${targetUrl}`;
+      }
     }
 
     // If mode is 'single', return immediately
     if (crawlMode === 'single' || pageLimit === 1) {
       let finalSingleText = mainText;
-      if (finalSingleText.length > 12000) {
-        finalSingleText = finalSingleText.substring(0, 12000) + "... [Đã rút gọn]";
+      if (finalSingleText.length > 15000) {
+        finalSingleText = finalSingleText.substring(0, 15000) + "... [Đã rút gọn]";
       }
       const wordCount = finalSingleText.split(/\s+/).filter(Boolean).length;
       res.json({
@@ -594,6 +743,7 @@ app.post("/api/knowledge/scrape", async (req, res) => {
         wordCount,
         pagesScrapedCount: 1,
         crawlMode: 'single',
+        crawlEngine: mainScrapedWithFc ? 'firecrawl' : 'native',
         subPages: [{ title: mainTitle, url: targetUrl }]
       });
       return;
@@ -602,10 +752,18 @@ app.post("/api/knowledge/scrape", async (req, res) => {
     // --- HYBRID / MULTI-PAGE CRAWLING ---
     let discoveredSitemapUrls: string[] = [];
     let discoveredSublinks: string[] = [];
+    let discoveredFirecrawlMapUrls: string[] = [];
     let sitemapLocation: string | undefined = undefined;
 
+    // Mechanism 0: Firecrawl Map API (If Firecrawl engine enabled)
+    if (useFirecrawlEngine && !isXmlSitemap) {
+      console.log(`[Scraper] Discovering site URLs via Firecrawl Map API...`);
+      discoveredFirecrawlMapUrls = await mapUrlsWithFirecrawl(targetUrl, firecrawlApiKey, pageLimit * 2);
+      console.log(`[Scraper] Firecrawl Map API discovered ${discoveredFirecrawlMapUrls.length} links`);
+    }
+
     // Direct extraction of <loc> if targetUrl itself is an XML sitemap
-    if (isXmlSitemap) {
+    if (isXmlSitemap && mainHtml) {
       const locRegex = /<loc>\s*(https?:\/\/[^<]+)\s*<\/loc>/gi;
       let match;
       while ((match = locRegex.exec(mainHtml)) !== null) {
@@ -629,7 +787,7 @@ app.post("/api/knowledge/scrape", async (req, res) => {
     }
 
     // Mechanism 2: Discover via Sub-links in HTML (if mode is 'hybrid' or 'sublinks' AND NOT an XML file)
-    if ((crawlMode === 'hybrid' || crawlMode === 'sublinks') && !isXmlSitemap) {
+    if ((crawlMode === 'hybrid' || crawlMode === 'sublinks') && !isXmlSitemap && mainHtml) {
       console.log(`[Scraper] Discovering internal sub-links from main page HTML...`);
       discoveredSublinks = extractInternalLinks(mainHtml, targetUrl);
       console.log(`[Scraper] Extracted ${discoveredSublinks.length} internal sub-links from main HTML`);
@@ -651,30 +809,29 @@ app.post("/api/knowledge/scrape", async (req, res) => {
     const scoreUrl = (u: string) => {
       let score = 0;
       const lower = u.toLowerCase();
-      // URLs in both sitemap & sublinks get bonus
+      if (discoveredFirecrawlMapUrls.includes(u)) score += 8;
       if (discoveredSitemapUrls.includes(u) && discoveredSublinks.includes(u)) score += 5;
       for (const kw of priorityKeywords) {
         if (lower.includes(kw)) score += 3;
       }
-      // Shorter path URLs usually contain main category/info
       score += Math.max(0, 10 - u.split('/').length);
       return score;
     };
 
     // Combine all discovered candidates
-    const allDiscovered = Array.from(new Set([...discoveredSitemapUrls, ...discoveredSublinks]))
+    const allDiscovered = Array.from(new Set([...discoveredFirecrawlMapUrls, ...discoveredSitemapUrls, ...discoveredSublinks]))
       .filter(u => u !== normalizedTargetUrl && u !== targetUrl && u !== targetUrl + '/');
 
-    // Sort candidates by priority score descending (if sitemap was specifically provided, preserve sitemap order mostly)
+    // Sort candidates by priority score descending
     if (!isXmlSitemap) {
       allDiscovered.sort((a, b) => scoreUrl(b) - scoreUrl(a));
     }
 
-    // Select sub-pages queue (if targetUrl is XML sitemap, crawl up to pageLimit pages directly)
+    // Select sub-pages queue
     const pagesToCrawlLimit = isXmlSitemap ? pageLimit : (pageLimit - 1);
     const subPagesToCrawl = allDiscovered.slice(0, pagesToCrawlLimit);
 
-    console.log(`[Scraper] Crawling top ${subPagesToCrawl.length} sub-pages out of ${allDiscovered.length} discovered candidates.`);
+    console.log(`[Scraper] Crawling top ${subPagesToCrawl.length} sub-pages out of ${allDiscovered.length} candidates.`);
 
     // Crawl sub-pages in batches
     const scrapedPagesList: Array<{ title: string; url: string; content: string; wordCount: number }> = [];
@@ -688,31 +845,48 @@ app.post("/api/knowledge/scrape", async (req, res) => {
       });
     }
 
-    // Concurrency batch execution with high-throughput parallelism & dynamic timeout
-    let BATCH_SIZE = 10;
+    // Concurrency batch execution
+    let BATCH_SIZE = useFirecrawlEngine ? 5 : 10;
     let PAGE_TIMEOUT_MS = 3500;
 
-    if (subPagesToCrawl.length > 500) {
-      BATCH_SIZE = 60; // Ultra high parallelism for 500-1000 pages
-      PAGE_TIMEOUT_MS = 2200;
-    } else if (subPagesToCrawl.length > 200) {
-      BATCH_SIZE = 40; // High parallelism for 200-500 pages
-      PAGE_TIMEOUT_MS = 2500;
-    } else if (subPagesToCrawl.length > 50) {
-      BATCH_SIZE = 20;
-      PAGE_TIMEOUT_MS = 3000;
+    if (!useFirecrawlEngine) {
+      if (subPagesToCrawl.length > 500) {
+        BATCH_SIZE = 60;
+        PAGE_TIMEOUT_MS = 2200;
+      } else if (subPagesToCrawl.length > 200) {
+        BATCH_SIZE = 40;
+        PAGE_TIMEOUT_MS = 2500;
+      } else if (subPagesToCrawl.length > 50) {
+        BATCH_SIZE = 20;
+        PAGE_TIMEOUT_MS = 3000;
+      }
     }
 
     for (let i = 0; i < subPagesToCrawl.length; i += BATCH_SIZE) {
-      // Safety threshold check before executing next batch
       if (Date.now() - globalRequestStart > MAX_GLOBAL_TIME_MS) {
-        console.log(`[Scraper] Reached ${MAX_GLOBAL_TIME_MS}ms global time window budget! Returning ${scrapedPagesList.length} pages accumulated so far.`);
+        console.log(`[Scraper] Reached global time budget! Returning ${scrapedPagesList.length} pages accumulated.`);
         break;
       }
 
       const batch = subPagesToCrawl.slice(i, i + BATCH_SIZE);
       const batchPromises = batch.map(async (subUrl) => {
         try {
+          if (useFirecrawlEngine) {
+            try {
+              const fcSub = await scrapeSingleWithFirecrawl(subUrl, firecrawlApiKey);
+              if (fcSub.content && fcSub.content.length >= 30) {
+                return {
+                  title: fcSub.title,
+                  url: subUrl,
+                  content: fcSub.content,
+                  wordCount: fcSub.content.split(/\s+/).filter(Boolean).length
+                };
+              }
+            } catch (fcErr) {
+              // Fallback to native fetch
+            }
+          }
+
           const res = await fetch(subUrl, {
             headers: {
               'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -724,7 +898,7 @@ app.post("/api/knowledge/scrape", async (req, res) => {
           const subHtml = await res.text();
           const subTitle = extractPageTitle(subHtml, subUrl);
           const subContent = cleanHtmlContent(subHtml);
-          if (subContent.length < 50) return null; // Skip empty pages
+          if (subContent.length < 50) return null;
 
           return {
             title: subTitle,
@@ -733,7 +907,7 @@ app.post("/api/knowledge/scrape", async (req, res) => {
             wordCount: subContent.split(/\s+/).filter(Boolean).length
           };
         } catch (err) {
-          return null; // Ignore individual page fetch errors silently
+          return null;
         }
       });
 
@@ -743,7 +917,6 @@ app.post("/api/knowledge/scrape", async (req, res) => {
       }
     }
 
-    // Fallback if no subpages could be scraped for XML
     if (scrapedPagesList.length === 0) {
       scrapedPagesList.push({
         title: mainTitle,
@@ -754,21 +927,20 @@ app.post("/api/knowledge/scrape", async (req, res) => {
     }
 
     // Build Combined Knowledge Document
-    let combinedContent = `=== TỔNG HỢP DỮ LIỆU CÀO WEBSITE LAI (HYBRID CRAWLER) ===\n`;
+    let combinedContent = `=== TỔNG HỢP DỮ LIỆU CÀO WEBSITE ${useFirecrawlEngine ? '(FIRECRAWL AI ENGINE)' : '(HYBRID CRAWLER)'} ===\n`;
     combinedContent += `Trang gốc: ${targetUrl}\n`;
-    combinedContent += `Cơ chế: ${crawlMode.toUpperCase()} (Sitemap + Quét liên kết sub-links)\n`;
+    combinedContent += `Cơ chế: ${crawlMode.toUpperCase()} (${useFirecrawlEngine ? 'Firecrawl AI Map + Scraper Markdown' : 'Sitemap + Quét sublinks'})\n`;
     combinedContent += `Tổng số trang đã cào thành công: ${scrapedPagesList.length} trang\n\n`;
 
-    // Dynamic per-page truncation based on page count to preserve total context window & lightweight payload
-    let maxCharsPerPage = 5000;
+    let maxCharsPerPage = 6000;
     if (scrapedPagesList.length > 300) {
-      maxCharsPerPage = 500;
+      maxCharsPerPage = 600;
     } else if (scrapedPagesList.length > 100) {
-      maxCharsPerPage = 800;
+      maxCharsPerPage = 1000;
     } else if (scrapedPagesList.length > 50) {
-      maxCharsPerPage = 1200;
+      maxCharsPerPage = 1600;
     } else if (scrapedPagesList.length > 20) {
-      maxCharsPerPage = 2500;
+      maxCharsPerPage = 3000;
     }
 
     scrapedPagesList.forEach((page, index) => {
@@ -2277,7 +2449,8 @@ app.post("/api/config", (req, res) => {
 // Embeddable JS Widget Script Generator Endpoint
 app.get("/api/widget.js", (req, res) => {
   const host = req.get('host') || 'localhost:3000';
-  const protocol = req.protocol || 'http';
+  const rawProto = (req.headers['x-forwarded-proto'] as string) || req.protocol || 'https';
+  const protocol = (host.includes('localhost') || host.includes('127.0.0.1')) ? rawProto : 'https';
   const baseUrl = `${protocol}://${host}`;
   const launcherText = serverWidgetSettings.buttonText || 'Hỏi Trợ Lý AI';
 

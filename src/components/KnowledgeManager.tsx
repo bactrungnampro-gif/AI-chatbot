@@ -26,7 +26,10 @@ import {
   LogOut,
   ExternalLink,
   Folder,
-  File
+  File,
+  Flame,
+  Zap,
+  Key
 } from 'lucide-react';
 import { KnowledgeSource, KnowledgeType, ProductItem } from '../types';
 
@@ -61,6 +64,43 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
   const [scrapeError, setScrapeError] = useState<string | null>(null);
   const [scrapeSuccess, setScrapeSuccess] = useState<string | null>(null);
   const [expandedSubPagesId, setExpandedSubPagesId] = useState<string | null>(null);
+
+  // Firecrawl API Integration State
+  const [firecrawlApiKey, setFirecrawlApiKey] = useState<string>(() => localStorage.getItem('firecrawl_api_key') || '');
+  const [showFirecrawlKey, setShowFirecrawlKey] = useState<boolean>(false);
+  const [isTestingFirecrawl, setIsTestingFirecrawl] = useState<boolean>(false);
+  const [firecrawlTestResult, setFirecrawlTestResult] = useState<{ success: boolean; message?: string; error?: string } | null>(null);
+  const [crawlerEngine, setCrawlerEngine] = useState<'auto' | 'firecrawl' | 'native'>('auto');
+
+  const handleSaveFirecrawlKey = (key: string) => {
+    setFirecrawlApiKey(key);
+    localStorage.setItem('firecrawl_api_key', key.trim());
+  };
+
+  const handleTestFirecrawlKey = async () => {
+    if (!firecrawlApiKey.trim()) {
+      setFirecrawlTestResult({ success: false, error: 'Vui lòng nhập API Key Firecrawl trước khi kiểm tra.' });
+      return;
+    }
+    setIsTestingFirecrawl(true);
+    setFirecrawlTestResult(null);
+    try {
+      const res = await fetch('/api/firecrawl/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ apiKey: firecrawlApiKey.trim() }),
+      });
+      const data = await res.json();
+      setFirecrawlTestResult(data);
+      if (data.success) {
+        localStorage.setItem('firecrawl_api_key', firecrawlApiKey.trim());
+      }
+    } catch (e: any) {
+      setFirecrawlTestResult({ success: false, error: 'Lỗi kiểm tra Key Firecrawl: ' + e.message });
+    } finally {
+      setIsTestingFirecrawl(false);
+    }
+  };
 
   // Google Sheets Integration State
   const [sheetUrl, setSheetUrl] = useState('');
@@ -324,11 +364,14 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
         body: JSON.stringify({ 
           url: urlInput.trim(),
           mode: scrapeMode,
-          maxPages: maxPages
+          maxPages: maxPages,
+          firecrawlApiKey: firecrawlApiKey.trim(),
+          engine: crawlerEngine
         }),
       });
 
       if (data.success && data.content) {
+        const engineLabel = data.crawlEngine === 'firecrawl' ? '🔥 FIRECRAWL AI' : '⚡ HYBRID NATIVE';
         const newSource: KnowledgeSource = {
           id: `kb_web_${Date.now()}`,
           title: data.title || `Trang web: ${urlInput}`,
@@ -347,7 +390,7 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
         setKnowledgeSources((prev) => [newSource, ...prev]);
         const modeLabel = (data.crawlMode || scrapeMode).toUpperCase();
         const pagesStr = data.pagesScrapedCount ? `${data.pagesScrapedCount} trang` : '1 trang';
-        setScrapeSuccess(`🎉 Đã thu thập thành công ${pagesStr} (~${data.wordCount} từ) bằng cơ chế ${modeLabel} từ ${data.url}`);
+        setScrapeSuccess(`🎉 Đã thu thập thành công ${pagesStr} (~${data.wordCount} từ) bằng Động Cơ [${engineLabel}] (${modeLabel}) từ ${data.url}`);
         setUrlInput('');
 
         // Automatically offer or trigger product catalog extraction
@@ -814,16 +857,131 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
 
         {/* TAB 1: WEBSITE SCRAPER */}
         {activeTab === 'website' && (
-          <div className="max-w-3xl">
-          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-indigo-500/20 text-indigo-300 text-xs font-semibold mb-3 border border-indigo-400/30">
-            <Globe className="w-3.5 h-3.5" />
-            <span>Thu Thập Tự Động Từ Website (Website Scraping)</span>
-          </div>
-          <h2 className="text-xl sm:text-2xl font-bold tracking-tight mb-2">
-            Nạp dữ liệu website cho Trợ lý AI
-          </h2>
-          <p className="text-xs sm:text-sm text-slate-300 leading-relaxed mb-4">
-            Nhập đường dẫn trang web. Hệ thống sẽ tự động sử dụng <b>Chiến lược Cào Lai (Hybrid Strategy)</b>: Quét Sitemap XML chính chủ kết hợp với bóc tách liên kết con (sub-links) để gom toàn bộ dữ liệu chỉ trong 1 lần nhấn.
+          <div className="max-w-3xl space-y-5">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div>
+                <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-indigo-500/20 text-indigo-300 text-xs font-semibold mb-2 border border-indigo-400/30">
+                  <Globe className="w-3.5 h-3.5 text-sky-400" />
+                  <span>Thu Thập Tự Động Từ Website (Website Scraping)</span>
+                </div>
+                <h2 className="text-xl sm:text-2xl font-bold tracking-tight">
+                  Nạp dữ liệu website cho Trợ lý AI
+                </h2>
+              </div>
+
+              {/* Engine Badge */}
+              <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-gradient-to-r from-orange-500/20 to-amber-500/20 border border-orange-500/30 text-orange-300 text-xs font-bold">
+                <Flame className="w-4 h-4 text-orange-400 animate-pulse" />
+                <span>Firecrawl API Key: {firecrawlApiKey ? 'Đã cấu hình' : 'Chưa nhập'}</span>
+              </div>
+            </div>
+
+            {/* FIRECRAWL API KEY CONFIG CARD */}
+            <div className="bg-gradient-to-br from-slate-900 via-slate-800 to-orange-950/30 p-4 sm:p-5 rounded-2xl border border-orange-500/30 space-y-3.5 shadow-lg">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2.5">
+                  <div className="p-2 bg-orange-500/20 border border-orange-500/40 rounded-xl">
+                    <Flame className="w-5 h-5 text-orange-400" />
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                      <span>Firecrawl AI Web Scraper & Crawler API</span>
+                      <span className="px-2 py-0.5 rounded-full bg-orange-500/20 text-orange-300 text-[10px] font-extrabold uppercase border border-orange-500/30">
+                        Khuyên Dùng
+                      </span>
+                    </h3>
+                    <p className="text-xs text-slate-300">
+                      Cào trang web chuyên sâu, vượt anti-bot/Cloudflare, render JavaScript & chuyển đổi thành Markdown chuẩn AI.
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <div className="flex flex-col sm:flex-row gap-2">
+                  <div className="relative flex-1">
+                    <Key className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-orange-400" />
+                    <input
+                      type={showFirecrawlKey ? "text" : "password"}
+                      value={firecrawlApiKey}
+                      onChange={(e) => handleSaveFirecrawlKey(e.target.value)}
+                      placeholder="Dán API Key Firecrawl của bạn (fc-xxxxxxxx...)"
+                      className="w-full pl-9 pr-20 py-2.5 rounded-xl bg-slate-950/90 border border-orange-500/40 text-white placeholder-slate-500 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-orange-500"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowFirecrawlKey(!showFirecrawlKey)}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[11px] font-bold text-slate-400 hover:text-white px-2 py-1 rounded bg-slate-800/80"
+                    >
+                      {showFirecrawlKey ? "Ẩn" : "Hiện"}
+                    </button>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={handleTestFirecrawlKey}
+                    disabled={isTestingFirecrawl || !firecrawlApiKey.trim()}
+                    className="px-4 py-2.5 rounded-xl bg-orange-600 hover:bg-orange-500 disabled:bg-slate-800 text-white text-xs font-bold transition-all shadow-xs flex items-center justify-center gap-1.5 shrink-0"
+                  >
+                    {isTestingFirecrawl ? (
+                      <>
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                        <span>Đang kiểm tra...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Zap className="w-3.5 h-3.5" />
+                        <span>Kiểm tra Key</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+
+                {firecrawlTestResult && (
+                  <div className={`p-3 rounded-xl text-xs font-medium border flex items-start gap-2 ${
+                    firecrawlTestResult.success 
+                      ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-200' 
+                      : 'bg-rose-500/15 border-rose-500/40 text-rose-200'
+                  }`}>
+                    {firecrawlTestResult.success ? (
+                      <CheckCircle className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+                    ) : (
+                      <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                    )}
+                    <span>{firecrawlTestResult.message || firecrawlTestResult.error}</span>
+                  </div>
+                )}
+              </div>
+
+              {/* Engine Mode Selection */}
+              <div className="pt-1 border-t border-slate-800/80 flex flex-wrap items-center justify-between gap-2 text-xs">
+                <div className="flex items-center gap-2">
+                  <span className="text-slate-400 font-medium">Động cơ thu thập:</span>
+                  <select
+                    value={crawlerEngine}
+                    onChange={(e) => setCrawlerEngine(e.target.value as any)}
+                    className="bg-slate-900 border border-orange-500/30 text-orange-200 font-semibold rounded-lg px-2.5 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-orange-500 cursor-pointer"
+                  >
+                    <option value="auto">🔥 Tự động (Ưu tiên Firecrawl nếu có Key, tự động Fallback)</option>
+                    <option value="firecrawl">🔥 Bắt buộc Firecrawl AI Engine (Markdown & Anti-bot)</option>
+                    <option value="native">⚡ Hybrid Native Scraper (Sitemap XML + Sublinks)</option>
+                  </select>
+                </div>
+
+                <a 
+                  href="https://firecrawl.dev" 
+                  target="_blank" 
+                  rel="noopener noreferrer"
+                  className="text-orange-400 hover:text-orange-300 hover:underline inline-flex items-center gap-1 text-[11px] font-semibold"
+                >
+                  <span>Lấy API Key Firecrawl miễn phí</span>
+                  <ExternalLink className="w-3 h-3" />
+                </a>
+              </div>
+            </div>
+
+          <p className="text-xs sm:text-sm text-slate-300 leading-relaxed">
+            Nhập đường dẫn trang web. Hệ thống hỗ trợ <b>Firecrawl AI Engine</b> (bóc tách Markdown chuẩn LLM) hoặc <b>Chiến lược Cào Lai (Hybrid Strategy)</b> để quét sitemap XML & sublinks.
           </p>
 
           {/* Scrape Strategy & Config Selector */}
