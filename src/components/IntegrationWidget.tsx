@@ -285,10 +285,40 @@ export const IntegrationWidget: React.FC<IntegrationWidgetProps> = ({
           <div className="bg-white p-6 rounded-2xl border border-slate-200/80 shadow-2xs space-y-4">
             <h3 className="font-bold text-slate-900 text-sm flex items-center gap-2 border-b border-slate-100 pb-3">
               <Palette className="w-4 h-4 text-blue-600" />
-              <span>Tùy Chỉnh Giao Diện Floating Widget</span>
+              <span>Tùy Chỉnh Giao Diện & Tiêu Đề Floating Widget</span>
             </h3>
 
             <div className="space-y-4 text-xs">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block font-semibold text-slate-700 mb-1">
+                    Tiêu đề Header Khung Chat
+                  </label>
+                  <input
+                    type="text"
+                    value={widgetSettings.headerTitle || ''}
+                    onChange={(e) => setWidgetSettings({ ...widgetSettings, headerTitle: e.target.value })}
+                    placeholder={agentConfig.businessName ? `Hỗ Trợ Khách Hàng ${agentConfig.businessName}` : (agentConfig.name || 'Hỗ Trợ Khách Hàng AI')}
+                    className="w-full p-2.5 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                  />
+                  <span className="text-[10px] text-slate-400 mt-0.5 block">Tiêu đề lớn hiển thị trên cùng khung chat</span>
+                </div>
+
+                <div>
+                  <label className="block font-semibold text-slate-700 mb-1">
+                    Phụ đề / Trạng thái dưới Tiêu đề
+                  </label>
+                  <input
+                    type="text"
+                    value={widgetSettings.subtitle || ''}
+                    onChange={(e) => setWidgetSettings({ ...widgetSettings, subtitle: e.target.value })}
+                    placeholder={agentConfig.title || 'Trả lời tự động 24/7 bằng Trợ lý AI'}
+                    className="w-full p-2.5 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                  />
+                  <span className="text-[10px] text-slate-400 mt-0.5 block">Dòng chữ nhỏ bên cạnh chấm xanh online</span>
+                </div>
+              </div>
+
               <div>
                 <label className="block font-semibold text-slate-700 mb-2">Màu chủ đạo Widget</label>
                 <div className="flex flex-wrap gap-3">
@@ -388,8 +418,12 @@ export const IntegrationWidget: React.FC<IntegrationWidgetProps> = ({
                     className="w-9 h-9 rounded-xl object-cover ring-2 ring-white/30"
                   />
                   <div>
-                    <h4 className="font-bold text-xs">{agentConfig.name}</h4>
-                    <p className="text-[10px] opacity-80">{widgetSettings.subtitle}</p>
+                    <h4 className="font-bold text-xs">
+                      {widgetSettings.headerTitle || (agentConfig.businessName ? `Hỗ Trợ Khách Hàng ${agentConfig.businessName}` : (agentConfig.name || 'Hỗ Trợ Khách Hàng AI'))}
+                    </h4>
+                    <p className="text-[10px] opacity-80">
+                      {widgetSettings.subtitle || agentConfig.title || 'Trả lời tự động 24/7 bằng Trợ lý AI'}
+                    </p>
                   </div>
                 </div>
                 <button

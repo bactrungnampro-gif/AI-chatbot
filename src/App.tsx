@@ -236,6 +236,7 @@ export default function App() {
           <AgentPersonaConfig
             agentConfig={agentConfig}
             setAgentConfig={setAgentConfig}
+            setWidgetSettings={setWidgetSettings}
           />
         )}
 

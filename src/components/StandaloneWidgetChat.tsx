@@ -67,8 +67,16 @@ export const StandaloneWidgetChat: React.FC<StandaloneWidgetChatProps> = ({
 
   const primaryColor = currentSettings?.primaryColor || '#2563eb';
   const agentDisplayName = currentAgent.name || 'Trợ Lý AI';
-  const widgetHeaderTitle = currentSettings?.headerTitle || (currentAgent.businessName ? `Hỗ Trợ Khách Hàng ${currentAgent.businessName}` : 'Hỗ Trợ Khách Hàng AI');
-  const agentSubtitle = currentSettings?.subtitle || currentAgent.title || 'Trả lời tự động 24/7 bằng Trợ lý AI';
+  
+  // Dynamically compute header title prioritizing updated agent businessName and agent name over legacy defaults
+  const isDefaultHeader = !currentSettings?.headerTitle || currentSettings.headerTitle === 'Hỗ Trợ Khách Hàng TechLife' || currentSettings.headerTitle === 'Hỗ Trợ Khách Hàng AI';
+  const widgetHeaderTitle = (!isDefaultHeader && currentSettings?.headerTitle)
+    ? currentSettings.headerTitle
+    : (currentAgent.businessName 
+        ? `Hỗ Trợ Khách Hàng ${currentAgent.businessName}` 
+        : (currentAgent.name ? `${currentAgent.name}` : 'Hỗ Trợ Khách Hàng AI'));
+
+  const agentSubtitle = currentAgent.title || currentSettings?.subtitle || 'Trả lời tự động 24/7 bằng Trợ lý AI';
   const avatarUrl = currentAgent.avatarUrl;
 
   const [inputText, setInputText] = useState('');

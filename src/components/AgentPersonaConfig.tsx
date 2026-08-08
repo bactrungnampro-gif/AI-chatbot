@@ -16,16 +16,18 @@ import {
   Zap,
   Info
 } from 'lucide-react';
-import { AgentConfig, AIProvider } from '../types';
+import { AgentConfig, AIProvider, WidgetSettings } from '../types';
 
 interface AgentPersonaConfigProps {
   agentConfig: AgentConfig;
   setAgentConfig: React.Dispatch<React.SetStateAction<AgentConfig>>;
+  setWidgetSettings?: React.Dispatch<React.SetStateAction<WidgetSettings>>;
 }
 
 export const AgentPersonaConfig: React.FC<AgentPersonaConfigProps> = ({
   agentConfig,
   setAgentConfig,
+  setWidgetSettings,
 }) => {
   const [formData, setFormData] = useState<AgentConfig>({
     selectedProvider: 'google',
@@ -88,6 +90,15 @@ export const AgentPersonaConfig: React.FC<AgentPersonaConfigProps> = ({
       },
     };
     setAgentConfig(finalData);
+
+    if (setWidgetSettings) {
+      setWidgetSettings((prev) => ({
+        ...prev,
+        headerTitle: finalData.businessName ? `Hỗ Trợ Khách Hàng ${finalData.businessName}` : (finalData.name || prev.headerTitle),
+        subtitle: finalData.title || prev.subtitle,
+      }));
+    }
+
     setSavedSuccess(true);
     setTimeout(() => setSavedSuccess(false), 3000);
   };
