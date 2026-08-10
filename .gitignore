@@ -1,0 +1,13 @@
+node_modules/
+build/
+dist/
+coverage/
+.DS_Store
+*.log
+.env*
+!.env.example
+
+# [Security] Không commit bí mật & dữ liệu runtime
+firebase-applet-config.json
+supabase_config.json
+server_store.json

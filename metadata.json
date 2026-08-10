@@ -1,0 +1,6 @@
+{
+  "name": "Trợ Lý AI Tư Vấn Khách Hàng",
+  "description": "Nền tảng tạo Trợ lý AI tư vấn khách hàng, hướng dẫn nghiệp vụ, phân tích tệp hình ảnh/video và tích hợp website.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
