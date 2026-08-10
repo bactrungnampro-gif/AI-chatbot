@@ -2396,6 +2396,61 @@ async function upsertInChunks(client: any, table: string, records: any[], size =
   return null;
 }
 
+// --- ĐỒNG BỘ THEO TỪNG BẢN GHI (per-item diff) ---
+// Chỉ ghi mục MỚI/THAY ĐỔI và xóa mục ĐÃ GỠ, thay vì ghi lại toàn bộ mỗi lần.
+// Chữ ký nhẹ (không hash toàn bộ content) để phát hiện thay đổi rẻ tiền.
+let lastKnowledgeSyncSig: Record<string, string> = {};
+function ksSignature(s: any): string {
+  return [
+    s.title || '', s.url || '', s.active !== false ? '1' : '0',
+    String((s.content || '').length), String(s.wordCount || 0), s.type || ''
+  ].join('|');
+}
+// Khởi tạo chữ ký từ dữ liệu đã tải (để lần lưu đầu sau khi load không ghi lại thừa).
+function primeKnowledgeSyncSig(sources: any[]) {
+  const next: Record<string, string> = {};
+  for (const s of (Array.isArray(sources) ? sources : [])) if (s && s.id) next[s.id] = ksSignature(s);
+  lastKnowledgeSyncSig = next;
+}
+// Đồng bộ chênh lệch. force=true bỏ qua chữ ký (ghi lại tất cả) — dùng cho nút "Đồng bộ" thủ công.
+async function syncKnowledgeSourcesDiff(client: any, tableName: string, sources: any[], force = false): Promise<string | null> {
+  const list = Array.isArray(sources) ? sources : [];
+  const currentIds = new Set<string>();
+  const toUpsert: any[] = [];
+  for (const s of list) {
+    if (!s || !s.id) continue;
+    currentIds.add(s.id);
+    const sig = ksSignature(s);
+    if (force || lastKnowledgeSyncSig[s.id] !== sig) {
+      toUpsert.push({
+        id: s.id, title: s.title || 'Chưa đặt tên', type: s.type || 'website',
+        url: s.url || '', content: s.content || '', word_count: s.wordCount || 0,
+        active: s.active !== false, updated_at: new Date().toISOString()
+      });
+    }
+  }
+  const deletedIds = Object.keys(lastKnowledgeSyncSig).filter((id) => !currentIds.has(id));
+
+  if (toUpsert.length) {
+    const err = await upsertInChunks(client, tableName, toUpsert, 20);
+    if (err) return err;
+  }
+  if (deletedIds.length) {
+    for (let i = 0; i < deletedIds.length; i += 50) {
+      const chunk = deletedIds.slice(i, i + 50);
+      const { error } = await client.from(tableName).delete().in('id', chunk);
+      if (error) return error.message;
+    }
+  }
+  // Cập nhật snapshot chữ ký theo trạng thái hiện tại
+  const next: Record<string, string> = {};
+  for (const s of list) if (s && s.id) next[s.id] = ksSignature(s);
+  lastKnowledgeSyncSig = next;
+
+  console.log(`⚡ [SupabaseStore] KB diff sync: upsert ${toUpsert.length}, delete ${deletedIds.length}${force ? ' (force)' : ''}.`);
+  return null;
+}
+
 async function loadStoreFromSupabase() {
   const client = getSupabaseClient();
   if (!client) return;
@@ -2446,6 +2501,9 @@ async function loadStoreFromSupabase() {
       console.warn("⚠️ [SupabaseStore] knowledge_sources load skipped:", e?.message);
     }
 
+    // Khởi tạo chữ ký đồng bộ theo dữ liệu vừa tải -> lần lưu đầu sau khi load sẽ không ghi lại thừa.
+    primeKnowledgeSyncSig(serverKnowledgeSources);
+
     // Lưu cache file cục bộ
     try {
       fs.writeFileSync(STORE_FILE, JSON.stringify({
@@ -2491,28 +2549,13 @@ async function saveStoreToSupabase(data: any) {
       console.warn("⚠️ [SupabaseStore] app_config sync skipped:", e?.message);
     }
 
-    // 2. Bảng riêng: lưu NỘI DUNG đầy đủ, ghi theo LÔ (chunk) để tránh statement timeout.
+    // 2. Bảng riêng: đồng bộ THEO TỪNG BẢN GHI (chỉ ghi mục thay đổi/mới, xóa mục đã gỡ) -> nhẹ, không timeout.
     const tableName = serverAgentConfig?.supabaseConfig?.tableName || 'knowledge_sources';
     const sources = data?.knowledgeSources || serverKnowledgeSources || [];
-    if (Array.isArray(sources) && sources.length > 0) {
-      const records = sources.map((s: any) => ({
-        id: s.id,
-        title: s.title || "Chưa đặt tên",
-        type: s.type || "website",
-        url: s.url || "",
-        content: s.content || "",
-        word_count: s.wordCount || 0,
-        active: s.active !== false,
-        updated_at: new Date().toISOString()
-      }));
-
-      const chunkErr = await upsertInChunks(client, tableName, records, 20);
-      if (chunkErr) {
-        ksError = chunkErr;
-        console.warn("⚠️ [SupabaseStore] Failed to upsert knowledge sources:", chunkErr);
-      } else {
-        console.log(`⚡ [SupabaseStore] Auto-synced ${records.length} knowledge sources (chunked) to Supabase.`);
-      }
+    const diffErr = await syncKnowledgeSourcesDiff(client, tableName, sources);
+    if (diffErr) {
+      ksError = diffErr;
+      console.warn("⚠️ [SupabaseStore] Failed to diff-sync knowledge sources:", diffErr);
     }
 
     return {
@@ -3172,26 +3215,15 @@ app.post("/api/supabase/sync", async (req, res) => {
       appConfigSynced = true;
     }
 
-    // 2. Bảng riêng: nội dung đầy đủ, ghi theo LÔ để tránh timeout.
+    // 2. Bảng riêng: nút "Đồng bộ" thủ công -> ghi lại TẤT CẢ (force) theo từng bản ghi (chunked), tránh timeout.
     const sourcesToSync = serverKnowledgeSources || [];
     if (sourcesToSync.length > 0) {
-      const records = sourcesToSync.map((s: any) => ({
-        id: s.id,
-        title: s.title || "Chưa đặt tên",
-        type: s.type || "website",
-        url: s.url || "",
-        content: s.content || "",
-        word_count: s.wordCount || 0,
-        active: s.active !== false,
-        updated_at: new Date().toISOString()
-      }));
-
-      const chunkErr = await upsertInChunks(client, tableName, records, 20);
-      if (chunkErr) {
-        ksErrorMsg = chunkErr;
-        console.warn("⚠️ [Supabase] knowledge_sources table upsert failed:", chunkErr);
+      const diffErr = await syncKnowledgeSourcesDiff(client, tableName, sourcesToSync, true);
+      if (diffErr) {
+        ksErrorMsg = diffErr;
+        console.warn("⚠️ [Supabase] knowledge_sources sync failed:", diffErr);
       } else {
-        ksSyncedCount = records.length;
+        ksSyncedCount = sourcesToSync.length;
       }
     }
 
