@@ -2612,11 +2612,16 @@ async function loadStoreFromSupabase() {
   }
 }
 
-// [Fix hiển thị] Tải lại tri thức theo yêu cầu nếu bộ nhớ đang trống (vd startup bị timeout).
-// Dùng khi client hỏi cấu hình — client vẫn đang chờ response nên chấp nhận timeout dài hơn.
+// [Fix hiển thị & mất dữ liệu] Coi bảng Supabase là NGUỒN SỰ THẬT của tri thức.
+// Khi client hỏi cấu hình -> hợp nhất bộ nhớ với bảng (union theo id, bản trong bảng ưu tiên cho content),
+// để mọi mục đã lưu trên Supabase luôn hiển thị, đồng thời KHÔNG mất mục client vừa thêm chưa kịp lưu.
+// Có chống hammer: chỉ đọc bảng tối đa mỗi 15 giây (hoặc khi bộ nhớ trống).
 let knowledgeHydrating: Promise<void> | null = null;
+let lastKnowledgeRefreshAt = 0;
 async function ensureKnowledgeLoaded() {
-  if (Array.isArray(serverKnowledgeSources) && serverKnowledgeSources.length > 0) return;
+  const empty = !(Array.isArray(serverKnowledgeSources) && serverKnowledgeSources.length > 0);
+  const stale = (Date.now() - lastKnowledgeRefreshAt) > 15000;
+  if (!empty && !stale) return;
   if (knowledgeHydrating) return knowledgeHydrating;
   const client = getSupabaseClient();
   if (!client) return;
@@ -2628,24 +2633,34 @@ async function ensureKnowledgeLoaded() {
         setTimeout(() => reject(new Error("Supabase query timeout (20s)")), 20000)
       );
       const { data, error }: any = await Promise.race([queryPromise, timeoutPromise]);
-      if (!error && Array.isArray(data) && data.length > 0) {
-        serverKnowledgeSources = data.map((item: any) => ({
-          id: item.id,
-          title: item.title,
-          type: item.type || 'website',
-          url: item.url || '',
-          content: item.content || '',
-          wordCount: item.word_count || 0,
-          active: item.active !== false,
-          updatedAt: item.updated_at,
-        }));
+      if (!error && Array.isArray(data)) {
+        // Union theo id: giữ mục client-only trong bộ nhớ, ghi đè bằng bản trong bảng (đã lưu, đầy đủ content).
+        const byId = new Map<string, any>();
+        for (const s of (Array.isArray(serverKnowledgeSources) ? serverKnowledgeSources : [])) {
+          if (s && s.id) byId.set(s.id, s);
+        }
+        for (const item of data) {
+          if (!item || !item.id) continue;
+          byId.set(item.id, {
+            id: item.id,
+            title: item.title,
+            type: item.type || 'website',
+            url: item.url || '',
+            content: item.content || '',
+            wordCount: item.word_count || 0,
+            active: item.active !== false,
+            updatedAt: item.updated_at,
+          });
+        }
+        serverKnowledgeSources = Array.from(byId.values());
         primeKnowledgeSyncSig(serverKnowledgeSources);
-        console.log(`⚡ [SupabaseStore] Lazy-hydrated ${data.length} knowledge sources on demand.`);
+        lastKnowledgeRefreshAt = Date.now();
+        console.log(`⚡ [SupabaseStore] Hydrated/merged ${data.length} rows từ bảng -> tổng ${serverKnowledgeSources.length} nguồn.`);
       } else if (error) {
-        console.warn("⚠️ [SupabaseStore] Lazy hydrate error:", error.message);
+        console.warn("⚠️ [SupabaseStore] Hydrate error:", error.message);
       }
     } catch (e: any) {
-      console.warn("⚠️ [SupabaseStore] Lazy hydrate failed:", e?.message);
+      console.warn("⚠️ [SupabaseStore] Hydrate failed:", e?.message);
     } finally {
       knowledgeHydrating = null;
     }
