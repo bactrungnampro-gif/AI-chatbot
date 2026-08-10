@@ -3274,11 +3274,20 @@ app.post("/api/config", async (req, res) => {
   if (req.body?.widgetSettings) {
     serverWidgetSettings = { ...(serverWidgetSettings || {}), ...req.body.widgetSettings };
   }
+  // [Chống mất dữ liệu] Không cho payload rỗng ghi đè kho đang có dữ liệu (tránh xóa trắng do POST cũ/lỗi thứ tự).
   if (Array.isArray(req.body?.knowledgeSources)) {
-    serverKnowledgeSources = req.body.knowledgeSources;
+    if (req.body.knowledgeSources.length > 0 || (serverKnowledgeSources || []).length === 0) {
+      serverKnowledgeSources = req.body.knowledgeSources;
+    } else {
+      console.warn('[Config] Bỏ qua knowledgeSources rỗng để không xóa trắng kho hiện có.');
+    }
   }
   if (Array.isArray(req.body?.products)) {
-    serverProducts = req.body.products;
+    if (req.body.products.length > 0 || (serverProducts || []).length === 0) {
+      serverProducts = req.body.products;
+    } else {
+      console.warn('[Config] Bỏ qua products rỗng để không xóa trắng danh mục hiện có.');
+    }
   }
   saveServerStore();
 

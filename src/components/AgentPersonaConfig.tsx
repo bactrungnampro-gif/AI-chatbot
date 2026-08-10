@@ -30,6 +30,16 @@ interface AgentPersonaConfigProps {
   setWidgetSettings?: React.Dispatch<React.SetStateAction<WidgetSettings>>;
 }
 
+// So sánh trạng thái không phụ thuộc thứ tự khóa (tránh báo "chưa lưu" sai do JSON key order).
+function stableStringify(obj: any): string {
+  return JSON.stringify(obj, (_key, value) => {
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      return Object.keys(value).sort().reduce((acc: any, k) => { acc[k] = value[k]; return acc; }, {});
+    }
+    return value;
+  });
+}
+
 export const AgentPersonaConfig: React.FC<AgentPersonaConfigProps> = ({
   agentConfig,
   setAgentConfig,
@@ -51,7 +61,7 @@ export const AgentPersonaConfig: React.FC<AgentPersonaConfigProps> = ({
     ...agentConfig 
   }));
 
-  const [savedJson, setSavedJson] = useState<string>(() => JSON.stringify({
+  const [savedJson, setSavedJson] = useState<string>(() => stableStringify({
     selectedProvider: 'google',
     selectedModel: 'gemini-2.5-flash',
     customApiKey: '',
@@ -64,7 +74,7 @@ export const AgentPersonaConfig: React.FC<AgentPersonaConfigProps> = ({
       enabled: false,
       ...(agentConfig.supabaseConfig || {})
     },
-    ...agentConfig 
+    ...agentConfig
   }));
 
   React.useEffect(() => {
@@ -84,11 +94,11 @@ export const AgentPersonaConfig: React.FC<AgentPersonaConfigProps> = ({
       ...agentConfig
     };
     setFormData(initialized);
-    setSavedJson(JSON.stringify(initialized));
+    setSavedJson(stableStringify(initialized));
   }, [agentConfig]);
 
   const isDirty = React.useMemo(() => {
-    return JSON.stringify(formData) !== savedJson;
+    return stableStringify(formData) !== savedJson;
   }, [formData, savedJson]);
 
   const [isSaving, setIsSaving] = useState(false);
@@ -245,7 +255,8 @@ export const AgentPersonaConfig: React.FC<AgentPersonaConfigProps> = ({
 
       const resData = await res.json().catch(() => ({}));
 
-      setSavedJson(JSON.stringify(finalData));
+      // Mốc "đã lưu" lấy từ chính formData (thứ tự/shape khớp với isDirty) -> không báo "chưa lưu" sai.
+      setSavedJson(stableStringify(formData));
 
       if (resData?.supabaseStatus?.appConfigError || resData?.supabaseStatus?.ksError) {
         const sbErr = resData.supabaseStatus.appConfigError || resData.supabaseStatus.ksError;

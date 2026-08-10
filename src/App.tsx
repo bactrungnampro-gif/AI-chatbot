@@ -98,6 +98,21 @@ export default function App() {
 
   const [isConfigLoaded, setIsConfigLoaded] = useState(false);
   const isInitialSyncRef = React.useRef(true);
+  const hasInitializedRef = React.useRef(false); // đảm bảo init chỉ chạy 1 lần
+  const saveTimerRef = React.useRef<any>(null);   // debounce POST cấu hình
+
+  // Hợp nhất 2 danh sách theo id (giữ item mới ở client không bị đè mất khi init về chậm).
+  const mergeById = <T extends { id?: string }>(current: T[], incoming: T[]): T[] => {
+    const cur = Array.isArray(current) ? current : [];
+    const inc = Array.isArray(incoming) ? incoming : [];
+    const byId = new Map<string, T>();
+    // server là nguồn nền, sau đó phủ các item hiện có ở client (ưu tiên bản client mới hơn)
+    for (const it of inc) if (it && it.id) byId.set(it.id, it);
+    for (const it of cur) if (it && it.id) byId.set(it.id, it);
+    // giữ item client không có id (hiếm) để không mất
+    const noId = cur.filter((it) => !it || !it.id);
+    return [...Array.from(byId.values()), ...noId];
+  };
 
   // [Auth] Khởi tạo xác thực 1 lần khi mount.
   useEffect(() => {
@@ -120,6 +135,8 @@ export default function App() {
   // Sync with server store on initial mount (sau khi đủ điều kiện xác thực)
   useEffect(() => {
     if (!canLoad) return;
+    if (hasInitializedRef.current) return; // chỉ khởi tạo 1 lần, tránh init chạy lại đè dữ liệu
+    hasInitializedRef.current = true;
     // Check backend health
     fetch('/api/health')
       .then(async (res) => {
@@ -201,17 +218,20 @@ export default function App() {
         }
 
         if (Array.isArray(data.knowledgeSources) && data.knowledgeSources.length > 0) {
-          setKnowledgeSources(data.knowledgeSources);
-          try {
-            localStorage.setItem('aistudio_knowledge_sources', JSON.stringify(data.knowledgeSources));
-          } catch (e) {}
+          // Hợp nhất theo id thay vì đè — giữ mục người dùng vừa thêm trong lúc chờ init.
+          setKnowledgeSources((prev) => {
+            const merged = mergeById(prev, data.knowledgeSources);
+            try { localStorage.setItem('aistudio_knowledge_sources', JSON.stringify(merged)); } catch (e) {}
+            return merged;
+          });
         }
 
         if (Array.isArray(data.products) && data.products.length > 0) {
-          setProducts(data.products);
-          try {
-            localStorage.setItem('aistudio_products', JSON.stringify(data.products));
-          } catch (e) {}
+          setProducts((prev) => {
+            const merged = mergeById(prev, data.products);
+            try { localStorage.setItem('aistudio_products', JSON.stringify(merged)); } catch (e) {}
+            return merged;
+          });
         }
       })
       .catch((err) => console.warn('Could not load initial config from server:', err))
@@ -220,11 +240,18 @@ export default function App() {
       });
   }, [canLoad]);
 
-  // Save to LocalStorage and sync to Server whenever core state changes AFTER initial load
+  // Tin nhắn chat (sandbox) chỉ lưu localStorage — KHÔNG thuộc cấu hình, không đồng bộ server
+  // (trước đây messages nằm trong effect đồng bộ cấu hình -> mỗi tin nhắn bắn 1 POST, tăng nguy cơ ghi đè sai thứ tự).
+  useEffect(() => {
+    if (!isConfigLoaded) return;
+    try { localStorage.setItem('aistudio_chat_messages', JSON.stringify(messages)); } catch (e) {}
+  }, [messages, isConfigLoaded]);
+
+  // Lưu cấu hình (agent/widget/tri thức/sản phẩm) vào localStorage + đồng bộ server (có debounce).
   useEffect(() => {
     if (!isConfigLoaded) return;
 
-    // Skip the very first sync trigger after config load to prevent overwriting server store with initial state
+    // Bỏ qua lần trigger đầu tiên sau khi load để không đè server bằng trạng thái khởi tạo
     if (isInitialSyncRef.current) {
       isInitialSyncRef.current = false;
       return;
@@ -238,18 +265,20 @@ export default function App() {
       localStorage.setItem('aistudio_products', JSON.stringify(products));
       localStorage.setItem('aistudio_agent_config', JSON.stringify(safeAgentConfig));
       localStorage.setItem('aistudio_widget_settings', JSON.stringify(widgetSettings));
-      localStorage.setItem('aistudio_chat_messages', JSON.stringify(messages));
 
-      // Post full configuration to server store so embedded widgets and /api/chat endpoints use actual data
-      fetch('/api/config', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ agentConfig: safeAgentConfig, widgetSettings, knowledgeSources, products }),
-      }).catch(() => {});
+      // Debounce: gộp nhiều thay đổi liên tiếp thành 1 POST cuối cùng -> tránh POST đến sai thứ tự (bản cũ đè bản mới).
+      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = setTimeout(() => {
+        fetch('/api/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ agentConfig: safeAgentConfig, widgetSettings, knowledgeSources, products }),
+        }).catch(() => {});
+      }, 600);
     } catch (e) {
       console.error('Failed to save config to localStorage or sync server:', e);
     }
-  }, [agentConfig, widgetSettings, knowledgeSources, products, messages, isConfigLoaded]);
+  }, [agentConfig, widgetSettings, knowledgeSources, products, isConfigLoaded]);
 
   // Check if URL requests standalone widget mode (e.g., when embedded on Sapo, WordPress, etc.)
   const isWidgetMode = typeof window !== 'undefined' && (
