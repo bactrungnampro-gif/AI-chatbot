@@ -30,6 +30,7 @@ import { testFirecrawlApiKey, scrapeSingleWithFirecrawl, mapUrlsWithFirecrawl } 
 import { asyncHandler } from "./src/server/http/asyncHandler";
 import { validateBody } from "./src/server/http/validate";
 import { errorHandler } from "./src/server/middleware/errorHandler";
+import { indexKnowledge, retrieveRelevant } from "./src/server/rag/rag";
 
 dotenv.config();
 
@@ -129,6 +130,9 @@ const ADMIN_EMAILS = (process.env.ADMIN_EMAILS || '')
 // Sinh ngẫu nhiên mỗi lần khởi động; không lộ ra ngoài.
 const INTERNAL_API_SECRET = crypto.randomBytes(24).toString('hex');
 
+// [PoC RAG] Bật truy hồi ngữ nghĩa (embeddings + pgvector) cho /api/chat. Cần Supabase + GEMINI_API_KEY.
+const RAG_ENABLED = process.env.RAG_ENABLED === 'true';
+
 // Các endpoint công khai (không cần đăng nhập): widget nhúng, health, đọc config, callback OAuth, public-config.
 function isPublicApi(req: express.Request): boolean {
   if (req.method === 'OPTIONS') return true;
@@ -217,8 +221,51 @@ app.get("/api/public-config", (req, res) => {
     // Chỉ trả anon key (public). KHÔNG bao giờ trả service role key ở đây.
     supabaseUrl: AUTH_ENABLED ? supabaseUrl : '',
     supabaseAnonKey: AUTH_ENABLED ? supabaseAnonKey : '',
+    ragEnabled: RAG_ENABLED,
   });
 });
+
+// [PoC RAG] Trạng thái RAG
+app.get("/api/rag/status", async (_req, res) => {
+  const client = getSupabaseClient();
+  let chunkCount: number | null = null;
+  if (RAG_ENABLED && client) {
+    try {
+      const { count } = await client.from('kb_chunks').select('id', { count: 'exact', head: true });
+      chunkCount = typeof count === 'number' ? count : null;
+    } catch { chunkCount = null; }
+  }
+  res.json({
+    ragEnabled: RAG_ENABLED,
+    hasSupabase: !!client,
+    hasGeminiKey: !!process.env.GEMINI_API_KEY,
+    chunkCount,
+  });
+});
+
+// [PoC RAG] Xây/cập nhật chỉ mục vector cho toàn bộ tri thức đang bật.
+app.post("/api/rag/index", asyncHandler(async (_req, res) => {
+  if (!RAG_ENABLED) {
+    return res.status(400).json({ error: "RAG chưa được bật. Đặt RAG_ENABLED=true trên máy chủ." });
+  }
+  const client = getSupabaseClient();
+  if (!client) {
+    return res.status(400).json({ error: "Chưa cấu hình Supabase (SUPABASE_URL + SERVICE_ROLE/ANON key) trên máy chủ." });
+  }
+  if (!process.env.GEMINI_API_KEY) {
+    return res.status(400).json({ error: "Cần GEMINI_API_KEY trên máy chủ để tạo embeddings." });
+  }
+  const ai = getGeminiAI();
+  const result = await indexKnowledge(client, ai, serverKnowledgeSources);
+  if (result.error) {
+    return res.status(500).json({ error: "Lỗi xây chỉ mục RAG: " + result.error, ...result });
+  }
+  res.json({
+    success: true,
+    message: `✅ Đã lập chỉ mục ${result.chunks} đoạn từ ${result.sources} nguồn tri thức${result.skipped ? ` (bỏ qua ${result.skipped})` : ''}.`,
+    ...result,
+  });
+}));
 
 // Export Requirements Word Document (.docx)
 app.get("/api/export-docx", async (req, res) => {
@@ -1872,6 +1919,25 @@ app.post("/api/chat", async (req, res) => {
       })
       .join("\n");
 
+    // [PoC RAG] Nếu bật, truy hồi các đoạn liên quan nhất tới câu hỏi thay vì nhồi toàn bộ tri thức vào prompt.
+    let knowledgeContextText = activeKnowledge;
+    if (RAG_ENABLED && process.env.GEMINI_API_KEY) {
+      try {
+        const sbClient = getSupabaseClient();
+        if (sbClient && message && message.trim()) {
+          const hits = await retrieveRelevant(sbClient, getGeminiAI(), message, 6);
+          if (Array.isArray(hits) && hits.length > 0) {
+            knowledgeContextText = hits
+              .map((h: any, i: number) => `=== [ĐOẠN LIÊN QUAN #${i + 1}${h.source_id ? ` • nguồn: ${h.source_id}` : ''}] ===\n${h.content}`)
+              .join('\n\n');
+            console.log(`[RAG] Dùng ${hits.length} đoạn truy hồi cho câu hỏi (thay vì nhồi toàn bộ KB).`);
+          }
+        }
+      } catch (e: any) {
+        console.warn('[RAG] retrieve failed, fallback to full KB:', e?.message || e);
+      }
+    }
+
     // Construct System Instruction with Data Priority Hierarchy
     const currentAgentName = agentConfig?.name || 'Trợ Lý Agent';
     const currentAgentTitle = agentConfig?.title || 'Chuyên viên tư vấn & hỗ trợ khách hàng';
@@ -1951,7 +2017,7 @@ MỤC TIÊU & NHIỆM VỤ CHÍNH CỦA BẠN:
    - ${agentConfig?.clarificationEnabled !== false ? 'NẾU câu hỏi hoặc thông tin khách hàng cung cấp còn chung chung, mơ hồ hoặc thiếu chi tiết quan trọng (ví dụ: thiếu model máy, thiếu ngân sách, thiếu nhu cầu sử dụng cụ thể, thiếu tình trạng lỗi...), BẠN NÊN ĐẶT 1-2 CÂU HỎI MỞ LỊCH SỰ ĐỂ LÀM RÕ TRƯỚC KHI ĐƯA RA CÂU TRẢ LỜI/KHUYẾN NGHỊ CHÍNH XÁC NHẤT.' : 'Cố gắng giải đáp chi tiết nhất dựa trên thông tin hiện có.'}
 
 DỮ LIỆU CƠ SỞ TRI THỨC (KNOWLEDGE BASE) CỦA CỬA HÀNG/DOANH NGHIỆP (ƯU TIÊN 1):
-${activeKnowledge || "Chưa có dữ liệu tri thức nào."}
+${knowledgeContextText || "Chưa có dữ liệu tri thức nào."}
 
 DANH MỤC SẢN PHẨM ĐANG KINH DOANH (ƯU TIÊN 1):
 ${activeProducts || "Chưa có danh mục sản phẩm nào."}
