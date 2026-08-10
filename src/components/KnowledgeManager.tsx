@@ -961,8 +961,9 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
             setIsBuildingRag(false);
             return;
           }
-          if (typeof s?.chunkCount === 'number') {
-            setRagNotice({ type: 'success', message: `Đang lập chỉ mục... (${s.chunkCount} đoạn đã xử lý)` });
+          const processed = (s?.progress && typeof s.progress.chunks === 'number') ? s.progress.chunks : s?.chunkCount;
+          if (typeof processed === 'number') {
+            setRagNotice({ type: 'success', message: `Đang lập chỉ mục... (${processed} đoạn đã xử lý)` });
           }
         } catch { /* bỏ qua, thử lại */ }
         if (tries < 120) {

@@ -273,7 +273,10 @@ app.post("/api/rag/index", asyncHandler(async (_req, res) => {
   // Chạy nền (không await) — client theo dõi qua /api/rag/status.
   (async () => {
     try {
-      const result = await indexKnowledge(client, ai, sourcesSnapshot);
+      const result = await indexKnowledge(client, ai, sourcesSnapshot, 400, (chunks, sources) => {
+        // Cập nhật tiến độ trực tiếp để nút bấm hiển thị số đoạn đã xử lý.
+        ragProgress = { ...ragProgress, running: true, chunks, sources };
+      });
       ragProgress = {
         running: false, done: true,
         chunks: result.chunks, sources: result.sources, skipped: result.skipped,

@@ -1,7 +1,9 @@
 // [PoC RAG] Retrieval-Augmented Generation dùng pgvector (Supabase) + embeddings Gemini.
 // Mục tiêu: thay vì nhồi toàn bộ tri thức vào prompt, chỉ truy hồi các đoạn liên quan nhất -> giảm token/chi phí, tăng độ chính xác.
 
-export const EMBED_MODEL = 'text-embedding-004'; // 768 chiều
+// Model embedding hiện hành của Gemini (text-embedding-004 đã bị gỡ khỏi v1beta embedContent).
+// gemini-embedding-001 mặc định 3072 chiều nhưng hỗ trợ outputDimensionality -> ép 768 để khớp bảng vector(768).
+export const EMBED_MODEL = 'gemini-embedding-001';
 export const EMBED_DIM = 768;
 export const CHUNK_TABLE = 'kb_chunks';
 
@@ -21,15 +23,27 @@ export function chunkText(text: string, size = 1200, overlap = 150): string[] {
   return chunks;
 }
 
-// Tạo embedding cho 1 đoạn văn bản. Trả về mảng số hoặc null nếu lỗi.
+// Tạo embedding cho 1 đoạn văn bản. Trả về mảng số (đã chuẩn hóa, EMBED_DIM chiều) hoặc null nếu lỗi.
 export async function embedText(ai: any, text: string): Promise<number[] | null> {
   try {
-    const res: any = await ai.models.embedContent({ model: EMBED_MODEL, contents: text });
-    const v =
+    const res: any = await ai.models.embedContent({
+      model: EMBED_MODEL,
+      contents: text,
+      config: { outputDimensionality: EMBED_DIM },
+    });
+    let v: any =
       res?.embeddings?.[0]?.values ||
       res?.embedding?.values ||
       (Array.isArray(res?.embeddings) ? res.embeddings[0]?.values : null);
-    return Array.isArray(v) ? v : null;
+    if (!Array.isArray(v)) return null;
+    // Nếu model trả nhiều hơn EMBED_DIM (Matryoshka), cắt xuống EMBED_DIM.
+    if (v.length > EMBED_DIM) v = v.slice(0, EMBED_DIM);
+    if (v.length !== EMBED_DIM) return null; // không khớp số chiều bảng -> bỏ qua để tránh lỗi ghi
+    // Chuẩn hóa về vector đơn vị (khuyến nghị khi cắt bớt chiều MRL).
+    let norm = 0;
+    for (const x of v) norm += x * x;
+    norm = Math.sqrt(norm) || 1;
+    return v.map((x: number) => x / norm);
   } catch (e: any) {
     console.warn('[RAG] embed error:', e?.message || e);
     return null;
@@ -44,7 +58,9 @@ export async function indexKnowledge(
   client: any,
   ai: any,
   sources: any[],
-  maxChunks = 400
+  maxChunks = 400,
+  onProgress?: (chunks: number, sources: number) => void,
+  concurrency = 5
 ): Promise<IndexResult> {
   const active = (Array.isArray(sources) ? sources : []).filter((s) => s && s.active !== false && s.content);
   let totalChunks = 0;
@@ -64,19 +80,26 @@ export async function indexKnowledge(
     }
 
     const rows: any[] = [];
-    for (let i = 0; i < chunks.length; i++) {
-      if (totalChunks >= maxChunks) { skipped++; break; }
-      const emb = await embedText(ai, chunks[i]);
-      if (!emb) { skipped++; continue; }
-      rows.push({
-        id: `${s.id}_${i}`,
-        source_id: s.id,
-        chunk_index: i,
-        content: chunks[i],
-        embedding: emb,
-        updated_at: new Date().toISOString(),
-      });
-      totalChunks++;
+    // Tạo embedding SONG SONG theo lô để nhanh hơn (thay vì tuần tự từng đoạn).
+    for (let i = 0; i < chunks.length; i += concurrency) {
+      if (totalChunks >= maxChunks) break;
+      const batch = chunks.slice(i, i + concurrency);
+      const embs = await Promise.all(batch.map((c) => embedText(ai, c)));
+      for (let j = 0; j < batch.length; j++) {
+        if (totalChunks >= maxChunks) { skipped++; continue; }
+        const emb = embs[j];
+        if (!emb) { skipped++; continue; }
+        rows.push({
+          id: `${s.id}_${i + j}`,
+          source_id: s.id,
+          chunk_index: i + j,
+          content: batch[j],
+          embedding: emb,
+          updated_at: new Date().toISOString(),
+        });
+        totalChunks++;
+      }
+      if (onProgress) onProgress(totalChunks, indexedSources);
     }
 
     // Ghi theo lô để tránh statement timeout
@@ -85,6 +108,7 @@ export async function indexKnowledge(
       if (error) return { sources: indexedSources, chunks: totalChunks, skipped, error: error.message };
     }
     if (rows.length) indexedSources++;
+    if (onProgress) onProgress(totalChunks, indexedSources);
   }
 
   return { sources: indexedSources, chunks: totalChunks, skipped };
