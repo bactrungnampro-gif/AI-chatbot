@@ -2504,14 +2504,15 @@ function primeKnowledgeSyncSig(sources: any[]) {
   for (const s of (Array.isArray(sources) ? sources : [])) if (s && s.id) next[s.id] = ksSignature(s);
   lastKnowledgeSyncSig = next;
 }
-// Đồng bộ chênh lệch. force=true bỏ qua chữ ký (ghi lại tất cả) — dùng cho nút "Đồng bộ" thủ công.
+// Đồng bộ chênh lệch — CHỈ thêm/cập nhật (upsert). TUYỆT ĐỐI KHÔNG tự xóa dựa trên mảng client gửi lên,
+// vì một client có danh sách cũ/thiếu (tab khác, localStorage bị đè...) sẽ vô tình xóa mất dữ liệu người khác.
+// Việc xóa được thực hiện riêng qua endpoint /api/knowledge/delete-source khi người dùng chủ động xóa.
+// force=true: bỏ qua chữ ký, ghi lại tất cả (dùng cho nút "Đồng bộ" thủ công).
 async function syncKnowledgeSourcesDiff(client: any, tableName: string, sources: any[], force = false): Promise<string | null> {
   const list = Array.isArray(sources) ? sources : [];
-  const currentIds = new Set<string>();
   const toUpsert: any[] = [];
   for (const s of list) {
     if (!s || !s.id) continue;
-    currentIds.add(s.id);
     const sig = ksSignature(s);
     if (force || lastKnowledgeSyncSig[s.id] !== sig) {
       toUpsert.push({
@@ -2521,25 +2522,16 @@ async function syncKnowledgeSourcesDiff(client: any, tableName: string, sources:
       });
     }
   }
-  const deletedIds = Object.keys(lastKnowledgeSyncSig).filter((id) => !currentIds.has(id));
 
   if (toUpsert.length) {
     const err = await upsertInChunks(client, tableName, toUpsert, 20);
     if (err) return err;
   }
-  if (deletedIds.length) {
-    for (let i = 0; i < deletedIds.length; i += 50) {
-      const chunk = deletedIds.slice(i, i + 50);
-      const { error } = await client.from(tableName).delete().in('id', chunk);
-      if (error) return error.message;
-    }
-  }
-  // Cập nhật snapshot chữ ký theo trạng thái hiện tại
-  const next: Record<string, string> = {};
-  for (const s of list) if (s && s.id) next[s.id] = ksSignature(s);
-  lastKnowledgeSyncSig = next;
 
-  console.log(`⚡ [SupabaseStore] KB diff sync: upsert ${toUpsert.length}, delete ${deletedIds.length}${force ? ' (force)' : ''}.`);
+  // Cập nhật chữ ký: hợp nhất (không xóa entry cũ) để không đề xuất xóa sai ở nơi khác.
+  for (const s of list) if (s && s.id) lastKnowledgeSyncSig[s.id] = ksSignature(s);
+
+  console.log(`⚡ [SupabaseStore] KB sync: upsert ${toUpsert.length} (không tự xóa).`);
   return null;
 }
 
@@ -3414,6 +3406,29 @@ app.get("/api/config", async (req, res) => {
     products: serverProducts,
   });
 });
+
+// [Xóa chủ động] Xóa 1 nguồn tri thức khỏi bộ nhớ + Supabase (thay cho việc suy ra xóa từ mảng — vốn gây mất dữ liệu).
+app.post("/api/knowledge/delete-source", asyncHandler(async (req, res) => {
+  const { id } = req.body || {};
+  if (!id || typeof id !== 'string') {
+    return res.status(400).json({ error: "Thiếu id nguồn tri thức cần xóa." });
+  }
+  serverKnowledgeSources = (serverKnowledgeSources || []).filter((s: any) => s.id !== id);
+  delete lastKnowledgeSyncSig[id];
+  saveServerStore();
+
+  const client = getSupabaseClient();
+  if (client) {
+    const tableName = serverAgentConfig?.supabaseConfig?.tableName || 'knowledge_sources';
+    try {
+      await client.from(tableName).delete().eq('id', id);
+      try { await client.from('kb_chunks').delete().eq('source_id', id); } catch { /* bỏ qua nếu chưa dùng RAG */ }
+    } catch (e: any) {
+      return res.json({ success: true, warning: "Đã xóa khỏi máy chủ, nhưng lỗi xóa trên Supabase: " + (e?.message || e) });
+    }
+  }
+  res.json({ success: true });
+}));
 
 // [Giai đoạn 2] stripAiSecrets đã tách sang src/server/security/sanitize.ts
 

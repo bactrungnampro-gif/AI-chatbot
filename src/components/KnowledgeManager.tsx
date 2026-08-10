@@ -1101,6 +1101,12 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
   const handleDeleteSource = (id: string) => {
     if (window.confirm('Bạn có chắc chắn muốn xoá mục tri thức này?')) {
       setKnowledgeSources((prev) => prev.filter((item) => item.id !== id));
+      // Xóa chủ động trên máy chủ + Supabase (đồng bộ auto không còn tự xóa để tránh mất dữ liệu).
+      fetch('/api/knowledge/delete-source', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id }),
+      }).catch(() => {});
     }
   };
 
