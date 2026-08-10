@@ -2370,6 +2370,32 @@ function getSupabaseClient() {
   return createClient(url, key, { auth: { persistSession: false } });
 }
 
+// [Fix timeout] Chỉ giữ METADATA tri thức trong app_config (bỏ trường "content" rất lớn).
+// Nội dung đầy đủ nằm ở bảng riêng knowledge_sources -> app_config nhẹ, upsert không timeout.
+function knowledgeMetaOnly(sources: any[]): any[] {
+  return (Array.isArray(sources) ? sources : []).map((s: any) => ({
+    id: s.id,
+    title: s.title,
+    type: s.type,
+    url: s.url || '',
+    wordCount: s.wordCount || 0,
+    active: s.active !== false,
+    subPages: s.subPages || undefined,
+    createdAt: s.createdAt,
+    updatedAt: s.updatedAt,
+  }));
+}
+
+// Upsert theo lô để tránh 1 câu lệnh quá lớn gây "statement timeout".
+async function upsertInChunks(client: any, table: string, records: any[], size = 20): Promise<string | null> {
+  for (let i = 0; i < records.length; i += size) {
+    const chunk = records.slice(i, i + size);
+    const { error } = await client.from(table).upsert(chunk, { onConflict: 'id' });
+    if (error) return error.message;
+  }
+  return null;
+}
+
 async function loadStoreFromSupabase() {
   const client = getSupabaseClient();
   if (!client) return;
@@ -2385,50 +2411,52 @@ async function loadStoreFromSupabase() {
         if (configRow.agent_config) serverAgentConfig = configRow.agent_config;
         if (configRow.widget_settings) serverWidgetSettings = configRow.widget_settings;
         if (Array.isArray(configRow.products) && configRow.products.length > 0) serverProducts = configRow.products;
+        // app_config chỉ chứa METADATA tri thức (không content) -> dùng làm nền, sẽ hydrate content bên dưới.
         if (Array.isArray(configRow.knowledge_sources) && configRow.knowledge_sources.length > 0) serverKnowledgeSources = configRow.knowledge_sources;
-        console.log("⚡ [SupabaseStore] Successfully restored full Agent Config, Products, and Knowledge Base from Supabase 'app_config' table!");
-        
-        // Save to local file cache
-        try {
-          fs.writeFileSync(STORE_FILE, JSON.stringify({
-            agentConfig: serverAgentConfig,
-            widgetSettings: serverWidgetSettings,
-            knowledgeSources: serverKnowledgeSources,
-            products: serverProducts,
-            googleSessions: serverGoogleSessions,
-            updatedAt: new Date().toISOString(),
-          }, null, 2), 'utf-8');
-        } catch (e) {}
-        return;
+        console.log("⚡ [SupabaseStore] Restored Agent Config, Products & KB metadata from 'app_config'.");
       }
     } catch (err: any) {
-      console.warn("⚠️ [SupabaseStore] Could not load from app_config table, fallback to knowledge_sources:", err?.message);
+      console.warn("⚠️ [SupabaseStore] Could not load from app_config table:", err?.message);
     }
 
-    // 2. Fallback: Restore knowledge sources from knowledge_sources table
+    // 2. Luôn tải NỘI DUNG tri thức đầy đủ từ bảng riêng và hydrate vào danh sách.
     const tableName = serverAgentConfig?.supabaseConfig?.tableName || 'knowledge_sources';
     const queryPromise = client.from(tableName).select('*');
     const timeoutPromise = new Promise((_, reject) =>
-      setTimeout(() => reject(new Error("Supabase query timeout (4s)")), 4000)
+      setTimeout(() => reject(new Error("Supabase query timeout (8s)")), 8000)
     );
-    const { data, error }: any = await Promise.race([queryPromise, timeoutPromise]);
-    if (error) {
-      console.warn("⚠️ [SupabaseStore] Could not load knowledge sources:", error.message);
-      return;
+    try {
+      const { data, error }: any = await Promise.race([queryPromise, timeoutPromise]);
+      if (!error && Array.isArray(data) && data.length > 0) {
+        serverKnowledgeSources = data.map((item: any) => ({
+          id: item.id,
+          title: item.title,
+          type: item.type || 'website',
+          url: item.url || '',
+          content: item.content || '',
+          wordCount: item.word_count || 0,
+          active: item.active !== false,
+          updatedAt: item.updated_at
+        }));
+        console.log(`⚡ [SupabaseStore] Hydrated ${data.length} knowledge sources (full content) from '${tableName}'.`);
+      } else if (error) {
+        console.warn("⚠️ [SupabaseStore] Could not load knowledge_sources table:", error.message);
+      }
+    } catch (e: any) {
+      console.warn("⚠️ [SupabaseStore] knowledge_sources load skipped:", e?.message);
     }
-    if (Array.isArray(data) && data.length > 0) {
-      serverKnowledgeSources = data.map((item: any) => ({
-        id: item.id,
-        title: item.title,
-        type: item.type || 'website',
-        url: item.url || '',
-        content: item.content || '',
-        wordCount: item.word_count || 0,
-        active: item.active !== false,
-        updatedAt: item.updated_at
-      }));
-      console.log(`⚡ [SupabaseStore] Successfully restored ${data.length} knowledge sources from Supabase table '${tableName}'.`);
-    }
+
+    // Lưu cache file cục bộ
+    try {
+      fs.writeFileSync(STORE_FILE, JSON.stringify({
+        agentConfig: serverAgentConfig,
+        widgetSettings: serverWidgetSettings,
+        knowledgeSources: serverKnowledgeSources,
+        products: serverProducts,
+        googleSessions: serverGoogleSessions,
+        updatedAt: new Date().toISOString(),
+      }, null, 2), 'utf-8');
+    } catch (e) {}
   } catch (err: any) {
     console.warn("⚠️ [SupabaseStore] Failed to load store from Supabase:", err?.message);
   }
@@ -2440,13 +2468,13 @@ async function saveStoreToSupabase(data: any) {
   let appConfigError: string | null = null;
   let ksError: string | null = null;
   try {
-    // 1. Sync full app config (Agent config, Widget settings, Products, Knowledge Sources)
+    // 1. app_config: chỉ lưu cấu hình + sản phẩm + METADATA tri thức (KHÔNG kèm content lớn) -> upsert nhẹ, không timeout.
     const fullConfigRecord = {
       id: 'main_config',
       agent_config: data?.agentConfig || serverAgentConfig,
       widget_settings: data?.widgetSettings || serverWidgetSettings,
       products: data?.products || serverProducts,
-      knowledge_sources: data?.knowledgeSources || serverKnowledgeSources,
+      knowledge_sources: knowledgeMetaOnly(data?.knowledgeSources || serverKnowledgeSources),
       updated_at: new Date().toISOString()
     };
 
@@ -2456,16 +2484,16 @@ async function saveStoreToSupabase(data: any) {
         appConfigError = error.message;
         console.warn("⚠️ [SupabaseStore] Could not save to 'app_config' table:", error.message);
       } else {
-        console.log("⚡ [SupabaseStore] Successfully synced full Agent Config & Products to Supabase 'app_config' table.");
+        console.log("⚡ [SupabaseStore] Synced config + products + KB metadata to 'app_config'.");
       }
     } catch (e: any) {
       appConfigError = e?.message || "Unknown error";
       console.warn("⚠️ [SupabaseStore] app_config sync skipped:", e?.message);
     }
 
-    // 2. Sync individual knowledge sources table
+    // 2. Bảng riêng: lưu NỘI DUNG đầy đủ, ghi theo LÔ (chunk) để tránh statement timeout.
     const tableName = serverAgentConfig?.supabaseConfig?.tableName || 'knowledge_sources';
-    const sources = data?.knowledgeSources || [];
+    const sources = data?.knowledgeSources || serverKnowledgeSources || [];
     if (Array.isArray(sources) && sources.length > 0) {
       const records = sources.map((s: any) => ({
         id: s.id,
@@ -2478,12 +2506,12 @@ async function saveStoreToSupabase(data: any) {
         updated_at: new Date().toISOString()
       }));
 
-      const { error } = await client.from(tableName).upsert(records, { onConflict: 'id' });
-      if (error) {
-        ksError = error.message;
-        console.warn("⚠️ [SupabaseStore] Failed to upsert knowledge sources to Supabase:", error.message);
+      const chunkErr = await upsertInChunks(client, tableName, records, 20);
+      if (chunkErr) {
+        ksError = chunkErr;
+        console.warn("⚠️ [SupabaseStore] Failed to upsert knowledge sources:", chunkErr);
       } else {
-        console.log(`⚡ [SupabaseStore] Auto-synced ${records.length} knowledge sources to Supabase.`);
+        console.log(`⚡ [SupabaseStore] Auto-synced ${records.length} knowledge sources (chunked) to Supabase.`);
       }
     }
 
@@ -3126,13 +3154,13 @@ app.post("/api/supabase/sync", async (req, res) => {
     let ksSyncedCount = 0;
     let ksErrorMsg = null;
 
-    // 1. Sync full app configuration to 'app_config' table
+    // 1. app_config: cấu hình + sản phẩm + METADATA tri thức (không kèm content lớn) -> tránh statement timeout.
     const fullConfigRecord = {
       id: 'main_config',
       agent_config: serverAgentConfig,
       widget_settings: serverWidgetSettings,
       products: serverProducts,
-      knowledge_sources: serverKnowledgeSources,
+      knowledge_sources: knowledgeMetaOnly(serverKnowledgeSources),
       updated_at: new Date().toISOString()
     };
 
@@ -3144,7 +3172,7 @@ app.post("/api/supabase/sync", async (req, res) => {
       appConfigSynced = true;
     }
 
-    // 2. Sync individual knowledge sources table
+    // 2. Bảng riêng: nội dung đầy đủ, ghi theo LÔ để tránh timeout.
     const sourcesToSync = serverKnowledgeSources || [];
     if (sourcesToSync.length > 0) {
       const records = sourcesToSync.map((s: any) => ({
@@ -3158,10 +3186,10 @@ app.post("/api/supabase/sync", async (req, res) => {
         updated_at: new Date().toISOString()
       }));
 
-      const { error: ksErr } = await client.from(tableName).upsert(records, { onConflict: 'id' });
-      if (ksErr) {
-        ksErrorMsg = ksErr.message;
-        console.warn("⚠️ [Supabase] knowledge_sources table upsert failed:", ksErr.message);
+      const chunkErr = await upsertInChunks(client, tableName, records, 20);
+      if (chunkErr) {
+        ksErrorMsg = chunkErr;
+        console.warn("⚠️ [Supabase] knowledge_sources table upsert failed:", chunkErr);
       } else {
         ksSyncedCount = records.length;
       }

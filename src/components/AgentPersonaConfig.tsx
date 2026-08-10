@@ -262,7 +262,7 @@ export const AgentPersonaConfig: React.FC<AgentPersonaConfigProps> = ({
         const sbErr = resData.supabaseStatus.appConfigError || resData.supabaseStatus.ksError;
         setSaveNotification({
           type: 'error',
-          message: `⚠️ Cấu hình Agent đã lưu trên máy chủ, nhưng Supabase báo lỗi khi ghi: "${sbErr}". Hãy đảm bảo máy chủ đã cấu hình SUPABASE_SERVICE_ROLE_KEY (khóa server-side, ghi được khi vẫn BẬT RLS) và đã tạo bảng theo SQL hướng dẫn.`
+          message: `⚠️ Cấu hình đã lưu trên máy chủ; đồng bộ Supabase gặp lỗi: "${sbErr}". (App vẫn hoạt động bình thường.) Nếu là "statement timeout", dữ liệu quá lớn — hệ thống đã tối ưu ghi theo lô; bạn có thể tăng timeout Supabase bằng SQL: ALTER ROLE authenticated SET statement_timeout='30s'; (và cho service_role).`
         });
       } else if (resData?.supabaseStatus?.synced) {
         setSaveNotification({
