@@ -930,6 +930,28 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
   const [resyncingId, setResyncingId] = useState<string | null>(null);
   const [isResyncingAll, setIsResyncingAll] = useState<boolean>(false);
 
+  // [PoC RAG] Trạng thái xây chỉ mục vector
+  const [isBuildingRag, setIsBuildingRag] = useState<boolean>(false);
+  const [ragNotice, setRagNotice] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+
+  const handleBuildRagIndex = async () => {
+    setIsBuildingRag(true);
+    setRagNotice(null);
+    try {
+      const res = await fetch('/api/rag/index', { method: 'POST' });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.success) {
+        setRagNotice({ type: 'success', message: data.message || 'Đã lập chỉ mục RAG thành công.' });
+      } else {
+        setRagNotice({ type: 'error', message: data.error || `Lỗi lập chỉ mục (HTTP ${res.status}).` });
+      }
+    } catch (e: any) {
+      setRagNotice({ type: 'error', message: 'Lỗi kết nối khi lập chỉ mục: ' + (e?.message || String(e)) });
+    } finally {
+      setIsBuildingRag(false);
+    }
+  };
+
   // Manual Re-sync single source handler
   const handleResyncSource = async (source: KnowledgeSource) => {
     setResyncingId(source.id);
@@ -2058,6 +2080,16 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
           </button>
 
           <button
+            onClick={handleBuildRagIndex}
+            disabled={isBuildingRag}
+            className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2 bg-violet-600 hover:bg-violet-700 text-white rounded-xl text-xs font-semibold transition-colors shadow-xs disabled:opacity-50 shrink-0"
+            title="Tạo/cập nhật chỉ mục vector RAG cho toàn bộ tri thức (tối ưu chi phí AI). Cần bật RAG_ENABLED trên máy chủ."
+          >
+            <Sparkles className={`w-3.5 h-3.5 ${isBuildingRag ? 'animate-pulse' : ''}`} />
+            <span>{isBuildingRag ? 'Đang lập chỉ mục...' : 'Xây chỉ mục RAG'}</span>
+          </button>
+
+          <button
             onClick={() => setShowAddModal(true)}
             className="inline-flex items-center justify-center gap-1.5 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-semibold transition-colors shadow-xs shrink-0"
           >
@@ -2066,6 +2098,18 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
           </button>
         </div>
       </div>
+
+      {ragNotice && (
+        <div className={`p-4 rounded-2xl border text-xs flex items-start justify-between gap-3 shadow-2xs ${
+          ragNotice.type === 'success' ? 'bg-violet-50 border-violet-200 text-violet-900' : 'bg-rose-50 border-rose-200 text-rose-900'
+        }`}>
+          <div className="flex items-center gap-2">
+            <Sparkles className={`w-4 h-4 shrink-0 ${ragNotice.type === 'success' ? 'text-violet-600' : 'text-rose-600'}`} />
+            <span className="font-semibold">{ragNotice.message}</span>
+          </div>
+          <button onClick={() => setRagNotice(null)} className="text-slate-400 hover:text-slate-600 font-bold px-2 shrink-0">✕</button>
+        </div>
+      )}
 
       {extractedNotice && (
         <div className="p-4 rounded-2xl bg-indigo-50 border border-indigo-200 text-indigo-900 text-xs flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-2xs">
