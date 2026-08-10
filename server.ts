@@ -3502,20 +3502,18 @@ app.post("/api/config", async (req, res) => {
   if (req.body?.widgetSettings) {
     serverWidgetSettings = { ...(serverWidgetSettings || {}), ...req.body.widgetSettings };
   }
-  // [Chống mất dữ liệu] Không cho payload rỗng ghi đè kho đang có dữ liệu (tránh xóa trắng do POST cũ/lỗi thứ tự).
-  if (Array.isArray(req.body?.knowledgeSources)) {
-    if (req.body.knowledgeSources.length > 0 || (serverKnowledgeSources || []).length === 0) {
-      serverKnowledgeSources = req.body.knowledgeSources;
-    } else {
-      console.warn('[Config] Bỏ qua knowledgeSources rỗng để không xóa trắng kho hiện có.');
-    }
+  // [Chống mất dữ liệu] HỢP NHẤT (union theo id) thay vì thay thế: client chỉ THÊM/SỬA, KHÔNG xóa qua đường này.
+  // Việc xóa 1 mục làm qua endpoint /api/knowledge/delete-source. Nhờ vậy một client có danh sách cũ/thiếu
+  // không thể làm biến mất mục mà mục đó vẫn còn trên bảng Supabase.
+  if (Array.isArray(req.body?.knowledgeSources) && req.body.knowledgeSources.length > 0) {
+    const byId = new Map<string, any>();
+    for (const s of (serverKnowledgeSources || [])) if (s && s.id) byId.set(s.id, s);
+    for (const s of req.body.knowledgeSources) if (s && s.id) byId.set(s.id, s); // client mới nhất thắng cho mục nó có
+    serverKnowledgeSources = Array.from(byId.values());
   }
-  if (Array.isArray(req.body?.products)) {
-    if (req.body.products.length > 0 || (serverProducts || []).length === 0) {
-      serverProducts = req.body.products;
-    } else {
-      console.warn('[Config] Bỏ qua products rỗng để không xóa trắng danh mục hiện có.');
-    }
+  if (Array.isArray(req.body?.products) && req.body.products.length > 0) {
+    // Sản phẩm nằm gọn trong app_config (không có bảng riêng) -> cho phép thay thế để hỗ trợ xóa sản phẩm.
+    serverProducts = req.body.products;
   }
   saveServerStore();
 
