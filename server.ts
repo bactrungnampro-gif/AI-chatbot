@@ -132,6 +132,10 @@ const INTERNAL_API_SECRET = crypto.randomBytes(24).toString('hex');
 
 // [PoC RAG] Bật truy hồi ngữ nghĩa (embeddings + pgvector) cho /api/chat. Cần Supabase + GEMINI_API_KEY.
 const RAG_ENABLED = process.env.RAG_ENABLED === 'true';
+// Trạng thái lập chỉ mục RAG (chạy nền để tránh 502 do request quá lâu).
+let ragIndexing = false;
+let ragProgress: { running: boolean; done: boolean; chunks: number; sources: number; skipped: number; error?: string; startedAt?: number; finishedAt?: number } =
+  { running: false, done: false, chunks: 0, sources: 0, skipped: 0 };
 
 // Các endpoint công khai (không cần đăng nhập): widget nhúng, health, đọc config, callback OAuth, public-config.
 function isPublicApi(req: express.Request): boolean {
@@ -225,7 +229,7 @@ app.get("/api/public-config", (req, res) => {
   });
 });
 
-// [PoC RAG] Trạng thái RAG
+// [PoC RAG] Trạng thái RAG (kèm tiến độ lập chỉ mục nền)
 app.get("/api/rag/status", async (_req, res) => {
   const client = getSupabaseClient();
   let chunkCount: number | null = null;
@@ -240,10 +244,12 @@ app.get("/api/rag/status", async (_req, res) => {
     hasSupabase: !!client,
     hasGeminiKey: !!process.env.GEMINI_API_KEY,
     chunkCount,
+    indexing: ragIndexing,
+    progress: ragProgress,
   });
 });
 
-// [PoC RAG] Xây/cập nhật chỉ mục vector cho toàn bộ tri thức đang bật.
+// [PoC RAG] Bắt đầu lập chỉ mục ở CHẾ ĐỘ NỀN, trả về ngay (tránh 502 do embedding lâu).
 app.post("/api/rag/index", asyncHandler(async (_req, res) => {
   if (!RAG_ENABLED) {
     return res.status(400).json({ error: "RAG chưa được bật. Đặt RAG_ENABLED=true trên máy chủ." });
@@ -255,15 +261,35 @@ app.post("/api/rag/index", asyncHandler(async (_req, res) => {
   if (!process.env.GEMINI_API_KEY) {
     return res.status(400).json({ error: "Cần GEMINI_API_KEY trên máy chủ để tạo embeddings." });
   }
-  const ai = getGeminiAI();
-  const result = await indexKnowledge(client, ai, serverKnowledgeSources);
-  if (result.error) {
-    return res.status(500).json({ error: "Lỗi xây chỉ mục RAG: " + result.error, ...result });
+  if (ragIndexing) {
+    return res.status(202).json({ started: false, message: "Đang lập chỉ mục, vui lòng đợi...", progress: ragProgress });
   }
-  res.json({
-    success: true,
-    message: `✅ Đã lập chỉ mục ${result.chunks} đoạn từ ${result.sources} nguồn tri thức${result.skipped ? ` (bỏ qua ${result.skipped})` : ''}.`,
-    ...result,
+
+  ragIndexing = true;
+  ragProgress = { running: true, done: false, chunks: 0, sources: 0, skipped: 0, startedAt: Date.now() };
+  const ai = getGeminiAI();
+  const sourcesSnapshot = serverKnowledgeSources;
+
+  // Chạy nền (không await) — client theo dõi qua /api/rag/status.
+  (async () => {
+    try {
+      const result = await indexKnowledge(client, ai, sourcesSnapshot);
+      ragProgress = {
+        running: false, done: true,
+        chunks: result.chunks, sources: result.sources, skipped: result.skipped,
+        error: result.error, startedAt: ragProgress.startedAt, finishedAt: Date.now(),
+      };
+    } catch (e: any) {
+      ragProgress = { ...ragProgress, running: false, done: true, error: e?.message || String(e), finishedAt: Date.now() };
+    } finally {
+      ragIndexing = false;
+    }
+  })();
+
+  return res.status(202).json({
+    started: true,
+    message: "Đã bắt đầu lập chỉ mục ở chế độ nền. Theo dõi tiến độ qua /api/rag/status.",
+    progress: ragProgress,
   });
 }));
 
@@ -2586,6 +2612,47 @@ async function loadStoreFromSupabase() {
   }
 }
 
+// [Fix hiển thị] Tải lại tri thức theo yêu cầu nếu bộ nhớ đang trống (vd startup bị timeout).
+// Dùng khi client hỏi cấu hình — client vẫn đang chờ response nên chấp nhận timeout dài hơn.
+let knowledgeHydrating: Promise<void> | null = null;
+async function ensureKnowledgeLoaded() {
+  if (Array.isArray(serverKnowledgeSources) && serverKnowledgeSources.length > 0) return;
+  if (knowledgeHydrating) return knowledgeHydrating;
+  const client = getSupabaseClient();
+  if (!client) return;
+  const tableName = serverAgentConfig?.supabaseConfig?.tableName || 'knowledge_sources';
+  knowledgeHydrating = (async () => {
+    try {
+      const queryPromise = client.from(tableName).select('*');
+      const timeoutPromise = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("Supabase query timeout (20s)")), 20000)
+      );
+      const { data, error }: any = await Promise.race([queryPromise, timeoutPromise]);
+      if (!error && Array.isArray(data) && data.length > 0) {
+        serverKnowledgeSources = data.map((item: any) => ({
+          id: item.id,
+          title: item.title,
+          type: item.type || 'website',
+          url: item.url || '',
+          content: item.content || '',
+          wordCount: item.word_count || 0,
+          active: item.active !== false,
+          updatedAt: item.updated_at,
+        }));
+        primeKnowledgeSyncSig(serverKnowledgeSources);
+        console.log(`⚡ [SupabaseStore] Lazy-hydrated ${data.length} knowledge sources on demand.`);
+      } else if (error) {
+        console.warn("⚠️ [SupabaseStore] Lazy hydrate error:", error.message);
+      }
+    } catch (e: any) {
+      console.warn("⚠️ [SupabaseStore] Lazy hydrate failed:", e?.message);
+    } finally {
+      knowledgeHydrating = null;
+    }
+  })();
+  return knowledgeHydrating;
+}
+
 async function saveStoreToSupabase(data: any) {
   const client = getSupabaseClient();
   if (!client) return { synced: false, reason: "No client" };
@@ -3321,7 +3388,9 @@ app.post("/api/supabase/sync", async (req, res) => {
   }
 });
 
-app.get("/api/config", (req, res) => {
+app.get("/api/config", async (req, res) => {
+  // [Fix hiển thị] Nếu bộ nhớ trống (startup timeout), tải lại tri thức từ Supabase trước khi trả về.
+  await ensureKnowledgeLoaded();
   // [Security] Endpoint công khai (widget dùng) -> loại bỏ mọi bí mật trước khi trả về.
   res.json({
     agentConfig: stripAiSecrets(serverAgentConfig),
@@ -3335,6 +3404,9 @@ app.get("/api/config", (req, res) => {
 
 app.post("/api/config/init", async (req, res) => {
   try {
+    // [Fix hiển thị] Đảm bảo tri thức đã nạp từ Supabase trước khi merge/trả về (phòng startup timeout).
+    await ensureKnowledgeLoaded();
+
     const rawClientAgentConfig = req.body?.clientAgentConfig;
     const clientAgentConfig = stripAiSecrets(rawClientAgentConfig);
     const { clientWidgetSettings, clientKnowledgeSources, clientProducts } = req.body || {};

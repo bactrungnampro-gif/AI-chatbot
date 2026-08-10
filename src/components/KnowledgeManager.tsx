@@ -940,14 +940,41 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
     try {
       const res = await fetch('/api/rag/index', { method: 'POST' });
       const data = await res.json().catch(() => ({}));
-      if (res.ok && data.success) {
-        setRagNotice({ type: 'success', message: data.message || 'Đã lập chỉ mục RAG thành công.' });
-      } else {
+      if (!res.ok) {
         setRagNotice({ type: 'error', message: data.error || `Lỗi lập chỉ mục (HTTP ${res.status}).` });
+        setIsBuildingRag(false);
+        return;
       }
+      // Lập chỉ mục chạy nền -> hỏi tiến độ định kỳ tới khi xong.
+      setRagNotice({ type: 'success', message: 'Đang lập chỉ mục ở chế độ nền... (kho lớn có thể mất vài phút)' });
+      let tries = 0;
+      const poll = async () => {
+        tries++;
+        try {
+          const s = await fetch('/api/rag/status').then((r) => r.json());
+          if (s?.progress?.done) {
+            if (s.progress.error) {
+              setRagNotice({ type: 'error', message: 'Lỗi lập chỉ mục: ' + s.progress.error });
+            } else {
+              setRagNotice({ type: 'success', message: `✅ Đã lập chỉ mục ${s.progress.chunks} đoạn từ ${s.progress.sources} nguồn${s.progress.skipped ? ` (bỏ qua ${s.progress.skipped})` : ''}.` });
+            }
+            setIsBuildingRag(false);
+            return;
+          }
+          if (typeof s?.chunkCount === 'number') {
+            setRagNotice({ type: 'success', message: `Đang lập chỉ mục... (${s.chunkCount} đoạn đã xử lý)` });
+          }
+        } catch { /* bỏ qua, thử lại */ }
+        if (tries < 120) {
+          setTimeout(poll, 3000);
+        } else {
+          setIsBuildingRag(false);
+          setRagNotice({ type: 'error', message: 'Hết thời gian chờ theo dõi. Bấm lại hoặc kiểm tra sau.' });
+        }
+      };
+      setTimeout(poll, 3000);
     } catch (e: any) {
       setRagNotice({ type: 'error', message: 'Lỗi kết nối khi lập chỉ mục: ' + (e?.message || String(e)) });
-    } finally {
       setIsBuildingRag(false);
     }
   };
