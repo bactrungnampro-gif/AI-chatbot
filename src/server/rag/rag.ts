@@ -69,7 +69,7 @@ export async function indexKnowledge(
   ai: any,
   sources: any[],
   maxChunks = 3000,
-  onProgress?: (chunks: number, sources: number) => void,
+  onProgress?: (p: { chunks: number; sources: number; skipped: number; already: number }) => void,
   concurrency = 3
 ): Promise<IndexResult> {
   const active = (Array.isArray(sources) ? sources : []).filter((s) => s && s.active !== false && s.content);
@@ -127,7 +127,7 @@ export async function indexKnowledge(
         const { error } = await client.from(CHUNK_TABLE).upsert(rows.splice(0, rows.length), { onConflict: 'id' });
         if (error) return { sources: indexedSources, chunks: newlyIndexed, skipped, already, done: false, error: error.message };
       }
-      if (onProgress) onProgress(newlyIndexed, indexedSources);
+      if (onProgress) onProgress({ chunks: newlyIndexed, sources: indexedSources, skipped, already });
       await sleep(200); // giãn cách tránh vượt rate limit
       if (capReached) break;
     }

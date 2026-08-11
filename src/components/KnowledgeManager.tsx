@@ -948,13 +948,24 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
         if (!st) { if (tries > 400) { setIsIndexingRag(false); return; } setTimeout(poll, 2000); return; }
         const pg = st.progress || {};
         if (st.indexing) {
-          setRagMessage(`⏳ Đang lập chỉ mục... đã xử lý ${pg.chunks || 0} đoạn từ ${pg.sources || 0} nguồn.`);
+          setRagMessage(`⏳ Đang lập chỉ mục... mới ${pg.chunks || 0} đoạn · đã có ${pg.already || 0} · bỏ qua ${pg.skipped || 0} · nguồn có nội dung ${pg.activeSources ?? '?'}${pg.noContentSources ? ` · rỗng nội dung ${pg.noContentSources}` : ''}.`);
           if (tries > 400) { setRagMessage('⚠️ Vẫn đang chạy nền — bấm "Lập chỉ mục RAG" lại sau ít phút để xem tiến độ.'); setIsIndexingRag(false); return; }
           setTimeout(poll, 2000); return;
         }
-        if (pg.error) setRagMessage('❌ Lỗi khi lập chỉ mục: ' + pg.error);
-        else if (pg.complete) setRagMessage(`✅ Hoàn tất! Tổng ${st.chunkCount ?? '?'} đoạn đã được lập chỉ mục.`);
-        else setRagMessage(`✔️ Đã xử lý một đợt (mới ${pg.chunks || 0} đoạn, tổng ${st.chunkCount ?? '?'}). Kho lớn — hãy bấm "Lập chỉ mục RAG" lại cho tới khi báo "Hoàn tất".`);
+        // Kết thúc một đợt — báo chi tiết để biết chính xác vì sao 0 đoạn (nếu có).
+        if (pg.error) {
+          setRagMessage('❌ Lỗi khi lập chỉ mục: ' + pg.error);
+        } else if ((pg.activeSources ?? 0) === 0) {
+          setRagMessage(`⚠️ Không có nguồn nào có nội dung để lập chỉ mục${pg.noContentSources ? ` (${pg.noContentSources} nguồn đang RỖNG nội dung)` : ''}. Hãy kiểm tra/nạp lại nội dung nguồn trước.`);
+        } else if ((pg.chunks || 0) === 0 && (pg.skipped || 0) > 0) {
+          setRagMessage(`⚠️ Không thêm được đoạn nào — bị bỏ qua ${pg.skipped} đoạn (thường do giới hạn tốc độ/hạn ngạch embedding của Gemini). Chờ vài phút rồi bấm lại.`);
+        } else if (pg.complete && (pg.chunks || 0) === 0) {
+          setRagMessage(`✅ Đã lập chỉ mục đầy đủ! Tổng ${st.chunkCount ?? '?'} đoạn (không còn đoạn mới).`);
+        } else if (pg.complete) {
+          setRagMessage(`✅ Hoàn tất! Thêm ${pg.chunks} đoạn, tổng ${st.chunkCount ?? '?'} đoạn.`);
+        } else {
+          setRagMessage(`✔️ Đã xử lý một đợt: mới ${pg.chunks || 0} đoạn${pg.skipped ? `, bỏ qua ${pg.skipped}` : ''} (tổng ${st.chunkCount ?? '?'}). Kho lớn — bấm "Lập chỉ mục RAG" lại cho tới khi báo "đầy đủ".`);
+        }
         setIsIndexingRag(false);
       };
       setTimeout(poll, 1500);

@@ -316,20 +316,24 @@ app.post("/api/rag/index", asyncHandler(async (_req, res) => {
   }
 
   ragIndexing = true;
-  ragProgress = { running: true, done: false, chunks: 0, sources: 0, skipped: 0, startedAt: Date.now() };
   const ai = getGeminiAI();
   const sourcesSnapshot = serverKnowledgeSources;
+  // Đếm scope để chẩn đoán: nguồn có nội dung (embed được) vs nguồn RỖNG nội dung (không thể lập chỉ mục).
+  const activeSources = (Array.isArray(sourcesSnapshot) ? sourcesSnapshot : []).filter((s: any) => s && s.active !== false && s.content).length;
+  const noContentSources = (Array.isArray(sourcesSnapshot) ? sourcesSnapshot : []).filter((s: any) => s && s.active !== false && !s.content).length;
+  ragProgress = { running: true, done: false, chunks: 0, sources: 0, skipped: 0, already: 0, activeSources, noContentSources, startedAt: Date.now() };
 
   // Chạy nền (không await) — client theo dõi qua /api/rag/status.
   (async () => {
     try {
-      const result = await indexKnowledge(client, ai, sourcesSnapshot, RAG_MAX_CHUNKS, (chunks, sources) => {
-        // Cập nhật tiến độ trực tiếp để nút bấm hiển thị số đoạn đã xử lý.
-        ragProgress = { ...ragProgress, running: true, chunks, sources };
+      const result = await indexKnowledge(client, ai, sourcesSnapshot, RAG_MAX_CHUNKS, (p) => {
+        // Cập nhật tiến độ chi tiết để nút bấm hiển thị: đoạn mới / đã có / bị bỏ qua.
+        ragProgress = { ...ragProgress, running: true, chunks: p.chunks, sources: p.sources, skipped: p.skipped, already: p.already };
       });
       ragProgress = {
         running: false, done: true, complete: result.done,
         chunks: result.chunks, sources: result.sources, skipped: result.skipped, already: result.already,
+        activeSources, noContentSources,
         error: result.error, startedAt: ragProgress.startedAt, finishedAt: Date.now(),
       };
     } catch (e: any) {
