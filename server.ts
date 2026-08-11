@@ -1475,39 +1475,48 @@ app.post("/api/knowledge/resync-source", async (req, res) => {
 });
 
 // --- AUTOSYNC BACKGROUND WORKER ---
+// [Fix C1] Chống chạy chồng (cờ) + luôn TÌM LẠI nguồn theo id trước/sau thao tác chờ dài
+// (mảng serverKnowledgeSources có thể bị gán lại ở nơi khác trong lúc await -> ghi theo chỉ số cũ gây hỏng/mất/hồi sinh dữ liệu).
+let autoSyncWorkerRunning = false;
 setInterval(async () => {
+  if (autoSyncWorkerRunning) return; // lần chạy trước chưa xong -> bỏ qua lần này
+  autoSyncWorkerRunning = true;
   try {
     if (!Array.isArray(serverKnowledgeSources) || serverKnowledgeSources.length === 0) return;
     const now = Date.now();
     let hasChanges = false;
 
-    for (let i = 0; i < serverKnowledgeSources.length; i++) {
-      const source = serverKnowledgeSources[i];
-      if (source && source.active !== false && source.autoSyncEnabled) {
-        const intervalHours = source.syncIntervalHours || 24;
-        const intervalMs = intervalHours * 3600 * 1000;
-        const lastSyncTime = new Date(source.lastSyncedAt || source.updatedAt || 0).getTime();
+    // Chụp danh sách nguồn ĐẾN HẠN theo id (không giữ tham chiếu chỉ số/mảng cũ).
+    const dueIds = serverKnowledgeSources
+      .filter((s: any) => s && s.active !== false && s.autoSyncEnabled &&
+        (now - new Date(s.lastSyncedAt || s.updatedAt || 0).getTime()) >= ((s.syncIntervalHours || 24) * 3600 * 1000))
+      .map((s: any) => s.id);
 
-        if (now - lastSyncTime >= intervalMs) {
-          console.log(`🔄 [AutoSync Worker] Source "${source.title}" (${source.type}) is due for auto-update (${intervalHours}h). Starting background refresh...`);
-          
-          const updatedData = await resyncKnowledgeSourceCore(source);
-          if (updatedData.success) {
-            serverKnowledgeSources[i] = {
-              ...source,
-              content: updatedData.content || source.content,
-              wordCount: updatedData.wordCount || source.wordCount,
-              pagesScrapedCount: updatedData.pagesScrapedCount || source.pagesScrapedCount,
-              subPages: updatedData.subPages || source.subPages,
-              updatedAt: updatedData.updatedAt || new Date().toISOString(),
-              lastSyncedAt: updatedData.lastSyncedAt || new Date().toISOString()
-            };
-            hasChanges = true;
-            console.log(`✅ [AutoSync Worker] Successfully auto-updated "${source.title}".`);
-          } else {
-            console.warn(`⚠️ [AutoSync Worker] Failed auto-sync for "${source.title}":`, updatedData.error);
-          }
+    for (const id of dueIds) {
+      const source = serverKnowledgeSources.find((s: any) => s && s.id === id);
+      if (!source) continue; // đã bị xóa trong lúc chạy
+      console.log(`🔄 [AutoSync Worker] Source "${source.title}" (${source.type}) đến hạn cập nhật. Bắt đầu làm mới nền...`);
+
+      const updatedData = await resyncKnowledgeSourceCore(source);
+      if (updatedData.success) {
+        // TÌM LẠI theo id SAU await rồi cập nhật TẠI CHỖ trên bản hiện tại (không dùng chỉ số/snapshot cũ).
+        const idx = serverKnowledgeSources.findIndex((s: any) => s && s.id === id);
+        if (idx !== -1) {
+          const cur = serverKnowledgeSources[idx];
+          serverKnowledgeSources[idx] = {
+            ...cur,
+            content: updatedData.content || cur.content,
+            wordCount: updatedData.wordCount || cur.wordCount,
+            pagesScrapedCount: updatedData.pagesScrapedCount || cur.pagesScrapedCount,
+            subPages: updatedData.subPages || cur.subPages,
+            updatedAt: updatedData.updatedAt || new Date().toISOString(),
+            lastSyncedAt: updatedData.lastSyncedAt || new Date().toISOString(),
+          };
+          hasChanges = true;
+          console.log(`✅ [AutoSync Worker] Đã cập nhật "${cur.title}".`);
         }
+      } else {
+        console.warn(`⚠️ [AutoSync Worker] Cập nhật thất bại "${source.title}":`, updatedData.error);
       }
     }
 
@@ -1516,6 +1525,8 @@ setInterval(async () => {
     }
   } catch (err: any) {
     console.error("⚠️ [AutoSync Worker Error]:", err?.message || err);
+  } finally {
+    autoSyncWorkerRunning = false;
   }
 }, 5 * 60 * 1000);
 

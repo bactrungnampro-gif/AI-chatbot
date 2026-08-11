@@ -258,10 +258,18 @@ export const StandaloneWidgetChat: React.FC<StandaloneWidgetChatProps> = ({
       setMessages((prev) => [...prev, agentMessage]);
     } catch (err: any) {
       console.error('Widget Chat error:', err);
+      // KHONG pho bay loi ky thuat cho khach -> thong bao than thien; chi tiet log o console.
+      const raw = (err && err.message) ? String(err.message) : '';
+      let friendly = 'Xin lỗi, hệ thống đang gặp trục trặc kỹ thuật. Quý khách vui lòng thử lại sau giây lát ạ.';
+      if (/429|rate limit|RESOURCE_EXHAUSTED|quota|giới hạn|quá nhiều/i.test(raw)) {
+        friendly = 'Hệ thống đang có nhiều người dùng cùng lúc. Quý khách vui lòng thử lại sau ít phút ạ.';
+      } else if (/network|failed to fetch|timeout|hết thời gian|mạng/i.test(raw)) {
+        friendly = 'Kết nối đang chập chờn. Quý khách vui lòng kiểm tra mạng và gửi lại tin nhắn ạ.';
+      }
       const errorMessage: ChatMessage = {
         id: `msg_err_${Date.now()}`,
         sender: 'system',
-        text: `⚠️ Khổng thể kết nối: ${err.message || 'Lỗi mạng'}. Vui lòng thử lại sau.`,
+        text: `⚠️ ${friendly}`,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       };
       setMessages((prev) => [...prev, errorMessage]);

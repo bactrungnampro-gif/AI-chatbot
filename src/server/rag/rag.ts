@@ -95,9 +95,9 @@ export async function embedTexts(ai: any, texts: string[], retries = 5): Promise
 
 export interface IndexResult { sources: number; chunks: number; skipped: number; already: number; done: boolean; error?: string; }
 
-// Xây dựng/cập nhật chỉ mục vector — KIỂU RESUMABLE:
-// chỉ embed những đoạn CHƯA có trong bảng, nên bấm lại nhiều lần sẽ CỘNG DỒN cho tới khi xong.
-// maxChunks: số đoạn MỚI tối đa xử lý trong MỘT lần chạy (kiểm soát thời gian/hạn ngạch). done=true nếu đã phủ hết.
+// Xây dựng/cập nhật chỉ mục vector — RESUMABLE + CẬP NHẬT NỘI DUNG:
+// so khớp theo NỘI DUNG từng đoạn -> chỉ nhúng lại đoạn MỚI hoặc ĐÃ ĐỔI, bỏ qua đoạn không đổi, xóa đoạn thừa.
+// Bấm lại nhiều lần sẽ cộng dồn tới khi xong. maxChunks: số đoạn xử lý tối đa MỘT lần chạy. done=true nếu đã phủ hết.
 export async function indexKnowledge(
   client: any,
   ai: any,
@@ -113,25 +113,34 @@ export async function indexKnowledge(
   let already = 0;
   let capReached = false;
 
-  // Lấy tập id chunk ĐÃ CÓ để bỏ qua (resumable).
-  const existingIds = new Set<string>();
-  try {
-    const { data: existing } = await client.from(CHUNK_TABLE).select('id');
-    for (const r of (existing || [])) if (r?.id) existingIds.add(r.id);
-  } catch (e: any) {
-    return { sources: 0, chunks: 0, skipped: 0, already: 0, done: false, error: 'Không đọc được chỉ mục hiện có: ' + (e?.message || e) };
-  }
-
   for (const s of active) {
     const chunks = chunkText(s.content);
+
+    // [Fix cập nhật nội dung] Đọc chunk hiện có CỦA RIÊNG nguồn này (kèm NỘI DUNG) để so khớp:
+    // chỉ nhúng lại đoạn MỚI hoặc ĐÃ ĐỔI; đoạn không đổi thì bỏ qua (resumable); đoạn thừa thì xóa.
+    const existing = new Map<number, string>();
+    try {
+      const { data } = await client.from(CHUNK_TABLE).select('chunk_index, content').eq('source_id', s.id);
+      for (const r of (data || [])) if (typeof r?.chunk_index === 'number') existing.set(r.chunk_index, r.content || '');
+    } catch (e: any) {
+      // Lỗi đọc chỉ mục nguồn này -> bỏ qua nguồn ở lần chạy này (tránh nhúng lại toàn bộ do trục trặc tạm thời).
+      console.warn('[RAG] read existing chunks error for', s.id, e?.message || e);
+      continue;
+    }
+
+    // Xóa các chunk THỪA (chunk_index >= số chunk mới) khi nội dung ngắn đi -> tránh rác bị truy hồi.
+    const orphanIdx = Array.from(existing.keys()).filter((k) => k >= chunks.length);
+    if (orphanIdx.length) {
+      try { await client.from(CHUNK_TABLE).delete().eq('source_id', s.id).gte('chunk_index', chunks.length); } catch { /* bỏ qua */ }
+      for (const k of orphanIdx) existing.delete(k);
+    }
     if (!chunks.length) continue;
 
-    // Chỉ những chunk chưa có trong bảng
+    // pending = đoạn MỚI (chưa có) hoặc ĐÃ ĐỔI (nội dung khác bản đã lưu)
     const pending: { id: string; idx: number; text: string }[] = [];
     for (let i = 0; i < chunks.length; i++) {
-      const id = `${s.id}_${i}`;
-      if (existingIds.has(id)) { already++; continue; }
-      pending.push({ id, idx: i, text: chunks[i] });
+      if (existing.get(i) === chunks[i]) { already++; continue; } // không đổi -> bỏ qua
+      pending.push({ id: `${s.id}_${i}`, idx: i, text: chunks[i] });
     }
     if (!pending.length) continue;
 
@@ -186,10 +195,16 @@ export async function indexKnowledge(
   return { sources: indexedSources, chunks: newlyIndexed, skipped, already, done };
 }
 
-// Chữ ký nội dung 1 nguồn để phát hiện thay đổi (rẻ tiền).
+// Băm chuỗi rẻ tiền (djb2) -> phát hiện thay đổi kể cả khi sửa mà GIỮ NGUYÊN độ dài.
+function hashStr(s: string): string {
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) h = (((h << 5) + h) + s.charCodeAt(i)) >>> 0;
+  return h.toString(36);
+}
+// Chữ ký nội dung 1 nguồn để phát hiện thay đổi (dùng hash thay vì chỉ độ dài).
 export function sourceContentSig(s: any): string {
   const c = s?.content || '';
-  return `${c.length}:${s?.title || ''}:${s?.active !== false ? 1 : 0}`;
+  return `${c.length}:${hashStr(c)}:${s?.title || ''}:${s?.active !== false ? 1 : 0}`;
 }
 
 // Lập lại chỉ mục cho một số nguồn (thêm mới / nội dung đổi): embed trước, có được mới xóa chunk cũ & ghi mới
