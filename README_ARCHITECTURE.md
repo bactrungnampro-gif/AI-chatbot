@@ -30,7 +30,12 @@ src/server/
    └─ errorHandler.ts             # error-handler tập trung
 ```
 
-## Increment 3 — PromptBuilder (vừa làm)
+## Increment 4 — Tầng tài liệu (documents.ts) (vừa làm)
+- Tách 3 hàm bóc tách tài liệu khỏi `server.ts` sang `src/server/services/documents.ts`: `extractDocxText`, `extractXlsxText` (thuần, chỉ dùng zlib), và `extractTextFromAttachmentData` (nhận `getAi` qua tham số — dependency injection cho OCR PDF).
+- Sao chép NGUYÊN VĂN; đã kiểm thử trên tệp thật: .xlsx (29 dòng, 28 link) và .docx (tiêu đề + link) cho kết quả GIỐNG HỆT trước -> không đổi hành vi.
+- `server.ts` bỏ luôn import `zlib` (không còn dùng trực tiếp) và giảm ~187 dòng.
+
+## Increment 3 — PromptBuilder (đã làm)
 - Tách toàn bộ phần dựng `systemInstruction` của `/api/chat` sang `src/server/services/promptBuilder.ts` qua hàm thuần `buildChatSystemInstruction(params)`.
 - Template được sao chép NGUYÊN VĂN — đã kiểm chứng byte-for-byte (8381 ký tự) giống hệt bản gốc -> prompt/hành vi KHÔNG đổi.
 - `server.ts` giờ chỉ gom các biến (agentConfig, tên/ngành doanh nghiệp, allowedDomainsListStr, linkDirectory, knowledgeContextText, activeProducts) rồi gọi builder.
