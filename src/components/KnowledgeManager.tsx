@@ -914,6 +914,56 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
   const [resyncingId, setResyncingId] = useState<string | null>(null);
   const [isResyncingAll, setIsResyncingAll] = useState<boolean>(false);
 
+  // [RAG] Trạng thái chỉ mục + nút lập chỉ mục (nền, resumable)
+  const [ragStatus, setRagStatus] = useState<{ ragEnabled: boolean; chunkCount: number | null; hasSupabase?: boolean; hasGeminiKey?: boolean } | null>(null);
+  const [isIndexingRag, setIsIndexingRag] = useState<boolean>(false);
+  const [ragMessage, setRagMessage] = useState<string | null>(null);
+
+  const fetchRagStatus = async () => {
+    try {
+      const res = await fetch('/api/rag/status');
+      const data = await res.json();
+      setRagStatus(data);
+      return data;
+    } catch { return null; }
+  };
+
+  useEffect(() => { fetchRagStatus(); }, []);
+
+  const handleBuildRagIndex = async () => {
+    setIsIndexingRag(true);
+    setRagMessage('⏳ Đang bắt đầu lập chỉ mục...');
+    try {
+      const startRes = await fetch('/api/rag/index', { method: 'POST' });
+      const startData = await startRes.json().catch(() => ({}));
+      if (!startRes.ok && startRes.status !== 202) {
+        setRagMessage('❌ ' + (startData?.error || `Không thể bắt đầu (HTTP ${startRes.status})`));
+        setIsIndexingRag(false);
+        return;
+      }
+      let tries = 0;
+      const poll = async (): Promise<void> => {
+        tries++;
+        const st = await fetchRagStatus();
+        if (!st) { if (tries > 400) { setIsIndexingRag(false); return; } setTimeout(poll, 2000); return; }
+        const pg = st.progress || {};
+        if (st.indexing) {
+          setRagMessage(`⏳ Đang lập chỉ mục... đã xử lý ${pg.chunks || 0} đoạn từ ${pg.sources || 0} nguồn.`);
+          if (tries > 400) { setRagMessage('⚠️ Vẫn đang chạy nền — bấm "Lập chỉ mục RAG" lại sau ít phút để xem tiến độ.'); setIsIndexingRag(false); return; }
+          setTimeout(poll, 2000); return;
+        }
+        if (pg.error) setRagMessage('❌ Lỗi khi lập chỉ mục: ' + pg.error);
+        else if (pg.complete) setRagMessage(`✅ Hoàn tất! Tổng ${st.chunkCount ?? '?'} đoạn đã được lập chỉ mục.`);
+        else setRagMessage(`✔️ Đã xử lý một đợt (mới ${pg.chunks || 0} đoạn, tổng ${st.chunkCount ?? '?'}). Kho lớn — hãy bấm "Lập chỉ mục RAG" lại cho tới khi báo "Hoàn tất".`);
+        setIsIndexingRag(false);
+      };
+      setTimeout(poll, 1500);
+    } catch (e: any) {
+      setRagMessage('❌ Lỗi kết nối: ' + (e?.message || String(e)));
+      setIsIndexingRag(false);
+    }
+  };
+
   // Manual Re-sync single source handler
   const handleResyncSource = async (source: KnowledgeSource) => {
     setResyncingId(source.id);
@@ -2038,6 +2088,14 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
           <p className="text-xs text-slate-500">
             Tổng cộng: {knowledgeSources.length} nguồn tri thức ({knowledgeSources.filter((k) => k.active).length} đang hoạt động)
           </p>
+          {ragStatus && (
+            <p className="text-[11px] mt-0.5 text-slate-500">
+              {ragStatus.ragEnabled
+                ? <>RAG: đã lập chỉ mục <b>{ragStatus.chunkCount ?? 0}</b> đoạn.</>
+                : <span className="text-amber-600">RAG chưa bật (đặt RAG_ENABLED=true trên máy chủ).</span>}
+              {ragMessage && <span className="block mt-0.5 text-indigo-600">{ragMessage}</span>}
+            </p>
+          )}
         </div>
 
         <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 w-full sm:w-auto">
@@ -2061,6 +2119,16 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
           >
             <RefreshCw className={`w-3.5 h-3.5 ${isResyncingAll ? 'animate-spin' : ''}`} />
             <span>{isResyncingAll ? 'Đang làm mới tất cả...' : 'Làm mới Tất cả (🔄)'}</span>
+          </button>
+
+          <button
+            onClick={handleBuildRagIndex}
+            disabled={isIndexingRag || (ragStatus ? !ragStatus.ragEnabled : false)}
+            className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2 bg-violet-600 hover:bg-violet-700 text-white rounded-xl text-xs font-semibold transition-colors shadow-xs disabled:opacity-50 shrink-0"
+            title="Xây/cập nhật chỉ mục RAG để agent tra cứu ngữ nghĩa. Kho lớn: bấm lại nhiều lần cho tới khi 'Hoàn tất'."
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${isIndexingRag ? 'animate-spin' : ''}`} />
+            <span>{isIndexingRag ? 'Đang lập chỉ mục...' : `Lập chỉ mục RAG${ragStatus?.chunkCount != null ? ` (${ragStatus.chunkCount})` : ''}`}</span>
           </button>
 
           <button
