@@ -272,8 +272,6 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
     checkGoogleAuthStatus();
 
     const handleMessage = (e: MessageEvent) => {
-      // [Security - SEC-10] Chỉ chấp nhận message từ cùng origin (chống giả mạo từ tab/iframe lạ).
-      if (e.origin !== window.location.origin) return;
       if (e.data && e.data.type === 'GOOGLE_OAUTH_SUCCESS') {
         checkGoogleAuthStatus();
         setScrapeSuccess(`🎉 Đã kết nối thành công Google OAuth 2.0 tài khoản ${e.data.user?.email || ''}!`);
@@ -302,30 +300,16 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
   };
 
   // Connect Google OAuth Popup
-  // Lấy authUrl qua fetch (đính kèm token đăng nhập) để server gắn `state` theo đúng người dùng,
-  // rồi mới mở popup tới Google. Tránh mở '/api/auth/google' trực tiếp (không mang token -> bị chặn/nhầm phiên).
-  const handleConnectGoogleOAuth = async () => {
+  const handleConnectGoogleOAuth = () => {
     const width = 550;
     const height = 650;
     const left = window.screenX + (window.outerWidth - width) / 2;
     const top = window.screenY + (window.outerHeight - height) / 2;
-    const features = `width=${width},height=${height},left=${left},top=${top},status=no,menubar=no,toolbar=no`;
-    // Mở popup trống trước (trong cùng cử chỉ click) để tránh bị chặn popup, rồi điều hướng sau khi có authUrl.
-    const popup = window.open('about:blank', 'GoogleOAuthPopup', features);
-    try {
-      const res = await fetch('/api/auth/google?format=json');
-      const data = await res.json();
-      if (data?.authUrl) {
-        if (popup) popup.location.href = data.authUrl;
-        else window.open(data.authUrl, 'GoogleOAuthPopup', features);
-      } else {
-        if (popup) popup.close();
-        alert(data?.error || 'Không lấy được liên kết đăng nhập Google.');
-      }
-    } catch (e: any) {
-      if (popup) popup.close();
-      alert('Lỗi kết nối Google OAuth: ' + (e?.message || String(e)));
-    }
+    window.open(
+      '/api/auth/google',
+      'GoogleOAuthPopup',
+      `width=${width},height=${height},left=${left},top=${top},status=no,menubar=no,toolbar=no`
+    );
   };
 
   // Logout Google OAuth
@@ -930,63 +914,6 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
   const [resyncingId, setResyncingId] = useState<string | null>(null);
   const [isResyncingAll, setIsResyncingAll] = useState<boolean>(false);
 
-  // [PoC RAG] Trạng thái xây chỉ mục vector
-  const [isBuildingRag, setIsBuildingRag] = useState<boolean>(false);
-  const [ragNotice, setRagNotice] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
-
-  const handleBuildRagIndex = async () => {
-    setIsBuildingRag(true);
-    setRagNotice(null);
-    try {
-      // Nếu đang có tiến trình chạy nền thì BÁM theo nó, ngược lại bắt đầu tiến trình mới.
-      const st = await fetch('/api/rag/status').then((r) => r.json()).catch(() => null);
-      if (!(st && st.indexing)) {
-        const res = await fetch('/api/rag/index', { method: 'POST' });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) {
-          setRagNotice({ type: 'error', message: data.error || `Lỗi lập chỉ mục (HTTP ${res.status}).` });
-          setIsBuildingRag(false);
-          return;
-        }
-      }
-      setRagNotice({ type: 'success', message: 'Đang lập chỉ mục ở chế độ nền... (kho lớn có thể mất nhiều phút)' });
-      let tries = 0;
-      const MAX_TRIES = 400; // ~20 phút theo dõi
-      const poll = async () => {
-        tries++;
-        try {
-          const s = await fetch('/api/rag/status').then((r) => r.json());
-          if (s?.progress?.done && !s.indexing) {
-            const p = s.progress;
-            if (p.error) {
-              setRagNotice({ type: 'error', message: 'Lỗi lập chỉ mục: ' + p.error });
-            } else if (p.complete) {
-              setRagNotice({ type: 'success', message: `✅ Hoàn tất! Đã lập chỉ mục ${p.chunks} đoạn mới từ ${p.sources} nguồn (đã có sẵn ${p.already || 0}${p.skipped ? `, bỏ qua ${p.skipped} do lỗi/hạn ngạch` : ''}).` });
-            } else {
-              setRagNotice({ type: 'success', message: `⏳ Đã xử lý thêm ${p.chunks} đoạn (đã có ${p.already || 0}). Chưa xong hết — hãy BẤM LẠI để tiếp tục cho đến khi báo "Hoàn tất".` });
-            }
-            setIsBuildingRag(false);
-            return;
-          }
-          const processed = (s?.progress && typeof s.progress.chunks === 'number') ? s.progress.chunks : s?.chunkCount;
-          if (typeof processed === 'number') {
-            setRagNotice({ type: 'success', message: `Đang lập chỉ mục... (${processed} đoạn mới đã xử lý)` });
-          }
-        } catch { /* bỏ qua, thử lại */ }
-        if (tries < MAX_TRIES) {
-          setTimeout(poll, 3000);
-        } else {
-          setIsBuildingRag(false);
-          setRagNotice({ type: 'success', message: 'Vẫn đang chạy nền. Cứ để yên, nó tiếp tục chạy — bấm lại để xem tiến độ/kết quả.' });
-        }
-      };
-      setTimeout(poll, 3000);
-    } catch (e: any) {
-      setRagNotice({ type: 'error', message: 'Lỗi kết nối khi lập chỉ mục: ' + (e?.message || String(e)) });
-      setIsBuildingRag(false);
-    }
-  };
-
   // Manual Re-sync single source handler
   const handleResyncSource = async (source: KnowledgeSource) => {
     setResyncingId(source.id);
@@ -1105,17 +1032,23 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
     );
   };
 
-  // Delete Knowledge item
-  const handleDeleteSource = (id: string) => {
-    if (window.confirm('Bạn có chắc chắn muốn xoá mục tri thức này?')) {
-      setKnowledgeSources((prev) => prev.filter((item) => item.id !== id));
-      // Xóa chủ động trên máy chủ + Supabase (đồng bộ auto không còn tự xóa để tránh mất dữ liệu).
-      fetch('/api/knowledge/delete-source', {
+  // Delete Knowledge item — PHẢI xóa trên máy chủ + Supabase, nếu không redeploy/đồng bộ sẽ khiến mục quay lại.
+  const handleDeleteSource = async (id: string) => {
+    if (!window.confirm('Bạn có chắc chắn muốn xoá mục tri thức này?')) return;
+    try {
+      const res = await fetch('/api/knowledge/delete-source', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id }),
-      }).catch(() => {});
+        body: JSON.stringify({ id })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data?.success === false) {
+        alert('⚠️ Đã xóa khỏi màn hình nhưng máy chủ báo lỗi — mục có thể quay lại sau khi tải lại trang. Vui lòng thử lại. Chi tiết: ' + (data?.error || `HTTP ${res.status}`));
+      }
+    } catch (e: any) {
+      alert('⚠️ Không kết nối được máy chủ để xóa vĩnh viễn — mục có thể quay lại sau khi tải lại trang. Lỗi: ' + (e?.message || String(e)));
     }
+    setKnowledgeSources((prev) => prev.filter((item) => item.id !== id));
   };
 
   const filteredSources = knowledgeSources.filter(
@@ -1162,14 +1095,24 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
             </div>
             <button
               type="button"
-              onClick={() => {
-                if (window.confirm('Xóa tất cả các tài liệu mẫu mặc định ban đầu (TechLife)? các tài liệu do bạn nạp vẫn sẽ được giữ nguyên.')) {
-                  setKnowledgeSources((prev) => prev.filter((item) => !['kb_1', 'kb_2', 'kb_3', 'kb_4'].includes(item.id) && !item.title.includes('TechLife')));
-                  if (setProducts) {
-                    setProducts((prev) => prev.filter((p) => !['prod_1', 'prod_2', 'prod_3'].includes(p.id) && !p.name.includes('TechLife')));
-                  }
-                  setScrapeSuccess('✨ Đã dọn dẹp xong dữ liệu mẫu ban đầu! Hiện tại Agent chỉ sử dụng nguồn dữ liệu mới do bạn cung cấp.');
+              onClick={async () => {
+                if (!window.confirm('Xóa tất cả các tài liệu mẫu mặc định ban đầu (TechLife)? các tài liệu do bạn nạp vẫn sẽ được giữ nguyên.')) return;
+                // Xóa trên máy chủ + Supabase cho từng mục mẫu, nếu không chúng sẽ quay lại sau khi tải lại/redeploy.
+                const toDelete = knowledgeSources.filter((item) => ['kb_1', 'kb_2', 'kb_3', 'kb_4'].includes(item.id) || item.title.includes('TechLife'));
+                for (const it of toDelete) {
+                  try {
+                    await fetch('/api/knowledge/delete-source', {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ id: it.id })
+                    });
+                  } catch { /* bỏ qua, vẫn xóa cục bộ bên dưới */ }
                 }
+                setKnowledgeSources((prev) => prev.filter((item) => !['kb_1', 'kb_2', 'kb_3', 'kb_4'].includes(item.id) && !item.title.includes('TechLife')));
+                if (setProducts) {
+                  setProducts((prev) => prev.filter((p) => !['prod_1', 'prod_2', 'prod_3'].includes(p.id) && !p.name.includes('TechLife')));
+                }
+                setScrapeSuccess('✨ Đã dọn dẹp xong dữ liệu mẫu ban đầu! Hiện tại Agent chỉ sử dụng nguồn dữ liệu mới do bạn cung cấp.');
               }}
               className="px-3 py-1.5 bg-amber-600 hover:bg-amber-500 text-white font-bold rounded-lg transition-colors shrink-0 shadow-sm flex items-center gap-1.5"
             >
@@ -1258,14 +1201,14 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
               Tải lên tài liệu PDF, Word, Báo giá hoặc Hướng dẫn
             </h2>
             <p className="text-xs sm:text-sm text-slate-300 leading-relaxed mb-4">
-              Hỗ trợ tải lên trực tiếp các tệp <b>.pdf</b>, <b>.docx</b>, <b>.txt</b>, <b>.csv</b>, <b>.md</b> và <b>hình ảnh (.png, .jpg, .webp)</b>. Hệ thống sẽ tự động bóc tách văn bản (kể cả PDF scan và ảnh bằng AI Vision/OCR) và trích xuất sản phẩm vào danh mục tự động.
+              Hỗ trợ tải lên trực tiếp các tệp <b>.pdf</b>, <b>.docx</b>, <b>.txt</b>, <b>.csv</b>, <b>.md</b>. Hệ thống sẽ tự động bóc tách văn bản (kể cả PDF scan bằng AI OCR) và trích xuất sản phẩm vào danh mục tự động.
             </p>
 
             <div className="bg-slate-800/90 border-2 border-dashed border-amber-500/40 rounded-2xl p-6 sm:p-8 text-center hover:border-amber-400/80 transition-all group relative overflow-hidden">
               <input
                 type="file"
                 multiple
-                accept=".pdf,.docx,.doc,.txt,.csv,.md,.png,.jpg,.jpeg,.webp,.gif,.bmp,.heic,.heif,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,text/csv,image/*"
+                accept=".pdf,.docx,.doc,.txt,.csv,.md,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,text/csv"
                 onChange={handleFileUpload}
                 disabled={isUploadingFile}
                 className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10 disabled:cursor-not-allowed"
@@ -1282,10 +1225,10 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
 
                 <div>
                   <h3 className="font-bold text-slate-100 text-sm sm:text-base mb-1">
-                    {isUploadingFile ? `Đang xử lý và bóc tách dữ liệu tệp ${uploadedFileName}...` : 'Nhấp hoặc Kéo thả NHIỀU TỆP TIN (PDF, Word, CSV, TXT, Ảnh) vào đây'}
+                    {isUploadingFile ? `Đang xử lý và bóc tách dữ liệu tệp ${uploadedFileName}...` : 'Nhấp hoặc Kéo thả NHIỀU TỆP TIN (PDF, Word, CSV, TXT) vào đây'}
                   </h3>
                   <p className="text-xs text-slate-400 max-w-md mx-auto">
-                    Hỗ trợ chọn hoặc kéo thả <b>nhiều tệp cùng lúc (Multi-file upload)</b>: PDF (.pdf), Word (.docx), CSV (.csv), Text (.txt, .md), Ảnh (.png, .jpg, .webp).
+                    Hỗ trợ chọn hoặc kéo thả <b>nhiều tệp cùng lúc (Multi-file upload)</b>: PDF (.pdf), Word (.docx), CSV (.csv), Text (.txt, .md).
                   </p>
                 </div>
 
@@ -2121,16 +2064,6 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
           </button>
 
           <button
-            onClick={handleBuildRagIndex}
-            disabled={isBuildingRag}
-            className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2 bg-violet-600 hover:bg-violet-700 text-white rounded-xl text-xs font-semibold transition-colors shadow-xs disabled:opacity-50 shrink-0"
-            title="Tạo/cập nhật chỉ mục vector RAG cho toàn bộ tri thức (tối ưu chi phí AI). Cần bật RAG_ENABLED trên máy chủ."
-          >
-            <Sparkles className={`w-3.5 h-3.5 ${isBuildingRag ? 'animate-pulse' : ''}`} />
-            <span>{isBuildingRag ? 'Đang lập chỉ mục...' : 'Xây chỉ mục RAG'}</span>
-          </button>
-
-          <button
             onClick={() => setShowAddModal(true)}
             className="inline-flex items-center justify-center gap-1.5 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-semibold transition-colors shadow-xs shrink-0"
           >
@@ -2139,18 +2072,6 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
           </button>
         </div>
       </div>
-
-      {ragNotice && (
-        <div className={`p-4 rounded-2xl border text-xs flex items-start justify-between gap-3 shadow-2xs ${
-          ragNotice.type === 'success' ? 'bg-violet-50 border-violet-200 text-violet-900' : 'bg-rose-50 border-rose-200 text-rose-900'
-        }`}>
-          <div className="flex items-center gap-2">
-            <Sparkles className={`w-4 h-4 shrink-0 ${ragNotice.type === 'success' ? 'text-violet-600' : 'text-rose-600'}`} />
-            <span className="font-semibold">{ragNotice.message}</span>
-          </div>
-          <button onClick={() => setRagNotice(null)} className="text-slate-400 hover:text-slate-600 font-bold px-2 shrink-0">✕</button>
-        </div>
-      )}
 
       {extractedNotice && (
         <div className="p-4 rounded-2xl bg-indigo-50 border border-indigo-200 text-indigo-900 text-xs flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-2xs">
