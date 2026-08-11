@@ -126,11 +126,11 @@ export const StandaloneWidgetChat: React.FC<StandaloneWidgetChatProps> = ({
     }
   }, [currentAgent.greetingMessage]);
 
-  const scrollToBottom = () => {
+  const scrollToBottom = (behavior: ScrollBehavior = 'smooth') => {
     if (chatContainerRef.current) {
       chatContainerRef.current.scrollTo({
         top: chatContainerRef.current.scrollHeight,
-        behavior: 'smooth'
+        behavior
       });
     }
   };
@@ -138,6 +138,27 @@ export const StandaloneWidgetChat: React.FC<StandaloneWidgetChatProps> = ({
   useEffect(() => {
     scrollToBottom();
   }, [messages, isLoading]);
+
+  // Cuộn xuống CUỐI mỗi khi widget được mở (lúc ẩn scrollHeight=0 nên cuộn không ăn; mở lại không có tin nhắn mới
+  // nên effect [messages] không chạy). Nhận tín hiệu 'AI_WIDGET_OPENED' từ trình bao + các sự kiện hiển thị/focus.
+  useEffect(() => {
+    const jumpToBottom = () => {
+      // vài nhịp để chắc chắn layout đã hiện xong rồi mới cuộn (nhảy tức thì, không animation)
+      setTimeout(() => scrollToBottom('auto'), 60);
+      setTimeout(() => scrollToBottom('auto'), 250);
+    };
+    jumpToBottom(); // lần đầu mount
+    const onMsg = (e: MessageEvent) => { if (e && e.data && e.data.type === 'AI_WIDGET_OPENED') jumpToBottom(); };
+    const onVis = () => { if (!document.hidden) jumpToBottom(); };
+    window.addEventListener('message', onMsg);
+    window.addEventListener('focus', jumpToBottom);
+    document.addEventListener('visibilitychange', onVis);
+    return () => {
+      window.removeEventListener('message', onMsg);
+      window.removeEventListener('focus', jumpToBottom);
+      document.removeEventListener('visibilitychange', onVis);
+    };
+  }, []);
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;

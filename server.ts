@@ -3793,7 +3793,9 @@ app.get("/api/widget.js", (req, res) => {
         iframe.style.opacity = '1';
         iframe.style.transform = 'translateY(0) scale(1)';
         iframe.style.pointerEvents = 'auto';
-      }, 10);
+        // Báo cho nội dung iframe biết widget vừa mở -> cuộn xuống tin nhắn mới nhất.
+        try { iframe.contentWindow && iframe.contentWindow.postMessage({ type: 'AI_WIDGET_OPENED' }, '*'); } catch (e) {}
+      }, 60);
       if (iconContainer) iconContainer.innerHTML = closeSvg;
       if (textContainer) textContainer.innerText = 'Thu gọn';
     } else {
