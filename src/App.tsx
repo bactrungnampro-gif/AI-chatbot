@@ -340,6 +340,17 @@ export default function App() {
     return <LoginScreen onSuccess={() => setIsLoggedIn(true)} />;
   }
 
+  // [Fix M5] Khóa các tab CHỈNH SỬA cấu hình cho tới khi tải xong cấu hình từ máy chủ.
+  // Trước đây UI cho sửa ngay khi authReady: nếu người dùng xóa/sửa mục trong lúc /api/config/init
+  // đang bay, phản hồi cũ (còn mục đó) sẽ setState đè lại -> mục đã xóa "hồi sinh", rồi bị debounced-save
+  // đẩy ngược lên server. Chặn thao tác trong cửa sổ đó loại bỏ hoàn toàn tranh chấp này.
+  const configLoadingNotice = (
+    <div className="max-w-7xl mx-auto px-4 py-16 flex flex-col items-center justify-center text-slate-400 text-sm gap-3">
+      <div className="w-6 h-6 border-2 border-slate-300 border-t-blue-500 rounded-full animate-spin" />
+      Đang tải cấu hình từ máy chủ...
+    </div>
+  );
+
   return (
     <div className="min-h-screen bg-slate-50/60 font-sans text-slate-800 flex flex-col selection:bg-blue-500 selection:text-white">
 
@@ -375,6 +386,7 @@ export default function App() {
         )}
 
         {activeTab === 'knowledge' && (
+          !isConfigLoaded ? configLoadingNotice : (
           <KnowledgeManager
             knowledgeSources={knowledgeSources}
             setKnowledgeSources={setKnowledgeSources}
@@ -382,30 +394,37 @@ export default function App() {
             setProducts={setProducts}
             onNavigateToProducts={() => setActiveTab('products')}
           />
+          )
         )}
 
         {activeTab === 'products' && (
+          !isConfigLoaded ? configLoadingNotice : (
           <ProductCatalog
             products={products}
             setProducts={setProducts}
             knowledgeSources={knowledgeSources}
           />
+          )
         )}
 
         {activeTab === 'persona' && (
+          !isConfigLoaded ? configLoadingNotice : (
           <AgentPersonaConfig
             agentConfig={agentConfig}
             setAgentConfig={setAgentConfig}
             setWidgetSettings={setWidgetSettings}
           />
+          )
         )}
 
         {activeTab === 'integration' && (
+          !isConfigLoaded ? configLoadingNotice : (
           <IntegrationWidget
             agentConfig={agentConfig}
             widgetSettings={widgetSettings}
             setWidgetSettings={setWidgetSettings}
           />
+          )
         )}
 
         {activeTab === 'history' && (

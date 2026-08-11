@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { 
   Globe, 
   FileText, 
@@ -32,6 +32,7 @@ import {
   Key
 } from 'lucide-react';
 import { KnowledgeSource, KnowledgeType, ProductItem } from '../types';
+import { fetchWithTimeout } from '../lib/fetchWithTimeout';
 
 interface KnowledgeManagerProps {
   knowledgeSources: KnowledgeSource[];
@@ -467,7 +468,8 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
 
   // Helper for safe JSON response parsing
   const safeFetchJson = async (url: string, options: RequestInit) => {
-    const response = await fetch(url, options);
+    // [Fix M14] Có timeout 90s -> không kẹt vô hạn nếu máy chủ treo khi crawl/xử lý tệp lớn.
+    const response = await fetchWithTimeout(url, options, 90000);
     const text = await response.text();
     if (!text || !text.trim()) {
       throw new Error(`Máy chủ phản hồi rỗng (Mã lỗi ${response.status}). Có thể do quá trình xử lý quá lâu gây ra Timeout hoặc dịch vụ đang khởi động lại.`);
@@ -930,6 +932,17 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
   const [isIndexingRag, setIsIndexingRag] = useState<boolean>(false);
   const [ragMessage, setRagMessage] = useState<string | null>(null);
 
+  // [Fix M6] Giữ id timer poll để HỦY khi rời tab (unmount) — tránh setState trên component đã chết + kẹt spinner.
+  const ragPollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const ragMountedRef = useRef(true);
+  useEffect(() => {
+    ragMountedRef.current = true;
+    return () => {
+      ragMountedRef.current = false;
+      if (ragPollRef.current) { clearTimeout(ragPollRef.current); ragPollRef.current = null; }
+    };
+  }, []);
+
   const fetchRagStatus = async () => {
     try {
       const res = await fetch('/api/rag/status');
@@ -954,14 +967,16 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
       }
       let tries = 0;
       const poll = async (): Promise<void> => {
+        if (!ragMountedRef.current) return; // đã rời tab -> dừng, không setState nữa
         tries++;
         const st = await fetchRagStatus();
-        if (!st) { if (tries > 400) { setIsIndexingRag(false); return; } setTimeout(poll, 2000); return; }
+        if (!ragMountedRef.current) return; // có thể đã unmount trong lúc chờ fetch
+        if (!st) { if (tries > 400) { setIsIndexingRag(false); return; } ragPollRef.current = setTimeout(poll, 2000); return; }
         const pg = st.progress || {};
         if (st.indexing) {
           setRagMessage(`⏳ Đang lập chỉ mục... mới ${pg.chunks || 0} đoạn · đã có ${pg.already || 0} · bỏ qua ${pg.skipped || 0} · nguồn có nội dung ${pg.activeSources ?? '?'}${pg.noContentSources ? ` · rỗng nội dung ${pg.noContentSources}` : ''}.`);
           if (tries > 400) { setRagMessage('⚠️ Vẫn đang chạy nền — bấm "Lập chỉ mục RAG" lại sau ít phút để xem tiến độ.'); setIsIndexingRag(false); return; }
-          setTimeout(poll, 2000); return;
+          ragPollRef.current = setTimeout(poll, 2000); return;
         }
         // Kết thúc một đợt — báo chi tiết để biết chính xác vì sao 0 đoạn (nếu có).
         if (pg.error) {
@@ -979,7 +994,7 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
         }
         setIsIndexingRag(false);
       };
-      setTimeout(poll, 1500);
+      ragPollRef.current = setTimeout(poll, 1500);
     } catch (e: any) {
       setRagMessage('❌ Lỗi kết nối: ' + (e?.message || String(e)));
       setIsIndexingRag(false);
@@ -990,11 +1005,11 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
   const handleResyncSource = async (source: KnowledgeSource) => {
     setResyncingId(source.id);
     try {
-      const res = await fetch('/api/knowledge/resync-source', {
+      const res = await fetchWithTimeout('/api/knowledge/resync-source', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ id: source.id, source })
-      });
+      }, 90000); // [Fix M14] timeout 90s để không kẹt spinner khi crawl lâu
       const result = await res.json();
       if (result.success && result.data) {
         const updatedData = result.data;
@@ -1037,11 +1052,11 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
     const nowIso = new Date().toISOString();
     for (const source of activeSources) {
       try {
-        const res = await fetch('/api/knowledge/resync-source', {
+        const res = await fetchWithTimeout('/api/knowledge/resync-source', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ id: source.id, source })
-        });
+        }, 90000); // [Fix M14] timeout 90s cho mỗi nguồn khi đồng bộ hàng loạt
         const result = await res.json();
         if (result.success && result.data) {
           successCount++;

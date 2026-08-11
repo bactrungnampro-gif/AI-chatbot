@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import { AgentConfig, Attachment, ChatMessage, KnowledgeSource, ProductItem, WidgetSettings } from '../types';
 import { FormattedMessage } from './FormattedMessage';
+import { fetchWithTimeout } from '../lib/fetchWithTimeout';
 
 interface StandaloneWidgetChatProps {
   agentConfig: AgentConfig;
@@ -242,7 +243,7 @@ export const StandaloneWidgetChat: React.FC<StandaloneWidgetChatProps> = ({
     const lightHistory = messages.slice(-12).map((m) => ({ id: m.id, sender: m.sender, text: m.text, timestamp: m.timestamp }));
 
     try {
-      const response = await fetch('/api/chat', {
+      const response = await fetchWithTimeout('/api/chat', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -254,7 +255,7 @@ export const StandaloneWidgetChat: React.FC<StandaloneWidgetChatProps> = ({
           agentConfig: currentAgent,
           attachments: currentAttachments,
         }),
-      });
+      }, 60000); // [Fix M14] timeout 60s -> không kẹt "đang gõ..." vô hạn nếu máy chủ treo
 
       const data = await response.json();
 
