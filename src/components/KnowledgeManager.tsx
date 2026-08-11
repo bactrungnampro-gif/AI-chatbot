@@ -1201,14 +1201,14 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
               Tải lên tài liệu PDF, Word, Báo giá hoặc Hướng dẫn
             </h2>
             <p className="text-xs sm:text-sm text-slate-300 leading-relaxed mb-4">
-              Hỗ trợ tải lên trực tiếp các tệp <b>.pdf</b>, <b>.docx</b>, <b>.txt</b>, <b>.csv</b>, <b>.md</b>. Hệ thống sẽ tự động bóc tách văn bản (kể cả PDF scan bằng AI OCR) và trích xuất sản phẩm vào danh mục tự động.
+              Hỗ trợ tải lên trực tiếp các tệp <b>.pdf</b>, <b>.docx</b>, <b>.xlsx</b>, <b>.txt</b>, <b>.csv</b>, <b>.md</b> và <b>hình ảnh (.png, .jpg, .webp)</b>. Hệ thống sẽ tự động bóc tách văn bản (kể cả PDF scan và ảnh bằng AI Vision/OCR, bảng Excel giữ nguyên link) và trích xuất sản phẩm vào danh mục tự động.
             </p>
 
             <div className="bg-slate-800/90 border-2 border-dashed border-amber-500/40 rounded-2xl p-6 sm:p-8 text-center hover:border-amber-400/80 transition-all group relative overflow-hidden">
               <input
                 type="file"
                 multiple
-                accept=".pdf,.docx,.doc,.txt,.csv,.md,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,text/csv"
+                accept=".pdf,.docx,.doc,.txt,.csv,.md,.xlsx,.xls,.png,.jpg,.jpeg,.webp,.gif,.bmp,.heic,.heif,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/plain,text/csv,image/*"
                 onChange={handleFileUpload}
                 disabled={isUploadingFile}
                 className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10 disabled:cursor-not-allowed"
@@ -1225,10 +1225,10 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
 
                 <div>
                   <h3 className="font-bold text-slate-100 text-sm sm:text-base mb-1">
-                    {isUploadingFile ? `Đang xử lý và bóc tách dữ liệu tệp ${uploadedFileName}...` : 'Nhấp hoặc Kéo thả NHIỀU TỆP TIN (PDF, Word, CSV, TXT) vào đây'}
+                    {isUploadingFile ? `Đang xử lý và bóc tách dữ liệu tệp ${uploadedFileName}...` : 'Nhấp hoặc Kéo thả NHIỀU TỆP TIN (PDF, Word, Excel, Ảnh, CSV, TXT) vào đây'}
                   </h3>
                   <p className="text-xs text-slate-400 max-w-md mx-auto">
-                    Hỗ trợ chọn hoặc kéo thả <b>nhiều tệp cùng lúc (Multi-file upload)</b>: PDF (.pdf), Word (.docx), CSV (.csv), Text (.txt, .md).
+                    Hỗ trợ chọn hoặc kéo thả <b>nhiều tệp cùng lúc (Multi-file upload)</b>: PDF (.pdf), Word (.docx), Excel (.xlsx), Ảnh (.png, .jpg, .webp), CSV (.csv), Text (.txt, .md).
                   </p>
                 </div>
 

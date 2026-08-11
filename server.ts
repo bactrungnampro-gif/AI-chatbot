@@ -139,6 +139,8 @@ const RAG_ENABLED = process.env.RAG_ENABLED === 'true';
 const RAG_MAX_CHUNKS = parseInt(process.env.RAG_MAX_CHUNKS || '3000', 10);
 // Số đoạn truy hồi mỗi câu hỏi (vector) — tăng để agent "nhìn" đủ ngữ cảnh hơn. Cấu hình qua RAG_MATCH_COUNT.
 const RAG_MATCH_COUNT = parseInt(process.env.RAG_MATCH_COUNT || '12', 10);
+// Trần ký tự cho DANH SÁCH LINK trong prompt. Nâng cao để kho nhiều nguồn (100+) vẫn liệt kê đủ link. Cấu hình qua LINK_DIR_MAX_CHARS.
+const LINK_DIR_MAX_CHARS = parseInt(process.env.LINK_DIR_MAX_CHARS || '40000', 10);
 // Tự động cập nhật chỉ mục RAG khi tri thức thay đổi (mặc định bật khi RAG bật). Tắt bằng RAG_AUTO_INDEX=false.
 const RAG_AUTO_INDEX = RAG_ENABLED && process.env.RAG_AUTO_INDEX !== 'false';
 
@@ -1353,14 +1355,105 @@ function extractDocxText(buf: Buffer): string {
   }
 }
 
-// [Helper] Bóc tách văn bản từ MỘT tệp đính kèm bất kỳ (PDF/DOCX/TXT/CSV...).
+// [Helper] Trích xuất văn bản từ file .xlsx KHÔNG cần thư viện ngoài (giống .docx: đọc ZIP + XML).
+// Đọc sharedStrings + từng sheet -> ghép thành bảng text (mỗi ô cách nhau " | ", mỗi dòng xuống hàng),
+// kèm cả URL từ hyperlink của ô -> giữ nguyên các link trong bảng để agent tra cứu.
+function extractXlsxText(buf: Buffer): string {
+  try {
+    const want = (n: string) =>
+      n === 'xl/sharedStrings.xml' ||
+      /^xl\/worksheets\/sheet\d+\.xml$/.test(n) ||
+      /^xl\/worksheets\/_rels\/sheet\d+\.xml\.rels$/.test(n);
+    // Đọc các entry cần thiết trong ZIP (Central Directory + inflate).
+    const entries: Record<string, Buffer> = {};
+    let eocd = -1;
+    const minPos = Math.max(0, buf.length - 22 - 65536);
+    for (let i = buf.length - 22; i >= minPos; i--) {
+      if (buf.readUInt32LE(i) === 0x06054b50) { eocd = i; break; }
+    }
+    if (eocd < 0) return '';
+    const cdCount = buf.readUInt16LE(eocd + 10);
+    let p = buf.readUInt32LE(eocd + 16);
+    for (let n = 0; n < cdCount; n++) {
+      if (p + 46 > buf.length || buf.readUInt32LE(p) !== 0x02014b50) break;
+      const method = buf.readUInt16LE(p + 10);
+      const compSize = buf.readUInt32LE(p + 20);
+      const fnLen = buf.readUInt16LE(p + 28);
+      const extraLen = buf.readUInt16LE(p + 30);
+      const commentLen = buf.readUInt16LE(p + 32);
+      const localOffset = buf.readUInt32LE(p + 42);
+      const name = buf.toString('utf-8', p + 46, p + 46 + fnLen);
+      if (want(name)) {
+        const lfn = buf.readUInt16LE(localOffset + 26);
+        const lex = buf.readUInt16LE(localOffset + 28);
+        const dataStart = localOffset + 30 + lfn + lex;
+        const raw = buf.subarray(dataStart, dataStart + compSize);
+        try { entries[name] = method === 0 ? raw : zlib.inflateRawSync(raw); } catch { /* bỏ qua entry lỗi */ }
+      }
+      p = p + 46 + fnLen + extraLen + commentLen;
+    }
+
+    const dec = (s: string) => s
+      .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"').replace(/&apos;/g, "'")
+      .replace(/&#(\d+);/g, (_m, d) => { try { return String.fromCodePoint(+d); } catch { return ''; } });
+    const colOf = (ref: string) => { const m = (ref || '').match(/^([A-Z]+)/); if (!m) return 0; let c = 0; for (const ch of m[1]) c = c * 26 + (ch.charCodeAt(0) - 64); return c - 1; };
+
+    // sharedStrings
+    const shared: string[] = [];
+    const sx = (entries['xl/sharedStrings.xml'] || Buffer.from('')).toString('utf-8');
+    { const siRe = /<si>([\s\S]*?)<\/si>/g; let m: RegExpExecArray | null; while ((m = siRe.exec(sx))) { const tRe = /<t[^>]*>([\s\S]*?)<\/t>/g; let tm: RegExpExecArray | null; let s = ''; while ((tm = tRe.exec(m[1]))) s += tm[1]; shared.push(dec(s)); } }
+
+    const sheetNames = Object.keys(entries).filter((n) => /^xl\/worksheets\/sheet\d+\.xml$/.test(n)).sort();
+    const outLines: string[] = [];
+    for (const sn of sheetNames) {
+      const xml = entries[sn].toString('utf-8');
+      // hyperlink refs -> target (qua file .rels)
+      const relName = 'xl/worksheets/_rels/' + sn.split('/').pop() + '.rels';
+      const relMap: Record<string, string> = {};
+      const rx = (entries[relName] || Buffer.from('')).toString('utf-8');
+      { const r = /<Relationship[^>]*Id="([^"]+)"[^>]*Target="([^"]+)"[^>]*\/>/g; let m: RegExpExecArray | null; while ((m = r.exec(rx))) relMap[m[1]] = m[2]; }
+      const hl: Record<string, string> = {};
+      { const h = /<hyperlink[^>]*ref="([^"]+)"[^>]*r:id="([^"]+)"[^>]*\/>/g; let m: RegExpExecArray | null; while ((m = h.exec(xml))) hl[m[1]] = relMap[m[2]] || ''; }
+      const rowRe = /<row[^>]*>([\s\S]*?)<\/row>/g; let rm: RegExpExecArray | null;
+      while ((rm = rowRe.exec(xml))) {
+        const rowXml = rm[1];
+        const cells: string[] = [];
+        const cRe = /<c\b([^>]*?)(?:\/>|>([\s\S]*?)<\/c>)/g; let cm: RegExpExecArray | null;
+        while ((cm = cRe.exec(rowXml))) {
+          const attrs = cm[1] || ''; const body = cm[2] || '';
+          const ref = (attrs.match(/r="([^"]+)"/) || [])[1] || '';
+          const type = (attrs.match(/t="([^"]+)"/) || [])[1] || '';
+          let val = '';
+          const vM = body.match(/<v>([\s\S]*?)<\/v>/);
+          const isM = body.match(/<is>([\s\S]*?)<\/is>/);
+          if (type === 's' && vM) val = shared[parseInt(vM[1], 10)] || '';
+          else if (type === 'inlineStr' && isM) { const tRe = /<t[^>]*>([\s\S]*?)<\/t>/g; let tm: RegExpExecArray | null; while ((tm = tRe.exec(isM[1]))) val += tm[1]; val = dec(val); }
+          else if (vM) val = dec(vM[1]);
+          if (ref && hl[ref] && !val.includes(hl[ref])) val = (val ? val + ' ' : '') + '(link: ' + hl[ref] + ')';
+          cells[colOf(ref)] = val;
+        }
+        const line: string[] = [];
+        for (let i = 0; i < cells.length; i++) line.push(cells[i] || '');
+        if (line.some((x) => x && x.trim())) outLines.push(line.join(' | '));
+      }
+    }
+    return outLines.join('\n').trim();
+  } catch {
+    return '';
+  }
+}
+
+// [Helper] Bóc tách văn bản từ MỘT tệp đính kèm bất kỳ (PDF/DOCX/XLSX/TXT/CSV...).
 // Dùng chung cho nạp kho tri thức & phân tích tài liệu trong luồng chat -> mọi nhà cung cấp AI đều đọc được.
 async function extractTextFromAttachmentData(name: string, mimeType: string, base64: string): Promise<string> {
   const lower = (name || '').toLowerCase();
   let buf: Buffer;
   try { buf = Buffer.from(base64, 'base64'); } catch { return ''; }
   const isPdf = (mimeType && mimeType.includes('pdf')) || lower.endsWith('.pdf');
-  const isDocx = (mimeType && mimeType.includes('officedocument')) || lower.endsWith('.docx');
+  // Lưu ý: mimeType của .xlsx CŨNG chứa "officedocument" -> phải kiểm tra XLSX TRƯỚC DOCX.
+  const isXlsx = (mimeType && (mimeType.includes('spreadsheetml') || mimeType.includes('ms-excel'))) || lower.endsWith('.xlsx');
+  const isDocx = !isXlsx && ((mimeType && (mimeType.includes('wordprocessingml') || mimeType.includes('msword'))) || lower.endsWith('.docx'));
 
   if (isPdf) {
     let text = '';
@@ -1384,6 +1477,9 @@ async function extractTextFromAttachmentData(name: string, mimeType: string, bas
       } catch { /* bỏ qua */ }
     }
     return text;
+  }
+  if (isXlsx) {
+    return extractXlsxText(buf);
   }
   if (isDocx) {
     return extractDocxText(buf);
@@ -1409,7 +1505,9 @@ app.post("/api/knowledge/upload-file", async (req, res) => {
     console.log(`[File Upload] Processing uploaded file: ${cleanName} (${fileType || 'unknown'}, ${fileBuffer.length} bytes)`);
 
     const isPdf = (fileType && fileType.includes('pdf')) || cleanName.toLowerCase().endsWith('.pdf');
-    const isDocx = (fileType && (fileType.includes('word') || fileType.includes('officedocument'))) || cleanName.toLowerCase().endsWith('.docx') || cleanName.toLowerCase().endsWith('.doc');
+    // .xlsx cũng có mimeType chứa "officedocument" -> phải kiểm tra XLSX TRƯỚC, và loại nó khỏi isDocx.
+    const isXlsx = (fileType && (fileType.includes('spreadsheetml') || fileType.includes('ms-excel'))) || cleanName.toLowerCase().endsWith('.xlsx');
+    const isDocx = !isXlsx && ((fileType && (fileType.includes('wordprocessingml') || fileType.includes('msword'))) || cleanName.toLowerCase().endsWith('.docx') || cleanName.toLowerCase().endsWith('.doc'));
     const isImage = (fileType && fileType.startsWith('image/')) || /\.(png|jpe?g|webp|gif|bmp|heic|heif)$/i.test(cleanName);
 
     if (isImage) {
@@ -1493,6 +1591,12 @@ app.post("/api/knowledge/upload-file", async (req, res) => {
           }
         }
       }
+    } else if (isXlsx) {
+      // .xlsx là ZIP -> đọc sharedStrings + các sheet thành bảng text (giữ nguyên link trong ô/hyperlink).
+      extractedText = extractXlsxText(fileBuffer);
+      if (!extractedText || extractedText.length < 10) {
+        extractedText = `Bảng tính Excel: ${cleanName}\n(Không đọc được nội dung — nếu là .xls cũ, vui lòng lưu sang .xlsx hoặc CSV rồi nạp lại.)`;
+      }
     } else if (isDocx) {
       // .docx là ZIP -> giải nén word/document.xml để lấy văn bản đúng chuẩn (không còn đọc byte thô ra rác).
       if (cleanName.toLowerCase().endsWith('.docx')) {
@@ -1528,7 +1632,7 @@ app.post("/api/knowledge/upload-file", async (req, res) => {
 
     let formattedContent = `=== TÀI LIỆU NẠP TRỰC TIẾP TỪ FILE ===\n`;
     formattedContent += `Tên tệp: ${cleanName}\n`;
-    formattedContent += `Loại tệp: ${isImage ? 'Hình ảnh (phân tích bằng AI Vision)' : isPdf ? 'Tài liệu PDF' : isDocx ? 'Tài liệu Word' : 'Tập tin văn bản'}\n`;
+    formattedContent += `Loại tệp: ${isImage ? 'Hình ảnh (phân tích bằng AI Vision)' : isPdf ? 'Tài liệu PDF' : isXlsx ? 'Bảng tính Excel' : isDocx ? 'Tài liệu Word' : 'Tập tin văn bản'}\n`;
     if (isPdf && pageCount > 1) {
       formattedContent += `Số trang PDF: ${pageCount} trang\n`;
     }
@@ -1537,7 +1641,7 @@ app.post("/api/knowledge/upload-file", async (req, res) => {
 
     res.json({
       success: true,
-      title: `${isImage ? 'Ảnh' : isPdf ? 'File PDF' : 'Tệp Tin'}: ${cleanName}`,
+      title: `${isImage ? 'Ảnh' : isPdf ? 'File PDF' : isXlsx ? 'Bảng tính' : 'Tệp Tin'}: ${cleanName}`,
       content: formattedContent,
       wordCount,
       pageCount,
@@ -2139,13 +2243,44 @@ app.post("/api/chat", async (req, res) => {
     // [Fix bịa link] Danh sách LINK CHÍNH XÁC từ metadata nguồn (url/sheetUrl/subPages) + sản phẩm.
     // Luôn đưa vào prompt (kể cả khi bật RAG hay content bị cắt) để model có link thật mà không phải bịa.
     const linkDirectory = (() => {
-      const lines: string[] = [];
       const seen = new Set<string>();
       const URL_RE = /https?:\/\/[^\s)\]}"'<>]+/g;
       const cleanUrl = (u: string) => (u || '').replace(/[.,;:!?)\]}>'"]+$/, '');
+      // Với tệp Google Drive dạng .../file/d/ID/view -> tạo thêm link TẢI TRỰC TIẾP để khách tải ngay.
+      const driveDownload = (u: string) => {
+        const m = (u || '').match(/drive\.google\.com\/file\/d\/([a-zA-Z0-9_-]+)/);
+        return m ? `https://drive.google.com/uc?export=download&id=${m[1]}` : '';
+      };
 
-      // Quét link nằm TRONG nội dung nguồn (vd một tệp chứa danh sách nhiều link) + ngữ cảnh ngắn trước link.
-      const scanContentLinks = (content: string, max = 40): { url: string; ctx: string }[] => {
+      // ===== LƯỢT 1 (ƯU TIÊN): mỗi nguồn/sản phẩm 1 dòng link METADATA — đảm bảo MỌI nguồn có link đều xuất hiện,
+      // KHÔNG bị phần "link trong nội dung" đẩy ra ngoài trần ký tự (nguyên nhân cũ khiến kho 100+ nguồn bị mất link).
+      const metaLines: string[] = [];
+      for (const k of filteredKnowledgeSources) {
+        const urls: string[] = [];
+        if (k.url) urls.push(k.url);
+        if (k.sheetUrl && k.sheetUrl !== k.url) urls.push(k.sheetUrl);
+        if (urls.length) {
+          for (const u of urls) seen.add(cleanUrl(u));
+          let line = `- ${k.title} [${k.type}]: ${urls.join(' | ')}`;
+          const dl = driveDownload(urls[0]);
+          if (dl) { line += ` (tải trực tiếp: ${dl})`; seen.add(cleanUrl(dl)); }
+          metaLines.push(line);
+        }
+        if (Array.isArray(k.subPages)) {
+          for (const sp of k.subPages) {
+            if (sp && sp.url) { seen.add(cleanUrl(sp.url)); metaLines.push(`   • ${sp.title || sp.url}: ${sp.url}`); }
+          }
+        }
+      }
+      for (const p of filteredProducts) {
+        const purl = p.sourceUrl || p.productUrl;
+        if (purl) { seen.add(cleanUrl(purl)); metaLines.push(`- [sản phẩm] ${p.name}: ${purl}`); }
+        if (p.imageUrl) { seen.add(cleanUrl(p.imageUrl)); metaLines.push(`   • Ảnh sản phẩm "${p.name}": ${p.imageUrl}`); }
+      }
+      let out = metaLines.join('\n');
+
+      // ===== LƯỢT 2 (nếu còn ngân sách): quét link nằm TRONG nội dung nguồn (vd một tệp chứa danh sách nhiều link).
+      const scanContentLinks = (content: string, max = 100): { url: string; ctx: string }[] => {
         const res: { url: string; ctx: string }[] = [];
         if (!content) return res;
         URL_RE.lastIndex = 0;
@@ -2154,41 +2289,26 @@ app.post("/api/chat", async (req, res) => {
           const url = cleanUrl(m[0]);
           if (!url || seen.has(url)) continue;
           seen.add(url);
-          const before = content.slice(Math.max(0, m.index - 70), m.index);
-          const ctx = (before.split(/[\n\r|]/).pop() || '').replace(/\s+/g, ' ').trim().slice(-60);
+          // Ngữ cảnh = CẢ DÒNG chứa link (giữ tên sản phẩm/mã cạnh link, kể cả bảng ngăn bằng "|").
+          const before = content.slice(Math.max(0, m.index - 200), m.index);
+          const ctx = (before.split(/[\n\r]/).pop() || '').replace(/\s+/g, ' ').trim().slice(-140);
           res.push({ url, ctx });
         }
         return res;
       };
+      if (out.length < LINK_DIR_MAX_CHARS) {
+        const extra: string[] = [];
+        for (const k of filteredKnowledgeSources) {
+          const inContent = scanContentLinks(k.content || '');
+          if (!inContent.length) continue;
+          const block = [`- (link trong nội dung) ${k.title}:`, ...inContent.map((c) => `   • ${c.ctx ? c.ctx + ' → ' : ''}${c.url}`)].join('\n');
+          if (out.length + extra.join('\n').length + block.length > LINK_DIR_MAX_CHARS) break;
+          extra.push(block);
+        }
+        if (extra.length) out += (out ? '\n' : '') + extra.join('\n');
+      }
 
-      for (const k of filteredKnowledgeSources) {
-        const urls: string[] = [];
-        if (k.url) urls.push(k.url);
-        if (k.sheetUrl && k.sheetUrl !== k.url) urls.push(k.sheetUrl);
-        for (const u of urls) seen.add(cleanUrl(u));
-        if (urls.length) lines.push(`- [${k.type}] ${k.title}: ${urls.join(' | ')}`);
-        if (Array.isArray(k.subPages)) {
-          for (const sp of k.subPages) {
-            if (sp && sp.url) { seen.add(cleanUrl(sp.url)); lines.push(`   • ${sp.title || sp.url}: ${sp.url}`); }
-          }
-        }
-        const inContent = scanContentLinks(k.content || '');
-        if (inContent.length) {
-          if (!urls.length && !(Array.isArray(k.subPages) && k.subPages.some((s: any) => s && s.url))) {
-            lines.push(`- [${k.type}] ${k.title}:`);
-          }
-          for (const c of inContent) {
-            lines.push(`   • ${c.ctx ? c.ctx + ' → ' : ''}${c.url}`);
-          }
-        }
-      }
-      for (const p of filteredProducts) {
-        const purl = p.sourceUrl || p.productUrl;
-        if (purl) { seen.add(cleanUrl(purl)); lines.push(`- [sản phẩm] ${p.name}: ${purl}`); }
-        if (p.imageUrl) { seen.add(cleanUrl(p.imageUrl)); lines.push(`   • Ảnh sản phẩm "${p.name}": ${p.imageUrl}`); }
-      }
-      let out = lines.join('\n');
-      if (out.length > 12000) out = out.slice(0, 12000) + '\n...[danh sách link đã rút gọn]';
+      if (out.length > LINK_DIR_MAX_CHARS) out = out.slice(0, LINK_DIR_MAX_CHARS) + '\n...[danh sách link đã rút gọn]';
       return out;
     })();
 
