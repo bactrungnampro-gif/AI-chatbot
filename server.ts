@@ -32,7 +32,7 @@ import { rateLimit } from "./src/server/middleware/rateLimit";
 import { corsMiddleware } from "./src/server/middleware/cors";
 import { createAuthMiddleware } from "./src/server/middleware/auth";
 import { getGeminiAI, getSupabaseClient } from "./src/server/services/clients";
-import { indexKnowledge, retrieveRelevant, reindexSources, sourceContentSig, extractKeywords } from "./src/server/rag/rag";
+import { indexKnowledge, retrieveRelevant, reindexSources, sourceContentSig, extractKeywords, foldVN } from "./src/server/rag/rag";
 import { generateChatResponse } from "./src/server/providers/ai";
 import { buildChatSystemInstruction } from "./src/server/services/promptBuilder";
 import { extractDocxText, extractXlsxText, extractTextFromAttachmentData } from "./src/server/services/documents";
@@ -2026,7 +2026,8 @@ app.post("/api/chat", async (req, res) => {
     // "danh sách link": bắt đúng dòng chứa tên tài liệu + link, kể cả khi chưa lập chỉ mục hoặc danh sách link bị cắt).
     try {
       if (message && message.trim()) {
-        const kws = extractKeywords(message);
+        // Khớp KHÔNG DẤU: khách gõ "cho toi xin gia san pham" vẫn tìm được "giá sản phẩm".
+        const kws = extractKeywords(message).map(foldVN).filter((k) => k && k.length >= 2);
         if (kws.length) {
           const snippets: string[] = [];
           const MAX_SNIPPETS = 20;
@@ -2036,7 +2037,7 @@ app.post("/api/chat", async (req, res) => {
             if (!content) continue;
             const lines = content.split(/\r?\n/);
             for (let i = 0; i < lines.length; i++) {
-              const low = lines[i].toLowerCase();
+              const low = foldVN(lines[i]);
               if (kws.some((kw) => low.includes(kw))) {
                 // Ghép dòng khớp + dòng kế (phòng khi link nằm ở dòng ngay sau tên tài liệu).
                 let snip = lines[i].trim();

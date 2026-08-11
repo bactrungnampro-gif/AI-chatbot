@@ -224,6 +224,15 @@ export async function reindexSources(client: any, ai: any, sources: any[], maxCh
 
 // Tách từ khóa/mã quan trọng khỏi câu hỏi (bỏ stopword tiếng Việt, giữ token >=4 ký tự hoặc có chữ số như "SDS", "102").
 const VI_STOP = new Set(['của','và','là','có','cho','các','một','những','được','trong','khi','này','đó','với','thì','cần','muốn','làm','sao','như','thế','nào','bao','nhiêu','ạ','em','anh','chị','tôi','bạn','xin','hỏi','cái','về','gì','ở','đâu','hãy','cho','tôi','mình','ơi','vậy','ad','shop']);
+// Khử dấu tiếng Việt + thường hóa -> khớp không dấu ("gia" ↔ "giá", "san pham" ↔ "sản phẩm").
+export function foldVN(s: string): string {
+  return (s || '')
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .replace(/đ/g, 'd').replace(/Đ/g, 'D')
+    .toLowerCase();
+}
+
 export function extractKeywords(q: string): string[] {
   const raw = (q || '').toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ').split(/\s+/).filter(Boolean);
   // giữ token >=3 ký tự hoặc có chữ số (bắt mã ngắn: "SDS", "SKU", "102"); loại stopword.
