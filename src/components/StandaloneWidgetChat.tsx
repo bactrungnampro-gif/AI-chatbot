@@ -46,7 +46,9 @@ export const StandaloneWidgetChat: React.FC<StandaloneWidgetChatProps> = ({
   const [currentProducts, setCurrentProducts] = useState<ProductItem[]>(initialProducts);
 
   useEffect(() => {
-    fetch('/api/config')
+    // [Tối ưu băng thông] Chỉ tải cấu hình NHẸ (persona + giao diện), KHÔNG tải toàn bộ kho tri thức.
+    // Agent dùng tri thức ở phía máy chủ nên widget khách không cần tải kho -> tiết kiệm rất nhiều băng thông.
+    fetch('/api/widget-config')
       .then((res) => res.json())
       .then((data) => {
         if (data.agentConfig && data.agentConfig.name) {
@@ -55,14 +57,8 @@ export const StandaloneWidgetChat: React.FC<StandaloneWidgetChatProps> = ({
         if (data.widgetSettings) {
           setCurrentSettings((prev) => ({ ...prev, ...data.widgetSettings }));
         }
-        if (Array.isArray(data.knowledgeSources) && data.knowledgeSources.length > 0) {
-          setCurrentKnowledge(data.knowledgeSources);
-        }
-        if (Array.isArray(data.products) && data.products.length > 0) {
-          setCurrentProducts(data.products);
-        }
       })
-      .catch((err) => console.warn('Could not fetch /api/config in standalone widget:', err));
+      .catch((err) => console.warn('Could not fetch /api/widget-config in standalone widget:', err));
   }, []);
 
   const primaryColor = currentSettings?.primaryColor || '#2563eb';
@@ -226,11 +222,10 @@ export const StandaloneWidgetChat: React.FC<StandaloneWidgetChatProps> = ({
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
+          // [Tối ưu băng thông] KHÔNG gửi kèm knowledgeSources/products nữa — máy chủ tự dùng kho tri thức phía server.
           message: userMessage.text,
           history: messages,
           agentConfig: currentAgent,
-          knowledgeSources: currentKnowledge,
-          products: currentProducts,
           attachments: currentAttachments,
         }),
       });

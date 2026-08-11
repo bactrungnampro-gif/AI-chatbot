@@ -134,6 +134,14 @@ export default function App() {
 
   // Sync with server store on initial mount (sau khi đủ điều kiện xác thực)
   useEffect(() => {
+    // [Tối ưu băng thông] Ở chế độ widget khách: KHÔNG tải cấu hình nặng (kho tri thức) — widget tự lấy cấu hình nhẹ riêng.
+    const widgetMode = typeof window !== 'undefined' && (
+      window.location.search.includes('mode=widget') ||
+      window.location.search.includes('embed=true') ||
+      window.location.search.includes('widget=true') ||
+      window.location.pathname.startsWith('/widget')
+    );
+    if (widgetMode) { setIsConfigLoaded(true); return; }
     if (!canLoad) return;
     if (hasInitializedRef.current) return; // chỉ khởi tạo 1 lần, tránh init chạy lại đè dữ liệu
     hasInitializedRef.current = true;
@@ -245,6 +253,14 @@ export default function App() {
   // Lưu cấu hình (agent/widget/tri thức/sản phẩm) vào localStorage + đồng bộ server (có debounce).
   useEffect(() => {
     if (!isConfigLoaded) return;
+    // [Tối ưu băng thông] Widget khách KHÔNG lưu/không đẩy cấu hình lên server (tránh upload toàn bộ kho).
+    const widgetMode = typeof window !== 'undefined' && (
+      window.location.search.includes('mode=widget') ||
+      window.location.search.includes('embed=true') ||
+      window.location.search.includes('widget=true') ||
+      window.location.pathname.startsWith('/widget')
+    );
+    if (widgetMode) return;
 
     // Bỏ qua lần trigger đầu tiên sau khi load để không đè server bằng trạng thái khởi tạo
     if (isInitialSyncRef.current) {

@@ -198,6 +198,7 @@ function isPublicApi(req: express.Request): boolean {
   if (path === '/api/auth/google/callback') return true; // Google redirect (không gắn được Bearer)
   if (path.startsWith('/api/chat')) return true;          // widget chat công khai
   if (path === '/api/config' && req.method === 'GET') return true; // widget đọc cấu hình
+  if (path === '/api/widget-config' && req.method === 'GET') return true; // widget đọc cấu hình NHẸ (không kèm tri thức)
   return false;
 }
 
@@ -2119,6 +2120,9 @@ Yêu cầu trả về JSON chuẩn xác:
 // Main AI Support Chat Endpoint
 app.post("/api/chat", async (req, res) => {
   try {
+    // [Tối ưu băng thông] Widget khách KHÔNG còn gửi kèm kho tri thức -> đảm bảo máy chủ đã nạp KB từ Supabase.
+    await ensureKnowledgeLoaded();
+
     const {
       message,
       history = [],
@@ -3620,6 +3624,21 @@ app.get("/api/config", async (req, res) => {
     widgetSettings: serverWidgetSettings,
     knowledgeSources: serverKnowledgeSources,
     products: serverProducts,
+  });
+});
+
+// [Tối ưu băng thông] Cấu hình NHẸ cho widget khách: CHỈ persona + giao diện, KHÔNG kèm toàn bộ kho tri thức/sản phẩm
+// (agent dùng tri thức ở phía máy chủ). Cắt phần lớn băng thông tải xuống ở mỗi lượt khách mở chat.
+app.get("/api/widget-config", (req, res) => {
+  const a: any = stripAiSecrets(serverAgentConfig) || {};
+  res.set('Cache-Control', 'public, max-age=60');
+  res.json({
+    agentConfig: {
+      name: a.name, title: a.title, businessName: a.businessName,
+      businessIndustry: a.businessIndustry, tone: a.tone,
+      greetingMessage: a.greetingMessage, avatarUrl: a.avatarUrl,
+    },
+    widgetSettings: serverWidgetSettings,
   });
 });
 
