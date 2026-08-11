@@ -137,6 +137,8 @@ const INTERNAL_API_SECRET = crypto.randomBytes(24).toString('hex');
 const RAG_ENABLED = process.env.RAG_ENABLED === 'true';
 // Giới hạn tổng số đoạn lập chỉ mục mỗi lần (kiểm soát thời gian/chi phí/hạn ngạch embedding). Cấu hình qua RAG_MAX_CHUNKS.
 const RAG_MAX_CHUNKS = parseInt(process.env.RAG_MAX_CHUNKS || '3000', 10);
+// Số đoạn truy hồi mỗi câu hỏi (vector) — tăng để agent "nhìn" đủ ngữ cảnh hơn. Cấu hình qua RAG_MATCH_COUNT.
+const RAG_MATCH_COUNT = parseInt(process.env.RAG_MATCH_COUNT || '12', 10);
 // Tự động cập nhật chỉ mục RAG khi tri thức thay đổi (mặc định bật khi RAG bật). Tắt bằng RAG_AUTO_INDEX=false.
 const RAG_AUTO_INDEX = RAG_ENABLED && process.env.RAG_AUTO_INDEX !== 'false';
 
@@ -2196,7 +2198,7 @@ app.post("/api/chat", async (req, res) => {
       try {
         const sbClient = getSupabaseClient();
         if (sbClient && message && message.trim()) {
-          const hits = await retrieveRelevant(sbClient, getGeminiAI(), message, 6);
+          const hits = await retrieveRelevant(sbClient, getGeminiAI(), message, RAG_MATCH_COUNT);
           if (Array.isArray(hits) && hits.length > 0) {
             const ksById = new Map<string, any>();
             for (const k of filteredKnowledgeSources) if (k && k.id) ksById.set(k.id, k);

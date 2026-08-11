@@ -181,28 +181,64 @@ export async function reindexSources(client: any, ai: any, sources: any[], maxCh
   return total;
 }
 
-// Truy hồi các đoạn liên quan nhất tới câu hỏi. Trả về mảng { content, source_id, similarity } hoặc null.
+// Tách từ khóa/mã quan trọng khỏi câu hỏi (bỏ stopword tiếng Việt, giữ token >=4 ký tự hoặc có chữ số như "SDS", "102").
+const VI_STOP = new Set(['của','và','là','có','cho','các','một','những','được','trong','khi','này','đó','với','thì','cần','muốn','làm','sao','như','thế','nào','bao','nhiêu','ạ','em','anh','chị','tôi','bạn','xin','hỏi','cái','về','gì','ở','đâu','hãy','cho','tôi','mình','ơi','vậy','ad','shop']);
+function extractKeywords(q: string): string[] {
+  const raw = (q || '').toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ').split(/\s+/).filter(Boolean);
+  // giữ token >=3 ký tự hoặc có chữ số (bắt mã ngắn: "SDS", "SKU", "102"); loại stopword.
+  const words = raw.filter((w) => (w.length >= 3 || /\d/.test(w)) && !VI_STOP.has(w));
+  return Array.from(new Set(words));
+}
+
+// Truy hồi các đoạn liên quan nhất tới câu hỏi — HYBRID: kết hợp vector (ngữ nghĩa) + từ khóa/mã (ILIKE).
+// Vector bắt ý nghĩa; keyword bắt mã/số hiệu/tên chính xác mà vector hay bỏ lỡ (vd "SDS 102", mã SP).
+// Trả về mảng { content, source_id, similarity } (rỗng nếu không có gì) hoặc null nếu lỗi hẳn.
 export async function retrieveRelevant(
   client: any,
   ai: any,
   query: string,
-  matchCount = 6
+  matchCount = 12
 ): Promise<Array<{ content: string; source_id: string; similarity: number }> | null> {
   if (!query || !query.trim()) return null;
+  const merged = new Map<string, { content: string; source_id: string; similarity: number }>();
+  const keyOf = (r: any) => `${r?.source_id || ''}#${typeof r?.chunk_index === 'number' ? r.chunk_index : (r?.content || '').slice(0, 60)}`;
+
+  // 1) Tìm theo VECTOR (ngữ nghĩa)
   const emb = await embedText(ai, query);
-  if (!emb) return null;
-  try {
-    const { data, error } = await client.rpc('match_kb_chunks', {
-      query_embedding: emb,
-      match_count: matchCount,
-    });
-    if (error) {
-      console.warn('[RAG] match rpc error:', error.message);
-      return null;
+  if (emb) {
+    try {
+      const { data, error } = await client.rpc('match_kb_chunks', { query_embedding: emb, match_count: matchCount });
+      if (error) console.warn('[RAG] match rpc error:', error.message);
+      else if (Array.isArray(data)) for (const d of data) merged.set(keyOf(d), { content: d.content, source_id: d.source_id, similarity: typeof d.similarity === 'number' ? d.similarity : 0.7 });
+    } catch (e: any) {
+      console.warn('[RAG] vector retrieve error:', e?.message || e);
     }
-    return Array.isArray(data) ? data : [];
-  } catch (e: any) {
-    console.warn('[RAG] retrieve error:', e?.message || e);
-    return null;
   }
+
+  // 2) Tìm theo TỪ KHÓA/MÃ (ILIKE) — bổ sung các đoạn chứa từ khóa chính xác mà vector có thể trượt.
+  try {
+    const kws = extractKeywords(query).slice(0, 5);
+    for (const kw of kws) {
+      const safe = kw.replace(/[%_]/g, ''); // tránh ký tự đại diện của LIKE
+      if (safe.length < 2) continue;
+      const { data } = await client
+        .from(CHUNK_TABLE)
+        .select('source_id,chunk_index,content')
+        .ilike('content', `%${safe}%`)
+        .limit(4);
+      if (Array.isArray(data)) for (const d of data) {
+        const k = keyOf(d);
+        if (!merged.has(k)) merged.set(k, { content: d.content, source_id: d.source_id, similarity: 0.5 });
+      }
+    }
+  } catch (e: any) {
+    console.warn('[RAG] keyword retrieve error:', e?.message || e);
+  }
+
+  // Nếu cả hai đều không trả về gì và vector cũng lỗi (emb null) -> báo null để caller fallback về full KB.
+  if (merged.size === 0 && !emb) return null;
+  // Ưu tiên similarity cao trước; giới hạn tổng số đoạn để kiểm soát token.
+  return Array.from(merged.values())
+    .sort((a, b) => (b.similarity || 0) - (a.similarity || 0))
+    .slice(0, matchCount + 8);
 }
