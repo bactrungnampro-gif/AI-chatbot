@@ -59,6 +59,40 @@ export async function embedText(ai: any, text: string, retries = 4): Promise<num
   return null;
 }
 
+// Chuẩn hóa 1 vector về EMBED_DIM (cắt Matryoshka + chuẩn hóa độ dài). Trả null nếu không hợp lệ.
+function normalizeVec(v: any): number[] | null {
+  if (!Array.isArray(v)) return null;
+  if (v.length > EMBED_DIM) v = v.slice(0, EMBED_DIM);
+  if (v.length !== EMBED_DIM) return null;
+  let norm = 0; for (const x of v) norm += x * x; norm = Math.sqrt(norm) || 1;
+  return v.map((x: number) => x / norm);
+}
+
+// Embedding THEO LÔ: gộp nhiều đoạn vào MỘT request -> giảm mạnh số request (đỡ chạm rate-limit/hạn ngạch) và nhanh hơn.
+// Trả mảng vector (phần tử null nếu 1 đoạn lỗi) nếu thành công; trả null nếu cả lô lỗi/không đúng định dạng -> caller lùi về embed từng đoạn.
+export async function embedTexts(ai: any, texts: string[], retries = 5): Promise<(number[] | null)[] | null> {
+  if (!Array.isArray(texts) || texts.length === 0) return [];
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const res: any = await ai.models.embedContent({
+        model: EMBED_MODEL,
+        contents: texts,
+        config: { outputDimensionality: EMBED_DIM },
+      });
+      const arr: any[] = Array.isArray(res?.embeddings) ? res.embeddings : [];
+      if (arr.length !== texts.length) return null; // API không trả đúng số vector -> để caller lùi về cách cũ
+      return arr.map((e) => normalizeVec(e?.values));
+    } catch (e: any) {
+      const msg = e?.message || String(e);
+      const rateLimited = /429|RESOURCE_EXHAUSTED|quota|rate limit/i.test(msg);
+      if (attempt < retries && rateLimited) { await sleep(2000 * Math.pow(2, attempt)); continue; } // 2s,4s,8s,16s,32s
+      console.warn('[RAG] batch embed error:', msg);
+      return null;
+    }
+  }
+  return null;
+}
+
 export interface IndexResult { sources: number; chunks: number; skipped: number; already: number; done: boolean; error?: string; }
 
 // Xây dựng/cập nhật chỉ mục vector — KIỂU RESUMABLE:
@@ -103,10 +137,17 @@ export async function indexKnowledge(
 
     let sourceHadNew = false;
     const rows: any[] = [];
-    for (let i = 0; i < pending.length; i += concurrency) {
+    // Gộp nhiều đoạn/1 request để giảm số lần gọi API (đọc env lúc chạy để dotenv đã nạp xong).
+    const batchSize = Math.max(1, parseInt(process.env.RAG_EMBED_BATCH || '32', 10) || 32);
+    for (let i = 0; i < pending.length; i += batchSize) {
       if (newlyIndexed >= maxChunks) { capReached = true; break; }
-      const batch = pending.slice(i, i + concurrency);
-      const embs = await Promise.all(batch.map((c) => embedText(ai, c.text)));
+      const batch = pending.slice(i, i + batchSize);
+      let embs = await embedTexts(ai, batch.map((c) => c.text));
+      if (!embs) {
+        // Batch lỗi/không được hỗ trợ -> lùi về embed TỪNG đoạn (tuần tự, nhẹ nhàng để tránh rate-limit).
+        embs = [];
+        for (const c of batch) embs.push(await embedText(ai, c.text));
+      }
       for (let j = 0; j < batch.length; j++) {
         if (newlyIndexed >= maxChunks) { capReached = true; break; }
         const emb = embs[j];
@@ -122,13 +163,13 @@ export async function indexKnowledge(
         newlyIndexed++;
         sourceHadNew = true;
       }
-      // Ghi dần theo lô nhỏ để không mất tiến độ nếu gián đoạn
-      if (rows.length >= 20) {
+      // Ghi dần theo lô để không mất tiến độ nếu gián đoạn
+      if (rows.length >= 50) {
         const { error } = await client.from(CHUNK_TABLE).upsert(rows.splice(0, rows.length), { onConflict: 'id' });
         if (error) return { sources: indexedSources, chunks: newlyIndexed, skipped, already, done: false, error: error.message };
       }
       if (onProgress) onProgress({ chunks: newlyIndexed, sources: indexedSources, skipped, already });
-      await sleep(200); // giãn cách tránh vượt rate limit
+      await sleep(150); // giãn cách nhẹ giữa các request
       if (capReached) break;
     }
     if (rows.length) {
@@ -136,7 +177,7 @@ export async function indexKnowledge(
       if (error) return { sources: indexedSources, chunks: newlyIndexed, skipped, already, done: false, error: error.message };
     }
     if (sourceHadNew) indexedSources++;
-    if (onProgress) onProgress(newlyIndexed, indexedSources);
+    if (onProgress) onProgress({ chunks: newlyIndexed, sources: indexedSources, skipped, already });
     if (capReached) break;
   }
 
