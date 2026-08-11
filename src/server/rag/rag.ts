@@ -233,10 +233,13 @@ export function foldVN(s: string): string {
     .toLowerCase();
 }
 
+// Stopword ở dạng KHÔNG DẤU -> lọc được cả khi khách gõ thiếu dấu ("toi", "cua", "cac"...).
+const VI_STOP_FOLDED = new Set(Array.from(VI_STOP).map(foldVN));
+
 export function extractKeywords(q: string): string[] {
   const raw = (q || '').toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ').split(/\s+/).filter(Boolean);
-  // giữ token >=3 ký tự hoặc có chữ số (bắt mã ngắn: "SDS", "SKU", "102"); loại stopword.
-  const words = raw.filter((w) => (w.length >= 3 || /\d/.test(w)) && !VI_STOP.has(w));
+  // giữ token >=3 ký tự hoặc có chữ số (bắt mã ngắn: "SDS", "SKU", "102"); loại stopword (so khớp không dấu).
+  const words = raw.filter((w) => (w.length >= 3 || /\d/.test(w)) && !VI_STOP_FOLDED.has(foldVN(w)));
   return Array.from(new Set(words));
 }
 
