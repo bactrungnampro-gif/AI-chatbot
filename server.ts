@@ -1411,6 +1411,8 @@ async function resyncKnowledgeSourceCore(source: any) {
             lastSyncedAt: nowIso
           };
         }
+        // [Fix H3] API trả không thành công -> BÁO LỖI (không rơi xuống fallback báo thành công giả + dời lịch 24h).
+        return { success: false, error: data.error || `API endpoint trả về không thành công (HTTP ${apiRes.status})` };
       } catch (err: any) {
         return { success: false, error: "Lỗi kết nối API endpoint: " + (err?.message || String(err)) };
       }
@@ -2501,6 +2503,7 @@ async function ensureKnowledgeLoaded() {
   if (!client) return;
   const tableName = serverAgentConfig?.supabaseConfig?.tableName || 'knowledge_sources';
   knowledgeHydrating = (async () => {
+    let ok = false;
     try {
       const queryPromise = client.from(tableName).select('*');
       const timeoutPromise = new Promise((_, reject) =>
@@ -2530,6 +2533,7 @@ async function ensureKnowledgeLoaded() {
         await dedupeKnowledgeByUrl(client, tableName); // [Chống trùng] dọn bản trùng cùng URL
         primeKnowledgeSyncSig(serverKnowledgeSources);
         lastKnowledgeRefreshAt = Date.now();
+        ok = true;
         console.log(`⚡ [SupabaseStore] Hydrated/merged ${data.length} rows từ bảng -> tổng ${serverKnowledgeSources.length} nguồn.`);
       } else if (error) {
         console.warn("⚠️ [SupabaseStore] Hydrate error:", error.message);
@@ -2537,6 +2541,8 @@ async function ensureKnowledgeLoaded() {
     } catch (e: any) {
       console.warn("⚠️ [SupabaseStore] Hydrate failed:", e?.message);
     } finally {
+      // [Fix H4] Khi hydrate LỖI vẫn ghi mốc (lùi ~5s) để KHÔNG re-hydrate mỗi request khi Supabase chậm/chập chờn.
+      if (!ok) lastKnowledgeRefreshAt = Date.now() - 10000;
       knowledgeHydrating = null;
     }
   })();

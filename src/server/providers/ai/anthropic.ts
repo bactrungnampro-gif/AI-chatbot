@@ -16,10 +16,30 @@ export async function chatAnthropic(p: ChatParams): Promise<string> {
     baseUrl = p.customApiEndpoint.trim().replace(/\/$/, '');
   }
 
+  // [Fix H1] Anthropic Messages API YÊU CẦU: tin nhắn đầu là 'user' và role xen kẽ user/assistant.
+  // -> Bỏ lời chào mở đầu của agent (như adapter Gemini/OpenAI), và GỘP các lượt cùng role liền nhau.
   const messages: any[] = [];
+  const pushMsg = (role: 'user' | 'assistant', content: any) => {
+    const last = messages[messages.length - 1];
+    if (last && last.role === role) {
+      if (typeof last.content === 'string' && typeof content === 'string') {
+        last.content = last.content + '\n' + content;
+      } else {
+        const arr = Array.isArray(last.content) ? last.content : [{ type: 'text', text: String(last.content || '') }];
+        const add = Array.isArray(content) ? content : [{ type: 'text', text: String(content || '') }];
+        last.content = [...arr, ...add];
+      }
+    } else {
+      messages.push({ role, content });
+    }
+  };
+
   if (Array.isArray(p.history) && p.history.length > 0) {
+    let userStarted = false;
     for (const msg of p.history.slice(-10)) {
-      messages.push({ role: msg.sender === 'user' ? 'user' : 'assistant', content: msg.text || '' });
+      if (msg.sender === 'user') userStarted = true;
+      if (!userStarted) continue; // bỏ lời chào mở đầu của agent
+      pushMsg(msg.sender === 'user' ? 'user' : 'assistant', msg.text || '');
     }
   }
 
@@ -35,7 +55,7 @@ export async function chatAnthropic(p: ChatParams): Promise<string> {
     }
   }
   userContentArr.push({ type: 'text', text: p.message || 'Hãy hỗ trợ cho tôi.' });
-  messages.push({ role: 'user', content: userContentArr });
+  pushMsg('user', userContentArr);
 
   const fetchUrl = baseUrl.endsWith('/messages') ? baseUrl : `${baseUrl}/messages`;
   const resApi = await fetch(fetchUrl, {
