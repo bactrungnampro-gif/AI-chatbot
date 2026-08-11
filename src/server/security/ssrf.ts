@@ -64,7 +64,19 @@ export async function assertSafeExternalUrl(rawUrl: string): Promise<string> {
 }
 
 // Wrapper fetch có kiểm tra SSRF. Dùng cho mọi lời gọi fetch tới URL do người dùng cung cấp.
-export async function safeFetch(rawUrl: string, options?: any): Promise<Response> {
-  const safeUrl = await assertSafeExternalUrl(rawUrl);
-  return fetch(safeUrl, options);
+// [Fix H9] TỰ xử lý redirect (redirect:'manual') và KIỂM TRA LẠI mỗi hop -> chặn 302 trỏ tới nội bộ/metadata.
+export async function safeFetch(rawUrl: string, options?: any, maxRedirects = 5): Promise<Response> {
+  let url = await assertSafeExternalUrl(rawUrl);
+  for (let i = 0; i <= maxRedirects; i++) {
+    const res = await fetch(url, { ...(options || {}), redirect: 'manual' });
+    if (res.status >= 300 && res.status < 400) {
+      const loc = res.headers.get('location');
+      if (!loc) return res;
+      const nextUrl = new URL(loc, url).toString();
+      url = await assertSafeExternalUrl(nextUrl); // ném lỗi nếu redirect trỏ về IP nội bộ
+      continue;
+    }
+    return res;
+  }
+  throw new Error('Quá nhiều lần chuyển hướng (redirect).');
 }

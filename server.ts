@@ -46,7 +46,12 @@ import {
 
 const app = express();
 
-app.set('trust proxy', true); // để lấy đúng IP client sau reverse proxy (Cloud Run/Nginx)
+// [Fix H8] KHÔNG tin mọi hop (true) -> sẽ bị giả X-Forwarded-For để bypass rate-limit.
+// Tin đúng số hop proxy (mặc định 1 cho Render/Cloud Run/Nginx); chỉnh qua TRUST_PROXY khi cần.
+{
+  const tp = process.env.TRUST_PROXY;
+  app.set('trust proxy', tp ? (/^\d+$/.test(tp) ? parseInt(tp, 10) : tp) : 1);
+}
 
 // [Security] Giới hạn kích thước body (cấu hình MAX_BODY_SIZE trong env.ts).
 app.use(express.json({ limit: MAX_BODY_SIZE }));
@@ -1881,16 +1886,18 @@ app.post("/api/chat", async (req, res) => {
 
     const allowedDomainsListStr = Array.from(allowedDomainsSet).join(', ');
 
-    // Prepare Knowledge Base Context (with character length safety cap to avoid TPM 200k OpenAI limit)
-    const MAX_KB_TOTAL_CHARS = 24000;
+    // Prepare Knowledge Base Context. [Fix H6] Cấu hình được + KHÔNG âm thầm bỏ nguồn (báo số nguồn bị cắt).
+    const MAX_KB_TOTAL_CHARS = parseInt(process.env.KB_MAX_CONTEXT_CHARS || '48000', 10);
+    const MAX_KB_PER_SOURCE = parseInt(process.env.KB_MAX_PER_SOURCE_CHARS || '8000', 10);
     let currentKbChars = 0;
+    let kbDropped = 0;
 
-    const activeKnowledge = filteredKnowledgeSources
+    let activeKnowledge = filteredKnowledgeSources
       .filter((k: any) => k.active && k.content)
       .map((k: any) => {
         let textContent = k.content || "";
-        if (textContent.length > 6000) {
-          textContent = textContent.substring(0, 6000) + "\n...[Nội dung tri thức đã được tối ưu độ dài]";
+        if (textContent.length > MAX_KB_PER_SOURCE) {
+          textContent = textContent.substring(0, MAX_KB_PER_SOURCE) + "\n...[Nội dung tri thức đã được tối ưu độ dài]";
         }
         let kText = `=== [CƠ SỞ DỮ LIỆU: ${k.title} (${k.type})] ===\n`;
         if (k.url) {
@@ -1908,11 +1915,16 @@ app.post("/api/chat", async (req, res) => {
         return kText;
       })
       .filter((textBlock: string) => {
-        if (currentKbChars >= MAX_KB_TOTAL_CHARS) return false;
+        if (currentKbChars >= MAX_KB_TOTAL_CHARS) { kbDropped++; return false; }
         currentKbChars += textBlock.length;
         return true;
       })
       .join("\n");
+    if (kbDropped > 0) {
+      // Báo cho model biết còn nguồn chưa nạp (thay vì âm thầm cắt) -> tránh trả lời thiếu mà tưởng đã đủ.
+      activeKnowledge += `\n\n[LƯU Ý HỆ THỐNG: còn ${kbDropped} nguồn tri thức khác CHƯA được nạp vào ngữ cảnh này do giới hạn độ dài. Nếu không tìm thấy thông tin khách hỏi, hãy nói khách cung cấp thêm từ khóa/tên cụ thể để tra cứu chính xác, ĐỪNG khẳng định là không có.]`;
+      console.warn(`[Chat KB] Đã cắt ${kbDropped} nguồn do vượt trần ${MAX_KB_TOTAL_CHARS} ký tự (chế độ không-RAG).`);
+    }
 
     // Prepare Product Catalog Context (with total item/length cap)
     const MAX_PRODUCT_ITEMS = 30;
@@ -2019,14 +2031,21 @@ app.post("/api/chat", async (req, res) => {
           if (Array.isArray(hits) && hits.length > 0) {
             const ksById = new Map<string, any>();
             for (const k of filteredKnowledgeSources) if (k && k.id) ksById.set(k.id, k);
-            knowledgeContextText = hits
-              .map((h: any, i: number) => {
-                const src = ksById.get(h.source_id);
-                const label = src ? `${src.title}${src.url ? ` • LINK NGUỒN: ${src.url}` : ''}` : (h.source_id || '');
-                return `=== [ĐOẠN LIÊN QUAN #${i + 1}${label ? ` • nguồn: ${label}` : ''}] ===\n${h.content}`;
-              })
-              .join('\n\n');
-            console.log(`[RAG] Dùng ${hits.length} đoạn truy hồi cho câu hỏi (thay vì nhồi toàn bộ KB).`);
+            // [Fix M9] Giới hạn TỔNG ký tự ngữ cảnh RAG để prompt không phình (mục đích RAG là tiết kiệm token).
+            const RAG_CTX_MAX = parseInt(process.env.RAG_CONTEXT_MAX_CHARS || '30000', 10);
+            let ragCtxChars = 0;
+            const blocks: string[] = [];
+            for (let i = 0; i < hits.length; i++) {
+              const h: any = hits[i];
+              const src = ksById.get(h.source_id);
+              const label = src ? `${src.title}${src.url ? ` • LINK NGUỒN: ${src.url}` : ''}` : (h.source_id || '');
+              const block = `=== [ĐOẠN LIÊN QUAN #${i + 1}${label ? ` • nguồn: ${label}` : ''}] ===\n${h.content}`;
+              if (ragCtxChars + block.length > RAG_CTX_MAX) break;
+              ragCtxChars += block.length;
+              blocks.push(block);
+            }
+            knowledgeContextText = blocks.join('\n\n');
+            console.log(`[RAG] Dùng ${blocks.length}/${hits.length} đoạn truy hồi (giới hạn ${RAG_CTX_MAX} ký tự).`);
           }
         }
       } catch (e: any) {
@@ -2044,10 +2063,15 @@ app.post("/api/chat", async (req, res) => {
         if (kws.length) {
           const snippets: string[] = [];
           const MAX_SNIPPETS = 20;
+          // [Fix H5] Giới hạn NGÂN SÁCH quét để không chặn luồng khi kho lớn (mỗi request quét tối đa ~ngần này ký tự).
+          const SCAN_CHAR_BUDGET = parseInt(process.env.KEYWORD_SCAN_BUDGET || '1500000', 10);
+          let scannedChars = 0;
           outer:
           for (const k of filteredKnowledgeSources) {
             const content = (k && k.content) ? String(k.content) : '';
             if (!content) continue;
+            scannedChars += content.length;
+            if (scannedChars > SCAN_CHAR_BUDGET) { console.warn('[KeywordScan] Dừng sớm do vượt ngân sách quét.'); break; }
             const lines = content.split(/\r?\n/);
             for (let i = 0; i < lines.length; i++) {
               const low = foldVN(lines[i]);
@@ -2187,9 +2211,10 @@ app.post("/api/chat", async (req, res) => {
 
   } catch (error: any) {
     console.error("[Chat API Error]:", error);
+    // [Fix M17] Không lộ chi tiết lỗi nội bộ ra client (chỉ log ở server).
+    console.error('[Chat 500]', error?.message || error);
     res.status(500).json({
-      error: "Đã xảy ra lỗi khi kết nối với Trợ lý AI.",
-      details: error?.message || String(error)
+      error: "Đã xảy ra lỗi khi kết nối với Trợ lý AI. Vui lòng thử lại sau."
     });
   }
 });
@@ -3306,11 +3331,12 @@ app.post("/api/supabase/sync", async (req, res) => {
 app.get("/api/config", async (req, res) => {
   // [Fix hiển thị] Nếu bộ nhớ trống (startup timeout), tải lại tri thức từ Supabase trước khi trả về.
   await ensureKnowledgeLoaded();
-  // [Security] Endpoint công khai (widget dùng) -> loại bỏ mọi bí mật trước khi trả về.
+  // [Security] Endpoint công khai -> loại bỏ bí mật + [Fix H10] KHÔNG trả nội dung tri thức đầy đủ (chỉ metadata)
+  // để tránh lộ toàn bộ tài liệu nội bộ ra internet. Trang quản trị tải nội dung đầy đủ qua POST /api/config/init.
   res.json({
     agentConfig: stripAiSecrets(serverAgentConfig),
     widgetSettings: serverWidgetSettings,
-    knowledgeSources: serverKnowledgeSources,
+    knowledgeSources: knowledgeMetaOnly(serverKnowledgeSources),
     products: serverProducts,
   });
 });
@@ -3458,7 +3484,11 @@ app.get("/api/widget.js", (req, res) => {
   const rawProto = (req.headers['x-forwarded-proto'] as string) || req.protocol || 'https';
   const protocol = (host.includes('localhost') || host.includes('127.0.0.1')) ? rawProto : 'https';
   const baseUrl = `${protocol}://${host}`;
-  const launcherText = serverWidgetSettings.buttonText || 'Hỏi Trợ Lý AI';
+  // [Fix H7] null-safe (tránh crash 500 khi chưa có cấu hình) + LÀM SẠCH để chống chèn mã (XSS) vào widget.js:
+  // loại ký tự có thể thoát khỏi chuỗi JS/HTML (< > " ' \ và xuống dòng), giới hạn độ dài.
+  const launcherText = String(serverWidgetSettings?.buttonText || 'Hỏi Trợ Lý AI')
+    .replace(/[<>"'\\\r\n]/g, '')
+    .slice(0, 60);
 
   const jsCode = `
 (function() {

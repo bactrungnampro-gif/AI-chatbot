@@ -15,9 +15,10 @@ export function corsMiddleware(req: express.Request, res: express.Response, next
   if (isPublicWidgetEndpoint) {
     // Widget có thể được nhúng ở bất kỳ domain khách hàng nào -> cho phép mọi origin (chỉ đọc/chat).
     res.setHeader('Access-Control-Allow-Origin', '*');
-  } else if (origin && (ALLOWED_ORIGINS.length === 0 || ALLOWED_ORIGINS.includes(origin))) {
-    // Endpoint quản trị/ghi: chỉ cho origin trong allowlist. Khi chưa cấu hình allowlist,
-    // phản chiếu origin để không phá vỡ môi trường dev (nên đặt ALLOWED_ORIGINS ở production).
+  } else if (origin && ALLOWED_ORIGINS.length > 0 && ALLOWED_ORIGINS.includes(origin)) {
+    // [Fix M13] Chỉ cấp CORS kèm credentials cho origin NẰM TRONG allowlist đã cấu hình.
+    // (Trước đây khi allowlist rỗng, phản chiếu MỌI origin kèm credentials -> rủi ro bảo mật.)
+    // Truy cập same-origin (trang quản trị cùng host) không cần CORS nên không bị ảnh hưởng.
     res.setHeader('Access-Control-Allow-Origin', origin);
     res.setHeader('Vary', 'Origin');
     res.setHeader('Access-Control-Allow-Credentials', 'true');

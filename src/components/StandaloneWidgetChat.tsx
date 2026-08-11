@@ -225,6 +225,10 @@ export const StandaloneWidgetChat: React.FC<StandaloneWidgetChatProps> = ({
     setAttachments([]);
     setIsLoading(true);
 
+    // [Fix H2] Lịch sử gửi lên NHẸ: chỉ 12 lượt gần nhất, CHỈ text (bỏ ảnh base64 của các lượt cũ)
+    // -> payload không phình theo thời gian (tránh chậm/tốn/lỗi 413 sau khi khách gửi nhiều ảnh).
+    const lightHistory = messages.slice(-12).map((m) => ({ id: m.id, sender: m.sender, text: m.text, timestamp: m.timestamp }));
+
     try {
       const response = await fetch('/api/chat', {
         method: 'POST',
@@ -234,7 +238,7 @@ export const StandaloneWidgetChat: React.FC<StandaloneWidgetChatProps> = ({
         body: JSON.stringify({
           // [Tối ưu băng thông] KHÔNG gửi kèm knowledgeSources/products nữa — máy chủ tự dùng kho tri thức phía server.
           message: userMessage.text,
-          history: messages,
+          history: lightHistory,
           agentConfig: currentAgent,
           attachments: currentAttachments,
         }),

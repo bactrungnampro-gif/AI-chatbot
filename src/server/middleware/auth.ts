@@ -48,7 +48,12 @@ export function createAuthMiddleware(getSupabaseClient: () => any) {
     if (!user) {
       return res.status(401).json({ error: 'Phiên đăng nhập không hợp lệ hoặc đã hết hạn.', code: 'AUTH_INVALID' });
     }
-    if (ADMIN_EMAILS.length > 0 && !ADMIN_EMAILS.includes(String(user.email || '').toLowerCase())) {
+    // [Fix M12] FAIL-CLOSED: khi bật AUTH nhưng CHƯA cấu hình ADMIN_EMAILS thì CHẶN hết
+    // (nếu không, bất kỳ ai có token Supabase — kể cả tự đăng ký — đều trở thành quản trị).
+    if (ADMIN_EMAILS.length === 0) {
+      return res.status(403).json({ error: 'Máy chủ chưa cấu hình danh sách email quản trị (ADMIN_EMAILS).', code: 'AUTH_NOT_CONFIGURED' });
+    }
+    if (!ADMIN_EMAILS.includes(String(user.email || '').toLowerCase())) {
       return res.status(403).json({ error: 'Tài khoản không có quyền quản trị.', code: 'AUTH_FORBIDDEN' });
     }
     (req as any).authUser = user;

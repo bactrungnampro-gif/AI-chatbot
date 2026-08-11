@@ -37,7 +37,7 @@ export const INTERNAL_API_SECRET = crypto.randomBytes(24).toString('hex');
 export const RAG_ENABLED = process.env.RAG_ENABLED === 'true';
 export const RAG_MAX_CHUNKS = parseInt(process.env.RAG_MAX_CHUNKS || '3000', 10);
 export const RAG_MATCH_COUNT = parseInt(process.env.RAG_MATCH_COUNT || '12', 10);
-export const LINK_DIR_MAX_CHARS = parseInt(process.env.LINK_DIR_MAX_CHARS || '40000', 10);
+export const LINK_DIR_MAX_CHARS = parseInt(process.env.LINK_DIR_MAX_CHARS || '16000', 10);
 export const RAG_AUTO_INDEX = RAG_ENABLED && process.env.RAG_AUTO_INDEX !== 'false';
 
 // [Security] Bí mật để ký tham số OAuth `state` (chống CSRF/nhầm phiên).
