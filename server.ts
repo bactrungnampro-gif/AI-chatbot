@@ -5,7 +5,7 @@ import dns from "dns/promises";
 import net from "net";
 import crypto from "crypto";
 import { createServer as createViteServer } from "vite";
-import { GoogleGenAI, Type } from "@google/genai";
+import { Type } from "@google/genai";
 import { PDFParse } from "pdf-parse";
 import { 
   Document, 
@@ -19,7 +19,6 @@ import {
   WidthType, 
   AlignmentType 
 } from "docx";
-import { createClient } from "@supabase/supabase-js";
 
 // --- Modular server layers (Giai đoạn 2 tái cấu trúc) ---
 import { assertSafeExternalUrl, safeFetch } from "./src/server/security/ssrf";
@@ -31,6 +30,8 @@ import { validateBody } from "./src/server/http/validate";
 import { errorHandler } from "./src/server/middleware/errorHandler";
 import { rateLimit } from "./src/server/middleware/rateLimit";
 import { corsMiddleware } from "./src/server/middleware/cors";
+import { createAuthMiddleware } from "./src/server/middleware/auth";
+import { getGeminiAI, getSupabaseClient } from "./src/server/services/clients";
 import { indexKnowledge, retrieveRelevant, reindexSources, sourceContentSig, extractKeywords } from "./src/server/rag/rag";
 import { generateChatResponse } from "./src/server/providers/ai";
 import { buildChatSystemInstruction } from "./src/server/services/promptBuilder";
@@ -38,7 +39,7 @@ import { extractDocxText, extractXlsxText, extractTextFromAttachmentData } from 
 // [Giai đoạn 2] Tầng cấu hình: các hằng số đọc từ biến môi trường (env.ts đã tự gọi dotenv.config() -> không cần gọi lại ở đây).
 import {
   PORT, MAX_BODY_SIZE,
-  AUTH_ENABLED, ADMIN_EMAILS, INTERNAL_API_SECRET,
+  AUTH_ENABLED, INTERNAL_API_SECRET,
   RAG_ENABLED, RAG_MAX_CHUNKS, RAG_MATCH_COUNT, LINK_DIR_MAX_CHARS, RAG_AUTO_INDEX,
   OAUTH_STATE_SECRET,
 } from "./src/server/config/env";
@@ -106,72 +107,11 @@ let ragIndexing = false;
 let ragProgress: { running: boolean; done: boolean; complete?: boolean; chunks: number; sources: number; skipped: number; already?: number; error?: string; startedAt?: number; finishedAt?: number } =
   { running: false, done: false, chunks: 0, sources: 0, skipped: 0 };
 
-// Các endpoint công khai (không cần đăng nhập): widget nhúng, health, đọc config, callback OAuth, public-config.
-function isPublicApi(req: express.Request): boolean {
-  if (req.method === 'OPTIONS') return true;
-  if (!req.path.startsWith('/api/')) return true; // tài nguyên frontend (để tải được màn hình đăng nhập)
-  const path = req.path;
-  if (path === '/api/health') return true;
-  if (path === '/api/public-config') return true;
-  if (path === '/api/widget.js') return true;
-  if (path === '/api/auth/google/callback') return true; // Google redirect (không gắn được Bearer)
-  if (path.startsWith('/api/chat')) return true;          // widget chat công khai
-  if (path === '/api/config' && req.method === 'GET') return true; // widget đọc cấu hình
-  if (path === '/api/widget-config' && req.method === 'GET') return true; // widget đọc cấu hình NHẸ (không kèm tri thức)
-  return false;
-}
+// [Giai đoạn 2] isPublicApi + xác thực token + guard -> đã tách sang src/server/middleware/auth.ts.
+// getSupabaseClient được tiêm vào (định nghĩa hàm bên dưới, đã hoisted nên dùng được ở đây).
+app.use(createAuthMiddleware(getSupabaseClient));
 
-// Xác thực token Supabase (Bearer JWT). Trả về user nếu hợp lệ.
-async function verifySupabaseToken(token: string): Promise<any | null> {
-  const client = getSupabaseClient();
-  if (!client) return null;
-  try {
-    const { data, error } = await client.auth.getUser(token);
-    if (error || !data?.user) return null;
-    return data.user;
-  } catch {
-    return null;
-  }
-}
-
-// Guard: chặn mọi endpoint không công khai khi AUTH_ENABLED.
-app.use(async (req, res, next) => {
-  if (!AUTH_ENABLED) return next();
-  // Bỏ qua guard cho lời gọi nội bộ hợp lệ (server tự gọi chính mình).
-  if (req.headers['x-internal-token'] === INTERNAL_API_SECRET) return next();
-  if (isPublicApi(req)) return next();
-
-  const authHeader = req.headers.authorization || '';
-  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
-  if (!token) {
-    return res.status(401).json({ error: 'Yêu cầu đăng nhập (thiếu token).', code: 'AUTH_REQUIRED' });
-  }
-  const user = await verifySupabaseToken(token);
-  if (!user) {
-    return res.status(401).json({ error: 'Phiên đăng nhập không hợp lệ hoặc đã hết hạn.', code: 'AUTH_INVALID' });
-  }
-  if (ADMIN_EMAILS.length > 0 && !ADMIN_EMAILS.includes(String(user.email || '').toLowerCase())) {
-    return res.status(403).json({ error: 'Tài khoản không có quyền quản trị.', code: 'AUTH_FORBIDDEN' });
-  }
-  (req as any).authUser = user;
-  next();
-});
-
-// Initialize Gemini Client
-const getGeminiAI = () => {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) {
-    console.warn("⚠️ GEMINI_API_KEY environment variable is missing.");
-  }
-  return new GoogleGenAI({
-    apiKey: apiKey || "",
-    httpOptions: {
-      headers: {
-        'User-Agent': 'aistudio-build',
-      },
-    },
-  });
-};
+// [Giai đoạn 2] getGeminiAI + getSupabaseClient -> đã tách sang src/server/services/clients.ts.
 
 // [Giai đoạn 2] SSRF guard (isPrivateIp/assertSafeExternalUrl/safeFetch) đã tách sang src/server/security/ssrf.ts
 
@@ -2353,12 +2293,7 @@ function persistSupabaseEnv(_url?: string, _anonKey?: string) {
 // [Security - SEC-07/08] Client Supabase phía SERVER: chỉ lấy credential từ env.
 // Ưu tiên SERVICE ROLE KEY (chỉ tồn tại ở server, bỏ qua RLS an toàn cho thao tác quản trị);
 // nếu không có thì dùng ANON KEY. Không bao giờ nhận url/key từ client.
-function getSupabaseClient() {
-  const url = process.env.SUPABASE_URL;
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY;
-  if (!url || !key) return null;
-  return createClient(url, key, { auth: { persistSession: false } });
-}
+// getSupabaseClient -> đã tách sang src/server/services/clients.ts.
 
 // [Fix timeout] Chỉ giữ METADATA tri thức trong app_config (bỏ trường "content" rất lớn).
 // Nội dung đầy đủ nằm ở bảng riêng knowledge_sources -> app_config nhẹ, upsert không timeout.

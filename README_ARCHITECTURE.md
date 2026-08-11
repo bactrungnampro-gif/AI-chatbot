@@ -30,7 +30,18 @@ src/server/
    └─ errorHandler.ts             # error-handler tập trung
 ```
 
-## Increment 6 — Middleware rate-limit + CORS (vừa làm)
+## Increment 8 — Tầng client (clients.ts) (vừa làm)
+- Tách `getGeminiAI` + `getSupabaseClient` sang `src/server/services/clients.ts` (hàm thuần, chỉ đọc env + tạo client).
+- Sao chép NGUYÊN VĂN; gỡ import `GoogleGenAI`/`createClient` không còn dùng ở server.ts (giữ `Type` cho schema sản phẩm). Cả hai file transpile sạch, 17 lời gọi hoạt động qua import.
+- Ghi chú: đây là bước AN TOÀN cạnh Store layer. Phần lõi Store layer (di trú STATE dùng chung `serverKnowledgeSources`/`serverAgentConfig`... vốn bị GÁN LẠI nhiều nơi) mới là bước rủi ro cao — cần đổi sang store-object + rename toàn cục, sẽ làm rất cẩn thận và checkpoint trước.
+
+## Increment 7 — Middleware auth (đã làm)
+- Tách `isPublicApi` + xác thực token Supabase + guard sang `src/server/middleware/auth.ts`.
+- `getSupabaseClient` được TIÊM qua factory `createAuthMiddleware(getSupabaseClient)` -> module không phụ thuộc trực tiếp server.ts.
+- Logic giữ NGUYÊN; đã test mock: public vs protected phân biệt đúng, thiếu token -> 401 AUTH_REQUIRED, token sai -> 401 AUTH_INVALID, admin hợp lệ -> qua, email ngoài ADMIN_EMAILS -> 403.
+- Còn lại (rủi ro cao nhất): Store layer rồi Routers.
+
+## Increment 6 — Middleware rate-limit + CORS (đã làm)
 - Tách middleware rate-limit (rlBuckets + hàm rateLimit + dọn định kỳ) sang `src/server/middleware/rateLimit.ts`.
 - Tách middleware CORS (PUBLIC_WIDGET_PATHS + logic allow-origin) sang `src/server/middleware/cors.ts`.
 - Cả hai tự chứa, chỉ dùng hằng số từ config/env. Logic giữ NGUYÊN; đã test mock: rate-limit chặn đúng ở lần vượt; CORS mở `*` cho widget/GET config, phản chiếu origin cho admin trong allowlist, chặn origin lạ, OPTIONS -> 200.

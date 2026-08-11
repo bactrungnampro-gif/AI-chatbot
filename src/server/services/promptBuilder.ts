@@ -115,7 +115,8 @@ DANH MỤC SẢN PHẨM ĐANG KINH DOANH (ƯU TIÊN 1):
 ${activeProducts || "Chưa có danh mục sản phẩm nào."}
 
 YÊU CẦU ĐỊNH DẠNG ĐẦU RA:
-- Trả lời rõ ràng bằng Tiếng Việt, trình bày trình tự khoa học, sử dụng danh sách gạch đầu dòng (bullet points) hoặc số thứ tự khi hướng dẫn thao tác.
+- NGÔN NGỮ TRẢ LỜI: Hãy trả lời bằng ĐÚNG NGÔN NGỮ mà khách hàng đang dùng trong tin nhắn của họ. Khách viết Tiếng Việt → trả lời bằng Tiếng Việt; khách viết Tiếng Anh (hoặc ngôn ngữ khác) → trả lời bằng chính ngôn ngữ đó. Nếu không xác định rõ ngôn ngữ, MẶC ĐỊNH dùng Tiếng Việt. (Tài liệu trong kho tri thức có thể bằng ngôn ngữ khác — bạn vẫn hiểu và chuyển ngữ sang ngôn ngữ của khách khi trả lời.)
+- Trình bày rõ ràng, trình tự khoa học, sử dụng danh sách gạch đầu dòng (bullet points) hoặc số thứ tự khi hướng dẫn thao tác.
 - Nếu bạn cần hỏi thêm thông tin từ khách hàng, hãy đặt câu hỏi một cách khéo léo và chu đáo.
 `;
 }
