@@ -145,6 +145,42 @@ export async function indexKnowledge(
   return { sources: indexedSources, chunks: newlyIndexed, skipped, already, done };
 }
 
+// Chữ ký nội dung 1 nguồn để phát hiện thay đổi (rẻ tiền).
+export function sourceContentSig(s: any): string {
+  const c = s?.content || '';
+  return `${c.length}:${s?.title || ''}:${s?.active !== false ? 1 : 0}`;
+}
+
+// Lập lại chỉ mục cho một số nguồn (thêm mới / nội dung đổi): embed trước, có được mới xóa chunk cũ & ghi mới
+// (để không mất chunk cũ nếu embedding lỗi). Trả về tổng số chunk đã ghi.
+export async function reindexSources(client: any, ai: any, sources: any[], maxChunksPerSource = 800, concurrency = 3): Promise<number> {
+  let total = 0;
+  for (const s of (Array.isArray(sources) ? sources : [])) {
+    if (!s?.id || !s.content) continue;
+    const chunks = chunkText(s.content);
+    const rows: any[] = [];
+    for (let i = 0; i < chunks.length && rows.length < maxChunksPerSource; i += concurrency) {
+      const batch = chunks.slice(i, i + concurrency);
+      const embs = await Promise.all(batch.map((c) => embedText(ai, c)));
+      for (let j = 0; j < batch.length; j++) {
+        const emb = embs[j];
+        if (!emb) continue;
+        rows.push({ id: `${s.id}_${i + j}`, source_id: s.id, chunk_index: i + j, content: batch[j], embedding: emb, updated_at: new Date().toISOString() });
+      }
+      await sleep(200);
+    }
+    if (rows.length) {
+      try { await client.from(CHUNK_TABLE).delete().eq('source_id', s.id); } catch { /* ignore */ }
+      for (let i = 0; i < rows.length; i += 20) {
+        const { error } = await client.from(CHUNK_TABLE).upsert(rows.slice(i, i + 20), { onConflict: 'id' });
+        if (error) break;
+      }
+      total += rows.length;
+    }
+  }
+  return total;
+}
+
 // Truy hồi các đoạn liên quan nhất tới câu hỏi. Trả về mảng { content, source_id, similarity } hoặc null.
 export async function retrieveRelevant(
   client: any,

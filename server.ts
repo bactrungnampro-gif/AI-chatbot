@@ -30,7 +30,8 @@ import { testFirecrawlApiKey, scrapeSingleWithFirecrawl, mapUrlsWithFirecrawl } 
 import { asyncHandler } from "./src/server/http/asyncHandler";
 import { validateBody } from "./src/server/http/validate";
 import { errorHandler } from "./src/server/middleware/errorHandler";
-import { indexKnowledge, retrieveRelevant } from "./src/server/rag/rag";
+import { indexKnowledge, retrieveRelevant, reindexSources, sourceContentSig } from "./src/server/rag/rag";
+import { generateChatResponse } from "./src/server/providers/ai";
 
 dotenv.config();
 
@@ -134,6 +135,47 @@ const INTERNAL_API_SECRET = crypto.randomBytes(24).toString('hex');
 const RAG_ENABLED = process.env.RAG_ENABLED === 'true';
 // Giới hạn tổng số đoạn lập chỉ mục mỗi lần (kiểm soát thời gian/chi phí/hạn ngạch embedding). Cấu hình qua RAG_MAX_CHUNKS.
 const RAG_MAX_CHUNKS = parseInt(process.env.RAG_MAX_CHUNKS || '3000', 10);
+// Tự động cập nhật chỉ mục RAG khi tri thức thay đổi (mặc định bật khi RAG bật). Tắt bằng RAG_AUTO_INDEX=false.
+const RAG_AUTO_INDEX = RAG_ENABLED && process.env.RAG_AUTO_INDEX !== 'false';
+
+// Chữ ký RAG theo nguồn để phát hiện thay đổi. Prime baseline 1 lần để KHÔNG tự index lại "backlog" cũ.
+let ragSigMap: Record<string, string> = {};
+let ragSigPrimed = false;
+let ragAutoRunning = false;
+
+// Tự index nền các nguồn MỚI/ĐỔI nội dung (không đụng backlog cũ; backlog dùng nút thủ công).
+function scheduleAutoIndex() {
+  if (!RAG_AUTO_INDEX) return;
+  const client = getSupabaseClient();
+  if (!client || !process.env.GEMINI_API_KEY) return;
+  const active = (serverKnowledgeSources || []).filter((s: any) => s && s.active !== false && s.content);
+
+  // Lần đầu: chỉ ghi baseline chữ ký, không index (tránh làm lại toàn bộ backlog).
+  if (!ragSigPrimed) {
+    for (const s of active) ragSigMap[s.id] = sourceContentSig(s);
+    ragSigPrimed = true;
+    return;
+  }
+  if (ragAutoRunning || ragIndexing) return;
+
+  const changed = active.filter((s: any) => ragSigMap[s.id] !== sourceContentSig(s));
+  if (!changed.length) return;
+
+  ragAutoRunning = true;
+  const ai = getGeminiAI();
+  const snapshot = changed.slice(0, 20); // giới hạn số nguồn mỗi đợt auto để an toàn
+  (async () => {
+    try {
+      const n = await reindexSources(client, ai, snapshot);
+      for (const s of snapshot) ragSigMap[s.id] = sourceContentSig(s);
+      console.log(`⚡ [RAG] Auto-indexed ${snapshot.length} nguồn thay đổi (${n} đoạn).`);
+    } catch (e: any) {
+      console.warn('[RAG] auto-index failed:', e?.message || e);
+    } finally {
+      ragAutoRunning = false;
+    }
+  })();
+}
 // Trạng thái lập chỉ mục RAG (chạy nền để tránh 502 do request quá lâu).
 let ragIndexing = false;
 let ragProgress: { running: boolean; done: boolean; complete?: boolean; chunks: number; sources: number; skipped: number; already?: number; error?: string; startedAt?: number; finishedAt?: number } =
@@ -2073,248 +2115,32 @@ YÊU CẦU ĐỊNH DẠNG ĐẦU RA:
         selectedModel = 'gemini-3.6-flash';
       }
     }
-    // [Security] Không nhận API key/endpoint từ client nữa. Chỉ dùng cấu hình phía server (biến môi trường).
-    // customApiEndpoint (nếu cần dùng OpenAI-compatible/Ollama riêng) đặt qua CUSTOM_OPENAI_ENDPOINT trên server.
-    const customApiKey = '';
+    // [Giai đoạn 2] Cấu hình chung; key/endpoint chỉ lấy từ env server. Logic từng provider đã tách sang src/server/providers/ai/*.
     const customApiEndpoint = (process.env.CUSTOM_OPENAI_ENDPOINT || '').trim();
     const temperature = typeof agentConfig?.temperature === 'number' ? agentConfig.temperature : 0.7;
-
-    const trimmedCustomKey = '';
     console.log(`[AI Engine] Provider: ${provider}, Model: ${selectedModel}, Temp: ${temperature} (keys: server-side env only)`);
 
     let responseText = "";
-
-    if (provider === 'google') {
-      // Use Google Gemini SDK with custom API key or default server key
-      const googleClient = trimmedCustomKey 
-        ? new GoogleGenAI({ apiKey: trimmedCustomKey }) 
-        : getGeminiAI();
-
-      const contents: any[] = [];
-      if (Array.isArray(history) && history.length > 0) {
-        let userStarted = false;
-        const recentHistory = history.slice(-8); // keep last 8 messages to conserve tokens/quota
-        for (const msg of recentHistory) {
-          if (msg.sender === 'user') {
-            userStarted = true;
-          }
-          if (!userStarted) continue; // Skip leading initial welcome greetings
-          const role = msg.sender === 'user' ? 'user' : 'model';
-          contents.push({
-            role,
-            parts: [{ text: msg.text || "" }]
-          });
-        }
-      }
-
-      const currentParts: any[] = [];
-      if (Array.isArray(attachments) && attachments.length > 0) {
-        for (const att of attachments) {
-          if (att.dataUrl && att.dataUrl.includes(',')) {
-            const base64Data = att.dataUrl.split(',')[1];
-            currentParts.push({
-              inlineData: {
-                mimeType: att.mimeType || 'image/png',
-                data: base64Data
-              }
-            });
-          }
-        }
-      }
-
-      currentParts.push({
-        text: message || "Hãy phân tích tệp/hình ảnh/video tôi vừa gửi và hỗ trợ cho tôi."
-      });
-
-      contents.push({
-        role: 'user',
-        parts: currentParts
-      });
-
-      // Try model cascade sequence with valid official Gemini model aliases
-      const modelsToTry = Array.from(new Set([selectedModel, 'gemini-3.6-flash', 'gemini-2.5-flash', 'gemini-flash-latest', 'gemini-3.1-flash-lite']));
-      let geminiSuccess = false;
-      let lastGeminiErr: any = null;
-
-      for (const m of modelsToTry) {
-        try {
-          console.log(`[Gemini Engine] Attempting request with model: ${m}...`);
-          const response = await googleClient.models.generateContent({
-            model: m,
-            contents,
-            config: {
-              systemInstruction,
-              temperature,
-            }
-          });
-          responseText = response.text || "";
-          if (responseText && responseText.trim().length > 0) {
-            geminiSuccess = true;
-            console.log(`[Gemini Engine] Successfully received response with model: ${m}`);
-            break;
-          }
-        } catch (err: any) {
-          console.warn(`[Gemini Engine Warning] Model ${m} failed:`, err?.message || String(err));
-          lastGeminiErr = err;
-        }
-      }
-
-      if (!geminiSuccess) {
-        const errStr = lastGeminiErr?.message || String(lastGeminiErr);
-        const isCustomKeyUsed = Boolean(trimmedCustomKey);
-
-        if (errStr.includes("429") || errStr.includes("RESOURCE_EXHAUSTED") || errStr.includes("Quota exceeded") || errStr.includes("quota")) {
-          if (isCustomKeyUsed) {
-            throw new Error(`API Key cá nhân bạn vừa nhập đã chạm giới hạn lượt gọi miễn phí của Google (Rate Limit 429 / Quota Exhausted). Vui lòng đợi 1-2 phút rồi thử lại, hoặc đổi sang nhà cung cấp DeepSeek / OpenAI trong mục Cấu Hình Agent.`);
-          } else {
-            throw new Error("Tài khoản đã đạt giới hạn gọi API miễn phí chung của hệ thống (Rate Limit 429). Vui lòng nhập API Key cá nhân trong phần 'Cấu Hình Agent' (lấy miễn phí tại Google AI Studio) hoặc đổi sang mô hình khác (OpenAI, DeepSeek, Claude) để không bị gián đoạn.");
-          }
-        } else if (errStr.includes("API_KEY_INVALID") || errStr.includes("API key not valid") || errStr.includes("invalid")) {
-          throw new Error("API Key cá nhân bạn nhập không hợp lệ hoặc đã bị vô hiệu hóa. Vui lòng kiểm tra lại API Key lấy từ Google AI Studio (aistudio.google.com/app/apikey).");
-        } else {
-          throw new Error(`Không thể nhận phản hồi từ Gemini API${isCustomKeyUsed ? ' (API Key cá nhân)' : ''}: ${errStr}`);
-        }
-      }
-    } else if (provider === 'openai' || provider === 'deepseek' || provider === 'custom_openai') {
-      // OpenAI-compatible Chat Completion API — key chỉ lấy từ môi trường server.
-      const effectiveApiKey = provider === 'openai'
-        ? process.env.OPENAI_API_KEY
-        : provider === 'deepseek'
-          ? process.env.DEEPSEEK_API_KEY
-          : (process.env.CUSTOM_OPENAI_API_KEY || process.env.OPENAI_API_KEY);
-
-      if (!effectiveApiKey && provider !== 'custom_openai') {
-        return res.status(400).json({
-          error: `Chưa cấu hình API Key cho ${provider.toUpperCase()} trên máy chủ`,
-          details: `Quản trị viên cần đặt biến môi trường ${provider === 'openai' ? 'OPENAI_API_KEY' : 'DEEPSEEK_API_KEY'} trên server, hoặc chọn Google Gemini.`
-        });
-      }
-
-      let baseUrl = provider === 'deepseek' ? 'https://api.deepseek.com' : 'https://api.openai.com/v1';
-      if (customApiEndpoint && customApiEndpoint.trim()) {
-        baseUrl = customApiEndpoint.trim().replace(/\/$/, '');
-      }
-
-      const openAiMessages: any[] = [
-        { role: 'system', content: systemInstruction }
-      ];
-
-      if (Array.isArray(history) && history.length > 0) {
-        let userStarted = false;
-        for (const msg of history.slice(-10)) {
-          if (msg.sender === 'user') userStarted = true;
-          if (!userStarted) continue;
-          openAiMessages.push({
-            role: msg.sender === 'user' ? 'user' : 'assistant',
-            content: msg.text || ""
-          });
-        }
-      }
-
-      if (Array.isArray(attachments) && attachments.length > 0) {
-        const userContentArr: any[] = [{ type: 'text', text: message || "Hãy phân tích tệp/hình ảnh tôi vừa gửi." }];
-        for (const att of attachments) {
-          if (att.dataUrl) {
-            userContentArr.push({
-              type: 'image_url',
-              image_url: { url: att.dataUrl }
-            });
-          }
-        }
-        openAiMessages.push({ role: 'user', content: userContentArr });
-      } else {
-        openAiMessages.push({ role: 'user', content: message || "" });
-      }
-
-      const fetchUrl = baseUrl.endsWith('/chat/completions') ? baseUrl : `${baseUrl}/chat/completions`;
-      const resApi = await fetch(fetchUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${effectiveApiKey || 'no-key'}`
-        },
-        body: JSON.stringify({
+    try {
+      responseText = await generateChatResponse(
+        {
+          provider,
           model: selectedModel,
-          messages: openAiMessages,
+          systemInstruction,
+          history,
+          message,
+          attachments,
           temperature,
-        })
-      });
-
-      const resData = await resApi.json();
-      if (!resApi.ok) {
-        let rawErr = resData?.error?.message || resData?.message || `Lỗi phản hồi từ API ${provider.toUpperCase()} (HTTP ${resApi.status})`;
-        if (rawErr.includes('tokens per min') || rawErr.includes('TPM') || rawErr.includes('rate limit') || rawErr.includes('Rate limit')) {
-          rawErr = `Giới hạn tốc độ gọi API của OpenAI (${selectedModel}) bị vượt mức TPM (Tokens Per Minute). Đã tối ưu hóa dung lượng truyền dữ liệu. Vui lòng thử lại hoặc đổi sang Google Gemini 3.6 Flash để có tốc độ phản hồi nhanh hơn không bị giới hạn.`;
-        }
-        throw new Error(rawErr);
-      }
-      responseText = resData.choices?.[0]?.message?.content || "";
-    } else if (provider === 'anthropic') {
-      // Anthropic Messages API — key chỉ lấy từ môi trường server.
-      const effectiveApiKey = process.env.ANTHROPIC_API_KEY;
-      if (!effectiveApiKey) {
-        return res.status(400).json({
-          error: "Chưa cấu hình API Key cho Anthropic Claude trên máy chủ",
-          details: "Quản trị viên cần đặt biến môi trường ANTHROPIC_API_KEY trên server."
-        });
-      }
-
-      let baseUrl = 'https://api.anthropic.com/v1';
-      if (customApiEndpoint && customApiEndpoint.trim()) {
-        baseUrl = customApiEndpoint.trim().replace(/\/$/, '');
-      }
-
-      const claudeMessages: any[] = [];
-      if (Array.isArray(history) && history.length > 0) {
-        for (const msg of history.slice(-10)) {
-          claudeMessages.push({
-            role: msg.sender === 'user' ? 'user' : 'assistant',
-            content: msg.text || ""
-          });
-        }
-      }
-
-      const userContentArr: any[] = [];
-      if (Array.isArray(attachments) && attachments.length > 0) {
-        for (const att of attachments) {
-          if (att.dataUrl && att.dataUrl.includes(',')) {
-            const parts = att.dataUrl.split(',');
-            userContentArr.push({
-              type: 'image',
-              source: {
-                type: 'base64',
-                media_type: att.mimeType || 'image/png',
-                data: parts[1]
-              }
-            });
-          }
-        }
-      }
-      userContentArr.push({ type: 'text', text: message || "Hãy hỗ trợ cho tôi." });
-      claudeMessages.push({ role: 'user', content: userContentArr });
-
-      const fetchUrl = baseUrl.endsWith('/messages') ? baseUrl : `${baseUrl}/messages`;
-      const resApi = await fetch(fetchUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': effectiveApiKey,
-          'anthropic-version': '2023-06-01'
+          customApiEndpoint,
         },
-        body: JSON.stringify({
-          model: selectedModel,
-          system: systemInstruction,
-          messages: claudeMessages,
-          max_tokens: 2048,
-          temperature,
-        })
-      });
-
-      const resData = await resApi.json();
-      if (!resApi.ok) {
-        throw new Error(resData?.error?.message || `Lỗi phản hồi từ Anthropic Claude API (HTTP ${resApi.status})`);
+        provider === 'google' ? getGeminiAI() : undefined
+      );
+    } catch (err: any) {
+      // ProviderError (vd thiếu API key) -> trả đúng mã HTTP; lỗi khác -> để catch ngoài trả 500.
+      if (err && typeof err.status === 'number') {
+        return res.status(err.status).json({ error: err.message, details: err.details });
       }
-      responseText = resData.content?.[0]?.text || "";
+      throw err;
     }
 
     if (!responseText) {
@@ -3420,6 +3246,7 @@ app.post("/api/knowledge/delete-source", asyncHandler(async (req, res) => {
   }
   serverKnowledgeSources = (serverKnowledgeSources || []).filter((s: any) => s.id !== id);
   delete lastKnowledgeSyncSig[id];
+  delete ragSigMap[id]; // để nếu thêm lại sẽ được auto-index
   saveServerStore();
 
   const client = getSupabaseClient();
@@ -3487,6 +3314,9 @@ app.post("/api/config/init", async (req, res) => {
 
     saveServerStore();
 
+    // [RAG] Ghi baseline chữ ký ngay khi tải (không tự index backlog); các thay đổi sau sẽ tự index.
+    scheduleAutoIndex();
+
     res.json({
       success: true,
       agentConfig: stripAiSecrets(serverAgentConfig),
@@ -3530,6 +3360,9 @@ app.post("/api/config", async (req, res) => {
   };
 
   const sbResult = await saveStoreToSupabase(data);
+
+  // [RAG] Tự động cập nhật chỉ mục cho nguồn mới/đổi nội dung (chạy nền).
+  scheduleAutoIndex();
 
   res.json({
     success: true,
