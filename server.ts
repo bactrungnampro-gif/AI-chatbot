@@ -132,6 +132,8 @@ const INTERNAL_API_SECRET = crypto.randomBytes(24).toString('hex');
 
 // [PoC RAG] Bật truy hồi ngữ nghĩa (embeddings + pgvector) cho /api/chat. Cần Supabase + GEMINI_API_KEY.
 const RAG_ENABLED = process.env.RAG_ENABLED === 'true';
+// Giới hạn tổng số đoạn lập chỉ mục mỗi lần (kiểm soát thời gian/chi phí/hạn ngạch embedding). Cấu hình qua RAG_MAX_CHUNKS.
+const RAG_MAX_CHUNKS = parseInt(process.env.RAG_MAX_CHUNKS || '3000', 10);
 // Trạng thái lập chỉ mục RAG (chạy nền để tránh 502 do request quá lâu).
 let ragIndexing = false;
 let ragProgress: { running: boolean; done: boolean; chunks: number; sources: number; skipped: number; error?: string; startedAt?: number; finishedAt?: number } =
@@ -273,7 +275,7 @@ app.post("/api/rag/index", asyncHandler(async (_req, res) => {
   // Chạy nền (không await) — client theo dõi qua /api/rag/status.
   (async () => {
     try {
-      const result = await indexKnowledge(client, ai, sourcesSnapshot, 400, (chunks, sources) => {
+      const result = await indexKnowledge(client, ai, sourcesSnapshot, RAG_MAX_CHUNKS, (chunks, sources) => {
         // Cập nhật tiến độ trực tiếp để nút bấm hiển thị số đoạn đã xử lý.
         ragProgress = { ...ragProgress, running: true, chunks, sources };
       });

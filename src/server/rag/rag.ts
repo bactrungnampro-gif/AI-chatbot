@@ -7,8 +7,10 @@ export const EMBED_MODEL = 'gemini-embedding-001';
 export const EMBED_DIM = 768;
 export const CHUNK_TABLE = 'kb_chunks';
 
-// Chia nhỏ văn bản thành các đoạn ~1200 ký tự, chồng lấn 150 ký tự để giữ ngữ cảnh.
-export function chunkText(text: string, size = 1200, overlap = 150): string[] {
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+// Chia nhỏ văn bản thành các đoạn ~2200 ký tự, chồng lấn 200 (chunk to hơn -> ít lần embedding hơn -> đỡ đụng rate limit).
+export function chunkText(text: string, size = 2200, overlap = 200): string[] {
   const clean = (text || '').replace(/\s+/g, ' ').trim();
   if (!clean) return [];
   if (clean.length <= size) return [clean];
@@ -23,31 +25,38 @@ export function chunkText(text: string, size = 1200, overlap = 150): string[] {
   return chunks;
 }
 
-// Tạo embedding cho 1 đoạn văn bản. Trả về mảng số (đã chuẩn hóa, EMBED_DIM chiều) hoặc null nếu lỗi.
-export async function embedText(ai: any, text: string): Promise<number[] | null> {
-  try {
-    const res: any = await ai.models.embedContent({
-      model: EMBED_MODEL,
-      contents: text,
-      config: { outputDimensionality: EMBED_DIM },
-    });
-    let v: any =
-      res?.embeddings?.[0]?.values ||
-      res?.embedding?.values ||
-      (Array.isArray(res?.embeddings) ? res.embeddings[0]?.values : null);
-    if (!Array.isArray(v)) return null;
-    // Nếu model trả nhiều hơn EMBED_DIM (Matryoshka), cắt xuống EMBED_DIM.
-    if (v.length > EMBED_DIM) v = v.slice(0, EMBED_DIM);
-    if (v.length !== EMBED_DIM) return null; // không khớp số chiều bảng -> bỏ qua để tránh lỗi ghi
-    // Chuẩn hóa về vector đơn vị (khuyến nghị khi cắt bớt chiều MRL).
-    let norm = 0;
-    for (const x of v) norm += x * x;
-    norm = Math.sqrt(norm) || 1;
-    return v.map((x: number) => x / norm);
-  } catch (e: any) {
-    console.warn('[RAG] embed error:', e?.message || e);
-    return null;
+// Tạo embedding cho 1 đoạn văn bản, có THỬ LẠI khi bị rate limit (429). Trả về mảng EMBED_DIM chiều đã chuẩn hóa, hoặc null.
+export async function embedText(ai: any, text: string, retries = 4): Promise<number[] | null> {
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const res: any = await ai.models.embedContent({
+        model: EMBED_MODEL,
+        contents: text,
+        config: { outputDimensionality: EMBED_DIM },
+      });
+      let v: any =
+        res?.embeddings?.[0]?.values ||
+        res?.embedding?.values ||
+        (Array.isArray(res?.embeddings) ? res.embeddings[0]?.values : null);
+      if (!Array.isArray(v)) return null;
+      if (v.length > EMBED_DIM) v = v.slice(0, EMBED_DIM); // Matryoshka: cắt xuống EMBED_DIM
+      if (v.length !== EMBED_DIM) return null;
+      let norm = 0;
+      for (const x of v) norm += x * x;
+      norm = Math.sqrt(norm) || 1;
+      return v.map((x: number) => x / norm);
+    } catch (e: any) {
+      const msg = e?.message || String(e);
+      const rateLimited = /429|RESOURCE_EXHAUSTED|quota|rate limit/i.test(msg);
+      if (attempt < retries && rateLimited) {
+        await sleep(1500 * Math.pow(2, attempt)); // 1.5s, 3s, 6s, 12s
+        continue;
+      }
+      console.warn('[RAG] embed error:', msg);
+      return null;
+    }
   }
+  return null;
 }
 
 export interface IndexResult { sources: number; chunks: number; skipped: number; error?: string; }
@@ -58,9 +67,9 @@ export async function indexKnowledge(
   client: any,
   ai: any,
   sources: any[],
-  maxChunks = 400,
+  maxChunks = 3000,
   onProgress?: (chunks: number, sources: number) => void,
-  concurrency = 5
+  concurrency = 3
 ): Promise<IndexResult> {
   const active = (Array.isArray(sources) ? sources : []).filter((s) => s && s.active !== false && s.content);
   let totalChunks = 0;
@@ -100,6 +109,7 @@ export async function indexKnowledge(
         totalChunks++;
       }
       if (onProgress) onProgress(totalChunks, indexedSources);
+      await sleep(200); // giãn cách giữa các lô để tránh vượt giới hạn tốc độ (RPM) của API embedding
     }
 
     // Ghi theo lô để tránh statement timeout
