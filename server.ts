@@ -4,6 +4,7 @@ import fs from "fs";
 import dns from "dns/promises";
 import net from "net";
 import crypto from "crypto";
+import zlib from "zlib";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, Type } from "@google/genai";
 import dotenv from "dotenv";
@@ -32,6 +33,7 @@ import { validateBody } from "./src/server/http/validate";
 import { errorHandler } from "./src/server/middleware/errorHandler";
 import { indexKnowledge, retrieveRelevant, reindexSources, sourceContentSig } from "./src/server/rag/rag";
 import { generateChatResponse } from "./src/server/providers/ai";
+import { buildChatSystemInstruction } from "./src/server/services/promptBuilder";
 
 dotenv.config();
 
@@ -1296,6 +1298,98 @@ app.post("/api/knowledge/fetch-api-endpoint", validateBody({ apiUrl: { type: 'st
   }
 });
 
+// [Helper] Trích xuất văn bản từ file .docx KHÔNG cần thư viện ngoài:
+// .docx là file nén ZIP -> tự đọc Central Directory, giải nén word/document.xml (deflate) rồi bóc chữ khỏi XML.
+function extractDocxText(buf: Buffer): string {
+  try {
+    // Tìm bản ghi End Of Central Directory (EOCD) - chữ ký 0x06054b50, dò ngược từ cuối.
+    let eocd = -1;
+    const minPos = Math.max(0, buf.length - 22 - 65536);
+    for (let i = buf.length - 22; i >= minPos; i--) {
+      if (buf.readUInt32LE(i) === 0x06054b50) { eocd = i; break; }
+    }
+    if (eocd < 0) return '';
+    const cdCount = buf.readUInt16LE(eocd + 10);
+    const cdOffset = buf.readUInt32LE(eocd + 16);
+
+    let p = cdOffset;
+    let docXml = '';
+    for (let n = 0; n < cdCount; n++) {
+      if (p + 46 > buf.length || buf.readUInt32LE(p) !== 0x02014b50) break;
+      const method = buf.readUInt16LE(p + 10);
+      const compSize = buf.readUInt32LE(p + 20);
+      const fnLen = buf.readUInt16LE(p + 28);
+      const extraLen = buf.readUInt16LE(p + 30);
+      const commentLen = buf.readUInt16LE(p + 32);
+      const localOffset = buf.readUInt32LE(p + 42);
+      const name = buf.toString('utf-8', p + 46, p + 46 + fnLen);
+      if (name === 'word/document.xml') {
+        const lfnLen = buf.readUInt16LE(localOffset + 26);
+        const lextraLen = buf.readUInt16LE(localOffset + 28);
+        const dataStart = localOffset + 30 + lfnLen + lextraLen;
+        const raw = buf.subarray(dataStart, dataStart + compSize);
+        if (method === 0) docXml = raw.toString('utf-8');
+        else if (method === 8) docXml = zlib.inflateRawSync(raw).toString('utf-8');
+        break;
+      }
+      p = p + 46 + fnLen + extraLen + commentLen;
+    }
+    if (!docXml) return '';
+
+    // Chuyển XML Word -> văn bản thuần: giữ ngắt đoạn/tab, bỏ thẻ, giải mã thực thể XML.
+    const text = docXml
+      .replace(/<w:tab[^>]*\/>/g, '\t')
+      .replace(/<w:br[^>]*\/?>(?:<\/w:br>)?/g, '\n')
+      .replace(/<\/w:p>/g, '\n')
+      .replace(/<[^>]+>/g, '')
+      .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"').replace(/&apos;/g, "'")
+      .replace(/\n{3,}/g, '\n\n');
+    return text.trim();
+  } catch {
+    return '';
+  }
+}
+
+// [Helper] Bóc tách văn bản từ MỘT tệp đính kèm bất kỳ (PDF/DOCX/TXT/CSV...).
+// Dùng chung cho nạp kho tri thức & phân tích tài liệu trong luồng chat -> mọi nhà cung cấp AI đều đọc được.
+async function extractTextFromAttachmentData(name: string, mimeType: string, base64: string): Promise<string> {
+  const lower = (name || '').toLowerCase();
+  let buf: Buffer;
+  try { buf = Buffer.from(base64, 'base64'); } catch { return ''; }
+  const isPdf = (mimeType && mimeType.includes('pdf')) || lower.endsWith('.pdf');
+  const isDocx = (mimeType && mimeType.includes('officedocument')) || lower.endsWith('.docx');
+
+  if (isPdf) {
+    let text = '';
+    try {
+      const parser = new PDFParse({ data: buf });
+      const d = await parser.getText();
+      text = d.text ? d.text.trim() : '';
+      await parser.destroy();
+    } catch { /* thử OCR bên dưới */ }
+    if (text.length < 50 && process.env.GEMINI_API_KEY) {
+      try {
+        const ai = getGeminiAI();
+        const r = await ai.models.generateContent({
+          model: 'gemini-3.6-flash',
+          contents: [
+            { inlineData: { mimeType: 'application/pdf', data: base64 } },
+            { text: 'Trích xuất toàn bộ văn bản, số liệu, bảng biểu quan trọng bằng tiếng Việt từ tài liệu PDF này.' },
+          ],
+        });
+        if (r.text) text = r.text.trim();
+      } catch { /* bỏ qua */ }
+    }
+    return text;
+  }
+  if (isDocx) {
+    return extractDocxText(buf);
+  }
+  // text/csv/json/md và loại khác: thử đọc UTF-8
+  try { return buf.toString('utf-8'); } catch { return ''; }
+}
+
 // 4. Direct PDF & Document File Upload Endpoint
 app.post("/api/knowledge/upload-file", async (req, res) => {
   try {
@@ -1314,8 +1408,49 @@ app.post("/api/knowledge/upload-file", async (req, res) => {
 
     const isPdf = (fileType && fileType.includes('pdf')) || cleanName.toLowerCase().endsWith('.pdf');
     const isDocx = (fileType && (fileType.includes('word') || fileType.includes('officedocument'))) || cleanName.toLowerCase().endsWith('.docx') || cleanName.toLowerCase().endsWith('.doc');
+    const isImage = (fileType && fileType.startsWith('image/')) || /\.(png|jpe?g|webp|gif|bmp|heic|heif)$/i.test(cleanName);
 
-    if (isPdf) {
+    if (isImage) {
+      // Ảnh (JPG/PNG/WEBP/ảnh chụp màn hình...): dùng Gemini Vision để "đọc" chữ + mô tả nội dung rồi nạp vào kho tri thức.
+      const apiKey = process.env.GEMINI_API_KEY;
+      if (!apiKey) {
+        res.json({ success: false, error: "Chưa cấu hình GEMINI_API_KEY trên máy chủ nên không thể phân tích ảnh." });
+        return;
+      }
+      // Chuẩn hóa mimeType cho ảnh (Gemini hỗ trợ png/jpeg/webp/heic/heif; suy ra từ đuôi tệp nếu thiếu).
+      let imgMime = (fileType && fileType.startsWith('image/')) ? fileType : '';
+      if (!imgMime) {
+        const lower = cleanName.toLowerCase();
+        imgMime = lower.endsWith('.png') ? 'image/png'
+          : (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) ? 'image/jpeg'
+          : lower.endsWith('.webp') ? 'image/webp'
+          : lower.endsWith('.gif') ? 'image/gif'
+          : lower.endsWith('.bmp') ? 'image/bmp'
+          : (lower.endsWith('.heic') || lower.endsWith('.heif')) ? 'image/heic'
+          : 'image/png';
+      }
+      try {
+        console.log(`[File Upload] Invoking Gemini Vision to analyze image ${cleanName} (${imgMime})...`);
+        const ai = getGeminiAI();
+        const response = await ai.models.generateContent({
+          model: 'gemini-3.6-flash',
+          contents: [
+            { inlineData: { mimeType: imgMime, data: fileBase64 } },
+            {
+              text: "Đây là một hình ảnh được nạp vào cơ sở tri thức của doanh nghiệp. Hãy:\n"
+                + "1) Trích xuất CHÍNH XÁC và ĐẦY ĐỦ toàn bộ chữ, số liệu, bảng biểu, thông số, giá cả, mã sản phẩm, số điện thoại, đường link (URL) xuất hiện trong ảnh (OCR).\n"
+                + "2) Mô tả ngắn gọn nội dung/ngữ cảnh của ảnh (ảnh chụp sản phẩm gì, biểu đồ gì, tài liệu gì...).\n"
+                + "Trình bày bằng tiếng Việt, rõ ràng. Nếu ảnh không chứa chữ, chỉ cần mô tả nội dung nhìn thấy. Giữ nguyên các URL/giá/số liệu đúng như trong ảnh, KHÔNG bịa thêm."
+            }
+          ]
+        });
+        extractedText = (response.text || '').trim();
+      } catch (visionErr: any) {
+        console.error("[File Upload] Gemini Vision error:", visionErr?.message || visionErr);
+        res.json({ success: false, error: "Không thể phân tích ảnh bằng AI Vision: " + (visionErr?.message || String(visionErr)) });
+        return;
+      }
+    } else if (isPdf) {
       try {
         const parser = new PDFParse({ data: fileBuffer });
         const pdfData = await parser.getText();
@@ -1357,10 +1492,17 @@ app.post("/api/knowledge/upload-file", async (req, res) => {
         }
       }
     } else if (isDocx) {
-      // Decode readable text from docx/text
-      extractedText = fileBuffer.toString('utf-8').replace(/[\x00-\x09\x0B-\x1F\x7F-\x9F]/g, '');
-      if (extractedText.length < 30) {
-        extractedText = `Tài liệu Word: ${cleanName}\n(Đã nạp file thành công vào cơ sở dữ liệu)`;
+      // .docx là ZIP -> giải nén word/document.xml để lấy văn bản đúng chuẩn (không còn đọc byte thô ra rác).
+      if (cleanName.toLowerCase().endsWith('.docx')) {
+        extractedText = extractDocxText(fileBuffer);
+      }
+      // .doc cũ (binary) hoặc docx giải nén thất bại: thử đọc thô như cũ để không mất trắng.
+      if (!extractedText || extractedText.length < 30) {
+        const raw = fileBuffer.toString('utf-8').replace(/[\x00-\x09\x0B-\x1F\x7F-\x9F]/g, '').trim();
+        if (raw.length >= 30) extractedText = raw;
+      }
+      if (!extractedText || extractedText.length < 30) {
+        extractedText = `Tài liệu Word: ${cleanName}\n(Không bóc tách được nội dung — nếu là file .doc cũ, vui lòng lưu sang .docx hoặc PDF rồi nạp lại.)`;
       }
     } else {
       // Default plain text / CSV / JSON / MD
@@ -1384,7 +1526,7 @@ app.post("/api/knowledge/upload-file", async (req, res) => {
 
     let formattedContent = `=== TÀI LIỆU NẠP TRỰC TIẾP TỪ FILE ===\n`;
     formattedContent += `Tên tệp: ${cleanName}\n`;
-    formattedContent += `Loại tệp: ${isPdf ? 'Tài liệu PDF' : isDocx ? 'Tài liệu Word' : 'Tập tin văn bản'}\n`;
+    formattedContent += `Loại tệp: ${isImage ? 'Hình ảnh (phân tích bằng AI Vision)' : isPdf ? 'Tài liệu PDF' : isDocx ? 'Tài liệu Word' : 'Tập tin văn bản'}\n`;
     if (isPdf && pageCount > 1) {
       formattedContent += `Số trang PDF: ${pageCount} trang\n`;
     }
@@ -1393,7 +1535,7 @@ app.post("/api/knowledge/upload-file", async (req, res) => {
 
     res.json({
       success: true,
-      title: `${isPdf ? 'File PDF' : 'Tệp Tin'}: ${cleanName}`,
+      title: `${isImage ? 'Ảnh' : isPdf ? 'File PDF' : 'Tệp Tin'}: ${cleanName}`,
       content: formattedContent,
       wordCount,
       pageCount,
@@ -1992,6 +2134,62 @@ app.post("/api/chat", async (req, res) => {
       })
       .join("\n");
 
+    // [Fix bịa link] Danh sách LINK CHÍNH XÁC từ metadata nguồn (url/sheetUrl/subPages) + sản phẩm.
+    // Luôn đưa vào prompt (kể cả khi bật RAG hay content bị cắt) để model có link thật mà không phải bịa.
+    const linkDirectory = (() => {
+      const lines: string[] = [];
+      const seen = new Set<string>();
+      const URL_RE = /https?:\/\/[^\s)\]}"'<>]+/g;
+      const cleanUrl = (u: string) => (u || '').replace(/[.,;:!?)\]}>'"]+$/, '');
+
+      // Quét link nằm TRONG nội dung nguồn (vd một tệp chứa danh sách nhiều link) + ngữ cảnh ngắn trước link.
+      const scanContentLinks = (content: string, max = 40): { url: string; ctx: string }[] => {
+        const res: { url: string; ctx: string }[] = [];
+        if (!content) return res;
+        URL_RE.lastIndex = 0;
+        let m: RegExpExecArray | null;
+        while ((m = URL_RE.exec(content)) !== null && res.length < max) {
+          const url = cleanUrl(m[0]);
+          if (!url || seen.has(url)) continue;
+          seen.add(url);
+          const before = content.slice(Math.max(0, m.index - 70), m.index);
+          const ctx = (before.split(/[\n\r|]/).pop() || '').replace(/\s+/g, ' ').trim().slice(-60);
+          res.push({ url, ctx });
+        }
+        return res;
+      };
+
+      for (const k of filteredKnowledgeSources) {
+        const urls: string[] = [];
+        if (k.url) urls.push(k.url);
+        if (k.sheetUrl && k.sheetUrl !== k.url) urls.push(k.sheetUrl);
+        for (const u of urls) seen.add(cleanUrl(u));
+        if (urls.length) lines.push(`- [${k.type}] ${k.title}: ${urls.join(' | ')}`);
+        if (Array.isArray(k.subPages)) {
+          for (const sp of k.subPages) {
+            if (sp && sp.url) { seen.add(cleanUrl(sp.url)); lines.push(`   • ${sp.title || sp.url}: ${sp.url}`); }
+          }
+        }
+        const inContent = scanContentLinks(k.content || '');
+        if (inContent.length) {
+          if (!urls.length && !(Array.isArray(k.subPages) && k.subPages.some((s: any) => s && s.url))) {
+            lines.push(`- [${k.type}] ${k.title}:`);
+          }
+          for (const c of inContent) {
+            lines.push(`   • ${c.ctx ? c.ctx + ' → ' : ''}${c.url}`);
+          }
+        }
+      }
+      for (const p of filteredProducts) {
+        const purl = p.sourceUrl || p.productUrl;
+        if (purl) { seen.add(cleanUrl(purl)); lines.push(`- [sản phẩm] ${p.name}: ${purl}`); }
+        if (p.imageUrl) { seen.add(cleanUrl(p.imageUrl)); lines.push(`   • Ảnh sản phẩm "${p.name}": ${p.imageUrl}`); }
+      }
+      let out = lines.join('\n');
+      if (out.length > 12000) out = out.slice(0, 12000) + '\n...[danh sách link đã rút gọn]';
+      return out;
+    })();
+
     // [PoC RAG] Nếu bật, truy hồi các đoạn liên quan nhất tới câu hỏi thay vì nhồi toàn bộ tri thức vào prompt.
     let knowledgeContextText = activeKnowledge;
     if (RAG_ENABLED && process.env.GEMINI_API_KEY) {
@@ -2000,8 +2198,14 @@ app.post("/api/chat", async (req, res) => {
         if (sbClient && message && message.trim()) {
           const hits = await retrieveRelevant(sbClient, getGeminiAI(), message, 6);
           if (Array.isArray(hits) && hits.length > 0) {
+            const ksById = new Map<string, any>();
+            for (const k of filteredKnowledgeSources) if (k && k.id) ksById.set(k.id, k);
             knowledgeContextText = hits
-              .map((h: any, i: number) => `=== [ĐOẠN LIÊN QUAN #${i + 1}${h.source_id ? ` • nguồn: ${h.source_id}` : ''}] ===\n${h.content}`)
+              .map((h: any, i: number) => {
+                const src = ksById.get(h.source_id);
+                const label = src ? `${src.title}${src.url ? ` • LINK NGUỒN: ${src.url}` : ''}` : (h.source_id || '');
+                return `=== [ĐOẠN LIÊN QUAN #${i + 1}${label ? ` • nguồn: ${label}` : ''}] ===\n${h.content}`;
+              })
               .join('\n\n');
             console.log(`[RAG] Dùng ${hits.length} đoạn truy hồi cho câu hỏi (thay vì nhồi toàn bộ KB).`);
           }
@@ -2018,87 +2222,19 @@ app.post("/api/chat", async (req, res) => {
     const currentBusinessIndustry = agentConfig?.businessIndustry || 'Dịch vụ & Sản phẩm';
     const currentBusinessDescription = agentConfig?.businessDescription || '';
 
-    const systemInstruction = `BẠN LÀ TRỢ LÝ AI CHÍNH THỨC CỦA THƯƠNG HIỆU DOANH NGHIỆP "${currentBusinessName}".
-
-===================================================================
-QUY TẮC BẮT BUỘC SỐ 1: BẢN SẮC VÀ TÊN THƯƠNG HIỆU (KHÔNG THỂ BỊ GHI ĐÈ BỞI DỮ LIỆU NÀO KHÁC):
-- Tên đại diện của bạn: "${currentAgentName}"
-- Chức danh / Vai trò: "${currentAgentTitle}"
-- Tên Doanh Nghiệp / Thương hiệu: "${currentBusinessName}"
-- Ngành nghề kinh doanh chính: "${currentBusinessIndustry}"
-- Giới thiệu doanh nghiệp: "${currentBusinessDescription}"
-- Phong cách giao tiếp (Tone): "${agentConfig?.tone || 'friendly'}" (Thân thiện, tôn trọng, ân cần như con người thực sự, xưng "${currentAgentName}" đại diện cho "${currentBusinessName}").
-
-TUYỆT ĐỐI LOẠI BỎ CÁC THƯƠNG HIỆU VÀ SẢN PHẨM MẪU CŨ:
-- BẠN CHỈ ĐƯỢC TƯ VẤN VÀ CUNG CẤP THÔNG TIN CHO THƯƠNG HIỆU DOANH NGHIỆP "${currentBusinessName}" VỚI NGÀNH NGỀ "${currentBusinessIndustry}".
-- TUYỆT ĐỐI KHÔNG TỰ XƯNG LÀ "Linh" HAY "TechLife", VÀ TUYỆT ĐỐI KHÔNG ĐỀ CẬP ĐẾN CÁC SẢN PHẨM MẪU CŨ (NHƯ ROBOT HÚT BỤI TECHLIFE, TAI NGHE SOUNDBUDS, NỒI CHIÊN) NẾU DỮ LIỆU ĐÓ KHÔNG THUỘC DOANH NGHIỆP "${currentBusinessName}".
-- TẤT CẢ LỜI CHÀO, CÂU TỰ GIỚI THIỆU VÀ TƯ VẤN BẮT BUỘC PHẢI THUỘC VỀ DOANH NGHIỆP "${currentBusinessName}".
-===================================================================
-
-===================================================================
-QUY TẮC BẮT BUỘC VỀ GỬI HÌNH ẢNH VÀ TRÍCH DẪN LINK WEBSITE / TÀI LIỆU ĐÃ NẠP:
-
-1. QUY TẮC GỬI HÌNH ẢNH SẢN PHẨM / THIẾT BỊ:
-   - Khi tư vấn, đề xuất hoặc giới thiệu sản phẩm có "LINK HÌNH ẢNH SẢN PHẨM" trong danh mục bên dưới, bạn HÃY CHỦ ĐỘNG chèn hình ảnh sản phẩm vào câu trả lời bằng cú pháp Markdown:
-     ![Tên sản phẩm](URL_Hình_Ảnh)
-   - Đặt hình ảnh ngay bên dưới tên sản phẩm hoặc giá bán để câu trả lời sinh động, trực quan và chuyên nghiệp.
-
-2. QUY TẮC BẮT BUỘC VỀ TRUY XUẤT VÀ CUNG CẤP LINK TÀI LIỆU / DƯỜNG DẪN WEBSITE / TỆP GOOGLE DRIVE:
-   - KHI KHÁCH HÀNG YÊU CẦU HOẶC HỎI CÓ LIÊN QUAN ĐẾN LINK / TÀI LIỆU / TRA CỨU / TẢI TỆP (Ví dụ: "cho tôi link...", "xem tài liệu ở đâu", "gửi link sản phẩm", "cho xin đường dẫn", "tìm tài liệu về...", "xem chi tiết ở đâu", "link file PDF", "link Google Drive", v.v.):
-     + BẠN BẮT BUỘC PHẢI CHỦ ĐỘNG CUNG CẤP CÁC LINK TRA CỨU TÀI LIỆU / WEBSITE / TỆP TẢI VỀ PHÙ HỢP CÓ TRONG KHO DỮ LIỆU HOẶC SẢN PHẨM BÊN DƯỚI CHO KHÁCH HÀNG.
-     + CHO PHÉP & KHUYẾN KHÍCH gửi các liên kết Google Drive (drive.google.com), Google Sheets (docs.google.com), link bài viết, link website thương hiệu nếu liên kết đó nằm trong Kho tri thức hoặc Sản phẩm đã nạp.
-     + Trình bày link bằng cú pháp Markdown rõ ràng, thẩm mỹ: [Tên Bài Viết / Tên Tài Liệu / Tải Về Tại Đây](URL).
-   - QUY TẮC AN TOÀN VÀ XÁC THỰC LINK (NGHIÊM CẤM BỊA LINK KHÔNG TỒN TẠI):
-     + CHỈ ĐƯỢC PHÉP gửi các đường dẫn (URL) chính xác xuất hiện trong "CƠ SỞ TRI THỨC" hoặc "DANH MỤC SẢN PHẨM", HOẶC các link thuộc các tên miền đã nạp bên dưới.
-     + Danh sách tên miền hợp lệ đã được nạp: ${allowedDomainsListStr || 'Chưa có tên miền nào'}
-     + TUYỆT ĐỐI KHÔNG tự bịa ra link không tồn tại hoặc gửi link của các tên miền lạ chưa từng được nạp vào hệ thống.
-     + Nếu khách hàng hỏi xin link cho sản phẩm/tài liệu mà trong dữ liệu KHÔNG CÓ link tương ứng, hãy thành thật trả lời: "Hiện tại hệ thống chưa có đường dẫn trực tiếp cho nội dung này. Quý khách có thể truy cập trang web chính thức của ${currentBusinessName} để tra cứu thêm."
-===================================================================
-
-CƠ CHẾ ƯU TIÊN DỮ LIỆU ĐỂ TRẢ LỜI KHÁCH HÀNG:
-1. MỨC ƯU TIÊN SỐ 1 - DỮ LIỆU ĐÃ NẠP (WEBSITE CRAWLED, TÀI LIỆU KHÁCH HÀNG & CƠ SỞ TRI THỨC):
-   - Bạn BẮT BUỘC phải tra cứu và khai thác tối đa thông tin từ "CƠ SỞ TRI THỨC (KNOWLEDGE BASE)" và "DANH MỤC SẢN PHẨM" được nạp bên dưới trước tiên.
-   - Khi dữ liệu đã nạp chứa thông tin phù hợp, hãy đưa ra câu trả lời dựa trên nguồn dữ liệu doanh nghiệp này để đảm bảo độ chính xác cao nhất (nhưng luôn xưng tên là "${currentAgentName}" thuộc "${currentBusinessName}").
-
-2. MỨC ƯU TIÊN SỐ 2 - KÍCH HOẠT MÔ HÌNH TRÍ TUỆ NHÂN TẠO TÍCH HỢP (KHI DỮ LIỆU ĐÃ NẠP KHÔNG ĐỦ):
-   - Trường hợp các dữ liệu website/tài liệu đã nạp KHÔNG ĐỦ THÔNG TIN hoặc KHÔNG CÓ THÔNG TIN để giải đáp câu hỏi của khách hàng:
-   - Bạn hãy tự động kết hợp kiến thức chuyên môn rộng lớn của Mô hình Trí tuệ Nhân tạo Gemini tích hợp để cung cấp câu trả lời thỏa đáng, hữu ích, chính xác và tự nhiên cho khách hàng.
-   - Luôn giữ thái độ phục vụ chuyên nghiệp, tư vấn hợp lý và đảm bảo tính nhất quán với ngành nghề "${currentBusinessIndustry}".
-
-===================================================================
-CƠ CHẾ TỰ ĐỘNG CHUYỂN ĐỔI PHONG CÁCH TƯ VẤN LẦN ĐẦU THEO NGỮ CẢNH (DYNAMIC PERSONA SWITCHING):
-Bạn hãy tự động suy đoán ý định thực sự của khách hàng trong từng câu hỏi để chuyển đổi phong cách xưng hô & tư vấn linh hoạt:
-
-- PHONG CÁCH 1: NHÂN VIÊN CHĂM SÓC BÁN HÀNG CHUYÊN NGHIỆP (SALES & CUSTOMER CARE)
-  * KHI NÀO KÍCH HOẠT: Khi khách hàng có ý định tìm hiểu mua hàng, hỏi giá cả, chính sách ưu đãi, khuyến mãi, đặt hàng, phí vận chuyển, bảo hành, dịch vụ giao hàng.
-  * TÔNG GIỌNG & CÁCH ỨNG XỬ: Ân cần, vồn vã, lịch thiệp, cung cấp thông tin giá cả & khuyến mãi minh bạch, nhấn mạnh cam kết chất lượng của cửa hàng, kèm lời mời hợp tác/đặt hàng cực kỳ tự nhiên.
-
-- PHONG CÁCH 2: CHUYÊN GIA KỸ THUẬT & GIẢI PHÁP THỰC THỤ (SENIOR TECHNICAL EXPERT)
-  * KHI NÀO KÍCH HOẠT: Khi khách hàng hỏi về cách sử dụng, cài đặt, vận hành, bảo trì, xử lý sự cố kĩ thuật, hoặc phân vân "nên sử dụng/chọn dòng sản phẩm nào" theo tiêu chí thông số kỹ thuật.
-  * TÔNG GIỌNG & CÁCH ỨNG XỬ: Am hiểu sâu sắc, đi thẳng vào vấn đề, phân tích khách quan dựa trên số liệu/thông số, hướng dẫn chi tiết chuẩn mực từng bước (step-by-step), đưa ra lời khuyên chuyên môn mang tính tin cậy cao nhất.
-===================================================================
-
-MỤC TIÊU & NHIỆM VỤ CHÍNH CỦA BẠN:
-1. TRẢ LỜI TIN NHẮN KHÁCH HÀNG: Giải đáp nhanh chóng, chính xác, tự nhiên như người thật.
-2. TƯ VẤN NGHIỆP VỤ & HƯỚNG DẪN SỬ DỤNG:
-   - Hướng dẫn chi tiết từng bước (Step-by-step) cách thao tác, cài đặt, bảo trì, khắc phục lỗi hoặc quy trình nghiệp vụ (đổi trả, bảo hành, thanh toán).
-3. TƯ VẤN LỰA CHỌN SẢN PHẨM:
-   - Khi khách hàng hỏi "Nên mua/dùng sản phẩm nào?", "Sản phẩm nào phù hợp với tôi?", hãy dựa vào danh sách sản phẩm bên dưới để phân tích nhu cầu và đề xuất 1-2 sản phẩm tốt nhất kèm lý do cụ thể.
-4. PHÂN TÍCH TỆP / HÌNH ẢNH / VIDEO ĐƯỢC GỬI LÊN:
-   - Khi người hỏi gửi hình ảnh, video hoặc tài liệu (PDF, TXT, bảng dữ liệu...): Hãy đọc, xem và phân tích nội dung tệp đó, kết hợp với kiến thức doanh nghiệp để giải thích hoặc chẩn đoán nguyên nhân lỗi.
-5. QUY TẮC HỎI LẠI ĐỂ TƯ VẤN CHÍNH XÁC (HOẠT ĐỘNG CLARIFICATION):
-   - ${agentConfig?.clarificationEnabled !== false ? 'NẾU câu hỏi hoặc thông tin khách hàng cung cấp còn chung chung, mơ hồ hoặc thiếu chi tiết quan trọng (ví dụ: thiếu model máy, thiếu ngân sách, thiếu nhu cầu sử dụng cụ thể, thiếu tình trạng lỗi...), BẠN NÊN ĐẶT 1-2 CÂU HỎI MỞ LỊCH SỰ ĐỂ LÀM RÕ TRƯỚC KHI ĐƯA RA CÂU TRẢ LỜI/KHUYẾN NGHỊ CHÍNH XÁC NHẤT.' : 'Cố gắng giải đáp chi tiết nhất dựa trên thông tin hiện có.'}
-
-DỮ LIỆU CƠ SỞ TRI THỨC (KNOWLEDGE BASE) CỦA CỬA HÀNG/DOANH NGHIỆP (ƯU TIÊN 1):
-${knowledgeContextText || "Chưa có dữ liệu tri thức nào."}
-
-DANH MỤC SẢN PHẨM ĐANG KINH DOANH (ƯU TIÊN 1):
-${activeProducts || "Chưa có danh mục sản phẩm nào."}
-
-YÊU CẦU ĐỊNH DẠNG ĐẦU RA:
-- Trả lời rõ ràng bằng Tiếng Việt, trình bày trình tự khoa học, sử dụng danh sách gạch đầu dòng (bullet points) hoặc số thứ tự khi hướng dẫn thao tác.
-- Nếu bạn cần hỏi thêm thông tin từ khách hàng, hãy đặt câu hỏi một cách khéo léo và chu đáo.
-`;
+    // [Giai đoạn 2] Dựng systemInstruction qua PromptBuilder (src/server/services/promptBuilder.ts) — hành vi không đổi.
+    const systemInstruction = buildChatSystemInstruction({
+      agentConfig,
+      currentAgentName,
+      currentAgentTitle,
+      currentBusinessName,
+      currentBusinessIndustry,
+      currentBusinessDescription,
+      allowedDomainsListStr,
+      linkDirectory,
+      knowledgeContextText,
+      activeProducts,
+    });
 
     // Extract Model & Provider Configuration
     const provider = agentConfig?.selectedProvider || 'google';
@@ -2115,6 +2251,35 @@ YÊU CẦU ĐỊNH DẠNG ĐẦU RA:
         selectedModel = 'gemini-3.6-flash';
       }
     }
+
+    // [Item 4] Bóc tách văn bản từ TÀI LIỆU đính kèm (PDF/DOCX/TXT/CSV) NGAY TẠI SERVER,
+    // rồi ghép vào tin nhắn -> mọi nhà cung cấp AI (kể cả OpenAI/DeepSeek/Claude) đều đọc được, không chỉ Gemini.
+    // Ảnh (và video với Gemini) vẫn chuyển tiếp trực tiếp cho model để phân tích thị giác.
+    let effectiveMessage = message || '';
+    let forwardedAttachments: any[] = Array.isArray(attachments) ? attachments : [];
+    try {
+      const atts: any[] = Array.isArray(attachments) ? attachments : [];
+      const isImgLike = (a: any) => (a?.mimeType || '').startsWith('image/') || a?.type === 'image';
+      const isVideoLike = (a: any) => (a?.mimeType || '').startsWith('video/') || a?.type === 'video';
+      forwardedAttachments = atts.filter((a: any) => isImgLike(a) || (provider === 'google' && isVideoLike(a)));
+      const docAtts = atts.filter((a: any) => !isImgLike(a) && !isVideoLike(a) && a?.dataUrl && a.dataUrl.includes(','));
+      if (docAtts.length > 0) {
+        const parts: string[] = [];
+        for (const a of docAtts.slice(0, 5)) {
+          const b64 = a.dataUrl.split(',')[1] || '';
+          let t = await extractTextFromAttachmentData(a.name || 'tài liệu', a.mimeType || '', b64);
+          if (t && t.length > 20000) t = t.slice(0, 20000) + '\n...[nội dung tài liệu dài đã rút gọn]';
+          if (t && t.trim()) parts.push(`--- NỘI DUNG TỆP "${a.name || 'tài liệu'}" ---\n${t.trim()}`);
+        }
+        if (parts.length > 0) {
+          effectiveMessage = (effectiveMessage ? effectiveMessage + '\n\n' : '')
+            + 'TÀI LIỆU KHÁCH HÀNG GỬI KÈM (đã bóc tách văn bản tự động — hãy dựa vào nội dung này để trả lời):\n'
+            + parts.join('\n\n');
+        }
+      }
+    } catch (e: any) {
+      console.warn('[Chat] Lỗi bóc tách tài liệu đính kèm:', e?.message || e);
+    }
     // [Giai đoạn 2] Cấu hình chung; key/endpoint chỉ lấy từ env server. Logic từng provider đã tách sang src/server/providers/ai/*.
     const customApiEndpoint = (process.env.CUSTOM_OPENAI_ENDPOINT || '').trim();
     const temperature = typeof agentConfig?.temperature === 'number' ? agentConfig.temperature : 0.7;
@@ -2128,8 +2293,8 @@ YÊU CẦU ĐỊNH DẠNG ĐẦU RA:
           model: selectedModel,
           systemInstruction,
           history,
-          message,
-          attachments,
+          message: effectiveMessage,
+          attachments: forwardedAttachments,
           temperature,
           customApiEndpoint,
         },

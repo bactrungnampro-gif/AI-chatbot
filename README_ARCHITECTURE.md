@@ -30,7 +30,14 @@ src/server/
    └─ errorHandler.ts             # error-handler tập trung
 ```
 
-## Increment 2 — Tầng AI providers (vừa làm)
+## Increment 3 — PromptBuilder (vừa làm)
+- Tách toàn bộ phần dựng `systemInstruction` của `/api/chat` sang `src/server/services/promptBuilder.ts` qua hàm thuần `buildChatSystemInstruction(params)`.
+- Template được sao chép NGUYÊN VĂN — đã kiểm chứng byte-for-byte (8381 ký tự) giống hệt bản gốc -> prompt/hành vi KHÔNG đổi.
+- `server.ts` giờ chỉ gom các biến (agentConfig, tên/ngành doanh nghiệp, allowedDomainsListStr, linkDirectory, knowledgeContextText, activeProducts) rồi gọi builder.
+- Đã kiểm thử render: 2 nhánh clarification, các giá trị fallback khi rỗng, không rò rỉ `undefined`, không sót `${`.
+- Ghi chú: hàm bóc tách tài liệu (`extractDocxText`, `extractTextFromAttachmentData`) hiện vẫn nằm trong `server.ts`; có thể tách sang `src/server/services/documents.ts` ở increment sau.
+
+## Increment 2 — Tầng AI providers (đã làm)
 - Toàn bộ logic gọi từng nhà cung cấp AI trong `/api/chat` (Gemini cascade, OpenAI/DeepSeek, Anthropic) đã tách sang `src/server/providers/ai/*` sau interface chung `ChatParams`.
 - `/api/chat` giờ chỉ: dựng systemInstruction (kèm RAG) → gọi `generateChatResponse(params, geminiClient)`.
 - Lỗi thiếu API key ném `ProviderError(status=400)` -> controller trả đúng 400; lỗi khác -> 500.
@@ -39,7 +46,7 @@ src/server/
 
 ## Các increment kế tiếp (đề xuất — làm khi test được)
 1. **Store layer** (`src/server/store.ts`): gom state toàn cục (agentConfig, products, knowledgeSources, googleSessions) + persistence (file/Firestore/Supabase) + ensureKnowledgeLoaded sau một API rõ ràng. RỦI RO CAO (đụng nhiều tham chiếu) -> làm khi có thể chạy test.
-2. **PromptBuilder** (`src/server/services/promptBuilder.ts`): tách phần dựng systemInstruction khỏi `/api/chat`.
+2. ~~**PromptBuilder**~~ ✅ ĐÃ LÀM (Increment 3).
 3. **Routers** (`src/server/routes/*`): chuyển từng nhóm route (chat, knowledge, google, supabase, config, rag) sang router riêng, controller mỏng gọi service.
 4. **Config layer** (`src/server/config/env.ts`): tập trung đọc biến môi trường + hằng số.
 5. Khi cài được package: thay validate tự viết bằng **zod**; bật `tsconfig` strict cho server.
