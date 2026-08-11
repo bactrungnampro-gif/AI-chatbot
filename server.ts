@@ -3629,31 +3629,17 @@ app.post("/api/config/init", async (req, res) => {
       serverWidgetSettings = clientWidgetSettings;
     }
 
-    if (Array.isArray(clientKnowledgeSources) && clientKnowledgeSources.length > 0) {
-      if (!serverKnowledgeSources || serverKnowledgeSources.length === 0) {
-        serverKnowledgeSources = clientKnowledgeSources;
-      } else {
-        const existingKsIds = new Set(serverKnowledgeSources.map((k: any) => k.id));
-        for (const ck of clientKnowledgeSources) {
-          if (!existingKsIds.has(ck.id)) {
-            serverKnowledgeSources.push(ck);
-          }
-        }
-      }
+    // [Nguồn chuẩn = máy chủ] CHỈ dùng dữ liệu localStorage của client để KHỞI TẠO khi máy chủ hoàn toàn trống
+    // (lần đầu thiết lập, sau khi ensureKnowledgeLoaded đã nạp từ Supabase). TUYỆT ĐỐI KHÔNG gộp từng mục khi server đã có dữ liệu
+    // -> tránh mỗi trình duyệt đẩy localStorage khác nhau lên và làm mục đã xóa "hồi sinh".
+    if (Array.isArray(clientKnowledgeSources) && clientKnowledgeSources.length > 0
+        && (!serverKnowledgeSources || serverKnowledgeSources.length === 0)) {
+      serverKnowledgeSources = clientKnowledgeSources;
     }
 
-    if (Array.isArray(clientProducts) && clientProducts.length > 0) {
-      if (!serverProducts || serverProducts.length === 0) {
-        serverProducts = clientProducts;
-      } else {
-        const existingProdIds = new Set(serverProducts.map((p: any) => p.id));
-        const existingProdNames = new Set(serverProducts.map((p: any) => p.name?.toLowerCase().trim()));
-        for (const cp of clientProducts) {
-          if (!existingProdIds.has(cp.id) && !existingProdNames.has(cp.name?.toLowerCase().trim())) {
-            serverProducts.push(cp);
-          }
-        }
-      }
+    if (Array.isArray(clientProducts) && clientProducts.length > 0
+        && (!serverProducts || serverProducts.length === 0)) {
+      serverProducts = clientProducts;
     }
 
     saveServerStore();

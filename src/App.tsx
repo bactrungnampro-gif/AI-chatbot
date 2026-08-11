@@ -217,41 +217,16 @@ export default function App() {
           });
         }
 
-        // Hợp nhất theo id (giữ mục client vừa thêm) và phát hiện phần client có mà server thiếu để đối soát.
-        let reconcileNeeded = false;
-        let mergedKnowledge = knowledgeSources;
-        let mergedProducts = products;
-
-        if (Array.isArray(data.knowledgeSources) && data.knowledgeSources.length > 0) {
-          mergedKnowledge = mergeById(knowledgeSources, data.knowledgeSources);
-          setKnowledgeSources(mergedKnowledge);
-          try { localStorage.setItem('aistudio_knowledge_sources', JSON.stringify(mergedKnowledge)); } catch (e) {}
-          if (mergedKnowledge.length > data.knowledgeSources.length) reconcileNeeded = true;
-        } else if (Array.isArray(knowledgeSources) && knowledgeSources.length > 0) {
-          // Server trống nhưng client có dữ liệu -> giữ client và đẩy lên.
-          reconcileNeeded = true;
+        // [Nguồn chuẩn = MÁY CHỦ/Supabase] Hiển thị đúng theo dữ liệu server để MỌI trình duyệt giống hệt nhau.
+        // KHÔNG trộn đè bằng localStorage cũ nữa (đó là nguyên nhân mỗi trình duyệt hiện khác nhau,
+        // và khiến mục đã xóa bị đẩy quay lại). localStorage chỉ còn là bộ nhớ đệm hiển thị nhanh + dự phòng khi mất mạng.
+        if (Array.isArray(data.knowledgeSources)) {
+          setKnowledgeSources(data.knowledgeSources);
+          try { localStorage.setItem('aistudio_knowledge_sources', JSON.stringify(data.knowledgeSources)); } catch (e) {}
         }
-
-        if (Array.isArray(data.products) && data.products.length > 0) {
-          mergedProducts = mergeById(products, data.products);
-          setProducts(mergedProducts);
-          try { localStorage.setItem('aistudio_products', JSON.stringify(mergedProducts)); } catch (e) {}
-          if (mergedProducts.length > data.products.length) reconcileNeeded = true;
-        } else if (Array.isArray(products) && products.length > 0) {
-          reconcileNeeded = true;
-        }
-
-        // [Đối soát tự động] Nếu client có mục mà server thiếu -> đẩy union lên server ngay để lưu bền vững
-        // (khỏi phải bấm "Đồng bộ" thủ công; tránh mất dữ liệu sau mỗi lần deploy lại).
-        if (reconcileNeeded) {
-          try {
-            fetch('/api/config', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ knowledgeSources: mergedKnowledge, products: mergedProducts }),
-            }).catch(() => {});
-            console.info('[Sync] Đã đối soát & đẩy dữ liệu client-only lên server.');
-          } catch (e) {}
+        if (Array.isArray(data.products)) {
+          setProducts(data.products);
+          try { localStorage.setItem('aistudio_products', JSON.stringify(data.products)); } catch (e) {}
         }
       })
       .catch((err) => console.warn('Could not load initial config from server:', err))
