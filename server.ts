@@ -2606,6 +2606,43 @@ async function loadStoreFromSupabase() {
 // Có chống hammer: chỉ đọc bảng tối đa mỗi 15 giây (hoặc khi bộ nhớ trống).
 let knowledgeHydrating: Promise<void> | null = null;
 let lastKnowledgeRefreshAt = 0;
+
+// [Chống trùng] Gom các nguồn có CÙNG URL (bản trùng do id cũ kèm Date.now()): giữ bản MỚI NHẤT,
+// xóa các bản trùng cũ khỏi Supabase (+ chunk RAG) để không tái xuất hiện khi hydrate lần sau.
+async function dedupeKnowledgeByUrl(client: any, tableName: string) {
+  try {
+    const list = Array.isArray(serverKnowledgeSources) ? serverKnowledgeSources : [];
+    const groups = new Map<string, any[]>();
+    for (const s of list) {
+      const u = ((s && (s.url || s.sheetUrl)) || '').trim();
+      if (!u) continue; // chỉ gom khi có URL thật (bỏ qua tài liệu/faq không có URL)
+      if (!groups.has(u)) groups.set(u, []);
+      groups.get(u)!.push(s);
+    }
+    const loserIds: string[] = [];
+    for (const arr of groups.values()) {
+      if (arr.length < 2) continue;
+      arr.sort((a, b) => {
+        const ta = new Date(a.updatedAt || a.lastSyncedAt || a.lastUpdated || 0).getTime();
+        const tb = new Date(b.updatedAt || b.lastSyncedAt || b.lastUpdated || 0).getTime();
+        if (tb !== ta) return tb - ta;                       // mới nhất trước
+        return (b.content?.length || 0) - (a.content?.length || 0); // hòa: nội dung dài hơn
+      });
+      for (let i = 1; i < arr.length; i++) if (arr[i]?.id) loserIds.push(arr[i].id);
+    }
+    if (!loserIds.length) return;
+    const loserSet = new Set(loserIds);
+    serverKnowledgeSources = list.filter((s) => !(s && loserSet.has(s.id)));
+    for (const id of loserIds) {
+      try { await client.from(tableName).delete().eq('id', id); } catch { /* bỏ qua */ }
+      try { await client.from('kb_chunks').delete().eq('source_id', id); } catch { /* bỏ qua nếu chưa dùng RAG */ }
+    }
+    console.log(`🧹 [Dedupe] Gộp trùng theo URL: xóa ${loserIds.length} bản trùng cũ, giữ bản mới nhất.`);
+  } catch (e: any) {
+    console.warn('[Dedupe] error:', e?.message || e);
+  }
+}
+
 async function ensureKnowledgeLoaded() {
   const empty = !(Array.isArray(serverKnowledgeSources) && serverKnowledgeSources.length > 0);
   const stale = (Date.now() - lastKnowledgeRefreshAt) > 15000;
@@ -2641,6 +2678,7 @@ async function ensureKnowledgeLoaded() {
           });
         }
         serverKnowledgeSources = Array.from(byId.values());
+        await dedupeKnowledgeByUrl(client, tableName); // [Chống trùng] dọn bản trùng cùng URL
         primeKnowledgeSyncSig(serverKnowledgeSources);
         lastKnowledgeRefreshAt = Date.now();
         console.log(`⚡ [SupabaseStore] Hydrated/merged ${data.length} rows từ bảng -> tổng ${serverKnowledgeSources.length} nguồn.`);
@@ -3113,7 +3151,9 @@ app.post("/api/google/drive/import", async (req, res) => {
     }
 
     const title = fileName || `Google Drive Doc (${fileId})`;
-    const sourceId = `drive-${fileId}-${Date.now()}`;
+    // [Chống trùng] id ỔN ĐỊNH theo fileId (KHÔNG kèm Date.now()) -> nạp lại cùng tệp = ghi đè, không tạo bản mới.
+    const sourceId = `drive-${fileId}`;
+    const nowIso = new Date().toISOString();
 
     const newKnowledge: any = {
       id: sourceId,
@@ -3122,11 +3162,21 @@ app.post("/api/google/drive/import", async (req, res) => {
       content: extractedText,
       url: `https://drive.google.com/file/d/${fileId}/view`,
       status: 'active',
+      active: true,
       itemCount: 1,
-      lastUpdated: new Date().toISOString(),
+      wordCount: extractedText.split(/\s+/).filter(Boolean).length,
+      lastUpdated: nowIso,
+      updatedAt: nowIso,
+      lastSyncedAt: nowIso,
     };
 
-    serverKnowledgeSources.push(newKnowledge);
+    // Upsert theo id trong bộ nhớ: nếu tệp đã có thì cập nhật tại chỗ, chưa có thì thêm mới.
+    const existingIdx = serverKnowledgeSources.findIndex((s: any) => s && s.id === sourceId);
+    if (existingIdx !== -1) {
+      serverKnowledgeSources[existingIdx] = { ...serverKnowledgeSources[existingIdx], ...newKnowledge };
+    } else {
+      serverKnowledgeSources.push(newKnowledge);
+    }
     saveServerStore();
 
     res.json({
@@ -3181,16 +3231,23 @@ app.post("/api/google/drive/folder/import", async (req, res) => {
           try {
             const text = await extractTextFromDriveFile(item.id, item.mimeType, accessToken);
             if (text && text.trim()) {
+              const nowIsoF = new Date().toISOString();
               const newSource: any = {
-                id: `drive-${item.id}-${Date.now()}`,
+                id: `drive-${item.id}`, // [Chống trùng] id ỔN ĐỊNH theo fileId
                 title: item.name || `Tệp ${item.id}`,
                 type: 'google_drive',
                 content: text,
                 url: `https://drive.google.com/file/d/${item.id}/view`,
                 status: 'active',
-                lastUpdated: new Date().toISOString(),
+                active: true,
+                wordCount: text.split(/\s+/).filter(Boolean).length,
+                lastUpdated: nowIsoF,
+                updatedAt: nowIsoF,
+                lastSyncedAt: nowIsoF,
               };
-              serverKnowledgeSources.push(newSource);
+              const exIdx = serverKnowledgeSources.findIndex((s: any) => s && s.id === newSource.id);
+              if (exIdx !== -1) serverKnowledgeSources[exIdx] = { ...serverKnowledgeSources[exIdx], ...newSource };
+              else serverKnowledgeSources.push(newSource);
               processedFiles.push(newSource);
             }
           } catch (err) {
