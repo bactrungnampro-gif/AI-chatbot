@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { 
   Globe, 
   FileText, 
@@ -506,8 +506,19 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
       });
 
       if (data.success && Array.isArray(data.products) && data.products.length > 0) {
-        setProducts((prev) => [...data.products, ...prev]);
-        setExtractedNotice(`🎉 Đã tự động trích xuất ${data.products.length} sản phẩm từ "${source.title}" vào Danh mục Sản phẩm!`);
+        // [Fix M7] Chống trùng: nếu trích xuất lại cùng một nguồn, KHÔNG thêm bản sao.
+        // Ghép theo khóa (id nếu có, nếu không thì tên đã chuẩn hóa) — bản mới GHI ĐÈ bản cũ.
+        setProducts((prev) => {
+          const keyOf = (p: any) =>
+            String(p?.id || '').trim() ||
+            'name:' + String(p?.name || '').trim().toLowerCase();
+          const map = new Map<string, any>();
+          for (const p of prev) map.set(keyOf(p), p);
+          for (const p of data.products) map.set(keyOf(p), p); // bản mới thắng
+          return Array.from(map.values());
+        });
+        const added = data.products.length;
+        setExtractedNotice(`🎉 Đã tự động trích xuất ${added} sản phẩm từ "${source.title}" vào Danh mục Sản phẩm!`);
       } else {
         alert(data.error || 'Không thể trích xuất sản phẩm từ nội dung này.');
       }
@@ -1112,11 +1123,18 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
     setKnowledgeSources((prev) => prev.filter((item) => item.id !== id));
   };
 
-  const filteredSources = knowledgeSources.filter(
-    (source) =>
-      source.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      source.content.toLowerCase().includes(searchTerm.toLowerCase())
-  );
+  // [Fix M6] Lọc nguồn tri thức: dùng useMemo để CHỈ tính lại khi danh sách hoặc từ khóa đổi
+  // (trước đây .filter chạy MỖI lần render, kèm .toLowerCase() toàn bộ nội dung -> chậm khi kho lớn).
+  // Khi không tìm kiếm -> trả nguyên danh sách, không quét nội dung. Chuẩn hóa từ khóa 1 lần.
+  const filteredSources = useMemo(() => {
+    const q = searchTerm.trim().toLowerCase();
+    if (!q) return knowledgeSources;
+    return knowledgeSources.filter(
+      (source) =>
+        (source.title || '').toLowerCase().includes(q) ||
+        (source.content || '').toLowerCase().includes(q)
+    );
+  }, [knowledgeSources, searchTerm]);
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">

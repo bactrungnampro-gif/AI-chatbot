@@ -387,16 +387,16 @@ export const ChatSandbox: React.FC<ChatSandboxProps> = ({
                       <div className="flex flex-wrap gap-2 mb-2">
                         {msg.attachments.map((att) => (
                           <div key={att.id} className="relative rounded-lg overflow-hidden border border-slate-200 bg-slate-50 max-w-[200px]">
-                            {att.type === 'image' && (
+                            {att.type === 'image' && att.dataUrl && (
                               <img src={att.dataUrl} alt={att.name} className="max-h-40 object-cover w-full" />
                             )}
-                            {att.type === 'video' && (
+                            {att.type === 'video' && att.dataUrl && (
                               <video src={att.dataUrl} controls className="max-h-40 w-full" />
                             )}
-                            {att.type === 'document' && (
+                            {(att.type === 'document' || !att.dataUrl) && (
                               <div className="p-3 flex items-center gap-2 text-xs font-medium text-slate-700">
                                 <FileText className="w-5 h-5 text-indigo-600 shrink-0" />
-                                <span className="truncate">{att.name}</span>
+                                <span className="truncate">{att.type === 'image' ? '🖼️ ' : att.type === 'video' ? '🎬 ' : ''}{att.name}</span>
                               </div>
                             )}
                           </div>

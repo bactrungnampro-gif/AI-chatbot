@@ -112,10 +112,22 @@ export const StandaloneWidgetChat: React.FC<StandaloneWidgetChatProps> = ({
   });
 
   useEffect(() => {
+    // [Fix M15] Chỉ lưu ~60 tin gần nhất và LOẠI base64 (dataUrl) đính kèm khỏi localStorage
+    // (tránh vượt hạn ngạch localStorage khiến không lưu được gì; ảnh phiên hiện tại vẫn hiện trong RAM).
+    const persistMessages = (msgs: ChatMessage[]) =>
+      msgs.slice(-60).map((m) =>
+        m.attachments && m.attachments.length > 0
+          ? { ...m, attachments: m.attachments.map((a) => ({ ...a, dataUrl: undefined })) }
+          : m
+      );
     try {
-      localStorage.setItem('aistudio_widget_standalone_messages', JSON.stringify(messages));
+      localStorage.setItem('aistudio_widget_standalone_messages', JSON.stringify(persistMessages(messages)));
     } catch (e) {
-      console.error('Failed to save standalone widget messages:', e);
+      try {
+        localStorage.setItem('aistudio_widget_standalone_messages', JSON.stringify(persistMessages(messages).slice(-30)));
+      } catch (e2) {
+        console.error('Failed to save standalone widget messages:', e2);
+      }
     }
   }, [messages]);
 
@@ -395,13 +407,13 @@ export const StandaloneWidgetChat: React.FC<StandaloneWidgetChatProps> = ({
                 <div className="mb-2 space-y-1.5">
                   {msg.attachments.map((att) => (
                     <div key={att.id} className="rounded-lg overflow-hidden border border-black/10">
-                      {att.type === 'image' && (
+                      {att.type === 'image' && att.dataUrl && (
                         <img src={att.dataUrl} alt={att.name} className="max-h-40 w-auto object-cover rounded-md" />
                       )}
-                      {att.type !== 'image' && (
+                      {(att.type !== 'image' || !att.dataUrl) && (
                         <div className="p-1.5 bg-black/5 text-[10px] font-mono flex items-center gap-1">
                           <Paperclip className="w-3 h-3" />
-                          <span className="truncate">{att.name}</span>
+                          <span className="truncate">{att.type === 'image' ? '🖼️ ' + att.name : att.name}</span>
                         </div>
                       )}
                     </div>

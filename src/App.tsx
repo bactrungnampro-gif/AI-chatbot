@@ -247,7 +247,24 @@ export default function App() {
   // (trước đây messages nằm trong effect đồng bộ cấu hình -> mỗi tin nhắn bắn 1 POST, tăng nguy cơ ghi đè sai thứ tự).
   useEffect(() => {
     if (!isConfigLoaded) return;
-    try { localStorage.setItem('aistudio_chat_messages', JSON.stringify(messages)); } catch (e) {}
+    // [Fix M15] Chỉ lưu ~60 tin gần nhất và LOẠI base64 (dataUrl) của tệp đính kèm khỏi localStorage.
+    // Trước đây lưu TOÀN BỘ lịch sử kèm ảnh base64 -> nhanh chóng vượt hạn ngạch localStorage (~5MB),
+    // khiến setItem ném lỗi và bị nuốt trong catch -> KHÔNG lưu được gì (mất toàn bộ lịch sử).
+    // Ảnh của phiên hiện tại vẫn hiển thị (state trong RAM còn dataUrl); chỉ mất preview ảnh sau khi tải lại trang.
+    const persistMessages = (msgs: ChatMessage[]) =>
+      msgs.slice(-60).map((m) =>
+        m.attachments && m.attachments.length > 0
+          ? { ...m, attachments: m.attachments.map((a) => ({ ...a, dataUrl: undefined })) }
+          : m
+      );
+    try {
+      localStorage.setItem('aistudio_chat_messages', JSON.stringify(persistMessages(messages)));
+    } catch (e) {
+      // Vẫn quá hạn ngạch -> thử lại với ít tin hơn (30) trước khi bỏ cuộc.
+      try {
+        localStorage.setItem('aistudio_chat_messages', JSON.stringify(persistMessages(messages).slice(-30)));
+      } catch (e2) {}
+    }
   }, [messages, isConfigLoaded]);
 
   // Lưu cấu hình (agent/widget/tri thức/sản phẩm) vào localStorage + đồng bộ server (có debounce).
