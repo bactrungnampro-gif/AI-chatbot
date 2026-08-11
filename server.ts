@@ -6,7 +6,6 @@ import net from "net";
 import crypto from "crypto";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, Type } from "@google/genai";
-import dotenv from "dotenv";
 import { PDFParse } from "pdf-parse";
 import { 
   Document, 
@@ -30,19 +29,19 @@ import { testFirecrawlApiKey, scrapeSingleWithFirecrawl, mapUrlsWithFirecrawl } 
 import { asyncHandler } from "./src/server/http/asyncHandler";
 import { validateBody } from "./src/server/http/validate";
 import { errorHandler } from "./src/server/middleware/errorHandler";
+import { rateLimit } from "./src/server/middleware/rateLimit";
+import { corsMiddleware } from "./src/server/middleware/cors";
 import { indexKnowledge, retrieveRelevant, reindexSources, sourceContentSig, extractKeywords } from "./src/server/rag/rag";
 import { generateChatResponse } from "./src/server/providers/ai";
 import { buildChatSystemInstruction } from "./src/server/services/promptBuilder";
 import { extractDocxText, extractXlsxText, extractTextFromAttachmentData } from "./src/server/services/documents";
-// [Giai đoạn 2] Tầng cấu hình: các hằng số đọc từ biến môi trường (env.ts tự gọi dotenv.config()).
+// [Giai đoạn 2] Tầng cấu hình: các hằng số đọc từ biến môi trường (env.ts đã tự gọi dotenv.config() -> không cần gọi lại ở đây).
 import {
-  PORT, MAX_BODY_SIZE, RL_WINDOW_MS, RL_MAX, RL_CHAT_MAX, ALLOWED_ORIGINS,
+  PORT, MAX_BODY_SIZE,
   AUTH_ENABLED, ADMIN_EMAILS, INTERNAL_API_SECRET,
   RAG_ENABLED, RAG_MAX_CHUNKS, RAG_MATCH_COUNT, LINK_DIR_MAX_CHARS, RAG_AUTO_INDEX,
   OAUTH_STATE_SECRET,
 } from "./src/server/config/env";
-
-dotenv.config();
 
 const app = express();
 
@@ -52,70 +51,11 @@ app.set('trust proxy', true); // để lấy đúng IP client sau reverse proxy 
 app.use(express.json({ limit: MAX_BODY_SIZE }));
 app.use(express.urlencoded({ extended: true, limit: MAX_BODY_SIZE }));
 
-// [Security] Rate limiting đơn giản trong bộ nhớ (fixed window theo IP), không cần thư viện ngoài.
-// Cấu hình: RATE_LIMIT_WINDOW_MS (mặc định 60000), RATE_LIMIT_MAX (mặc định 100 cho /api chung),
-// RATE_LIMIT_CHAT_MAX (mặc định 20 cho /api/chat vì tốn tài nguyên AI).
-const rlBuckets = new Map<string, { count: number; resetAt: number }>();
-function rateLimit(req: express.Request, res: express.Response, next: express.NextFunction) {
-  if (req.method === 'OPTIONS' || !req.path.startsWith('/api/')) return next();
-  const isChat = req.path.startsWith('/api/chat');
-  const limit = isChat ? RL_CHAT_MAX : RL_MAX;
-  const ip = (req.ip || req.socket.remoteAddress || 'unknown').toString();
-  const key = `${isChat ? 'chat' : 'api'}:${ip}`;
-  const now = Date.now();
-  let b = rlBuckets.get(key);
-  if (!b || now >= b.resetAt) {
-    b = { count: 0, resetAt: now + RL_WINDOW_MS };
-    rlBuckets.set(key, b);
-  }
-  b.count++;
-  const remaining = Math.max(0, limit - b.count);
-  res.setHeader('X-RateLimit-Limit', String(limit));
-  res.setHeader('X-RateLimit-Remaining', String(remaining));
-  if (b.count > limit) {
-    const retryAfter = Math.ceil((b.resetAt - now) / 1000);
-    res.setHeader('Retry-After', String(retryAfter));
-    return res.status(429).json({ error: `Quá nhiều yêu cầu. Vui lòng thử lại sau ${retryAfter} giây.`, code: 'RATE_LIMITED' });
-  }
-  next();
-}
+// [Security] Rate limiting (fixed window theo IP) -> đã tách sang src/server/middleware/rateLimit.ts.
 app.use(rateLimit);
-// Dọn định kỳ các bucket hết hạn để tránh rò rỉ bộ nhớ.
-setInterval(() => {
-  const now = Date.now();
-  for (const [k, v] of rlBuckets) if (now >= v.resetAt) rlBuckets.delete(k);
-}, 5 * 60 * 1000).unref?.();
 
-// CORS: Widget nhúng cần mở cho endpoint công khai, nhưng KHÔNG mở * cho toàn bộ API.
-// ALLOWED_ORIGINS = danh sách origin quản trị, phân tách bằng dấu phẩy
-// (vd: https://admin.example.com,http://localhost:3000). Endpoint công khai cho widget
-// (chat / widget.js / health / GET config) mới cho phép mọi origin.
-const PUBLIC_WIDGET_PATHS = ['/api/chat', '/api/widget.js', '/api/health'];
-
-app.use((req, res, next) => {
-  const origin = req.headers.origin || '';
-  const isPublicWidgetEndpoint =
-    PUBLIC_WIDGET_PATHS.some((p) => req.path.startsWith(p)) ||
-    (req.path === '/api/config' && req.method === 'GET');
-
-  if (isPublicWidgetEndpoint) {
-    // Widget có thể được nhúng ở bất kỳ domain khách hàng nào -> cho phép mọi origin (chỉ đọc/chat).
-    res.setHeader('Access-Control-Allow-Origin', '*');
-  } else if (origin && (ALLOWED_ORIGINS.length === 0 || ALLOWED_ORIGINS.includes(origin))) {
-    // Endpoint quản trị/ghi: chỉ cho origin trong allowlist. Khi chưa cấu hình allowlist,
-    // phản chiếu origin để không phá vỡ môi trường dev (nên đặt ALLOWED_ORIGINS ở production).
-    res.setHeader('Access-Control-Allow-Origin', origin);
-    res.setHeader('Vary', 'Origin');
-    res.setHeader('Access-Control-Allow-Credentials', 'true');
-  }
-
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, PUT, DELETE');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-  if (req.method === 'OPTIONS') {
-    return res.sendStatus(200);
-  }
-  next();
-});
+// CORS (widget công khai mở *, endpoint quản trị theo ALLOWED_ORIGINS) -> đã tách sang src/server/middleware/cors.ts.
+app.use(corsMiddleware);
 
 // --- AUTHENTICATION (Supabase Auth) ---
 // Bật khi AUTH_ENABLED=true. Xác thực JWT Supabase (email/password) và chặn các endpoint quản trị/ghi.

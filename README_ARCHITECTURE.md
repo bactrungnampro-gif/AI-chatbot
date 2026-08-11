@@ -30,7 +30,14 @@ src/server/
    └─ errorHandler.ts             # error-handler tập trung
 ```
 
-## Increment 5 — Tầng cấu hình (config/env.ts) (vừa làm)
+## Increment 6 — Middleware rate-limit + CORS (vừa làm)
+- Tách middleware rate-limit (rlBuckets + hàm rateLimit + dọn định kỳ) sang `src/server/middleware/rateLimit.ts`.
+- Tách middleware CORS (PUBLIC_WIDGET_PATHS + logic allow-origin) sang `src/server/middleware/cors.ts`.
+- Cả hai tự chứa, chỉ dùng hằng số từ config/env. Logic giữ NGUYÊN; đã test mock: rate-limit chặn đúng ở lần vượt; CORS mở `*` cho widget/GET config, phản chiếu origin cho admin trong allowlist, chặn origin lạ, OPTIONS -> 200.
+- Đồng thời BỎ `dotenv.config()` thừa trong server.ts (env.ts đã gọi) -> hết dòng log lặp; gỡ import `dotenv` không dùng.
+- Còn lại (rủi ro cao, làm khi test cục bộ từng bước): middleware auth, Store layer, Routers.
+
+## Increment 5 — Tầng cấu hình (config/env.ts) (đã làm)
 - Gom toàn bộ HẰNG SỐ đọc từ biến môi trường (PORT, MAX_BODY_SIZE, RATE_LIMIT_*, ALLOWED_ORIGINS, AUTH_ENABLED, ADMIN_EMAILS, INTERNAL_API_SECRET, RAG_*, LINK_DIR_MAX_CHARS, OAUTH_STATE_SECRET) về `src/server/config/env.ts`.
 - `env.ts` TỰ gọi `dotenv.config()` ở đầu (vì import nạp trước thân server.ts) -> đọc `.env` đúng thời điểm.
 - Định nghĩa giữ NGUYÊN; đã kiểm thử runtime: các giá trị parse/mặc định/derived (vd RAG_AUTO_INDEX) khớp logic cũ.
