@@ -31,7 +31,7 @@ import { testFirecrawlApiKey, scrapeSingleWithFirecrawl, mapUrlsWithFirecrawl } 
 import { asyncHandler } from "./src/server/http/asyncHandler";
 import { validateBody } from "./src/server/http/validate";
 import { errorHandler } from "./src/server/middleware/errorHandler";
-import { indexKnowledge, retrieveRelevant, reindexSources, sourceContentSig } from "./src/server/rag/rag";
+import { indexKnowledge, retrieveRelevant, reindexSources, sourceContentSig, extractKeywords } from "./src/server/rag/rag";
 import { generateChatResponse } from "./src/server/providers/ai";
 import { buildChatSystemInstruction } from "./src/server/services/promptBuilder";
 
@@ -2335,6 +2335,43 @@ app.post("/api/chat", async (req, res) => {
       } catch (e: any) {
         console.warn('[RAG] retrieve failed, fallback to full KB:', e?.message || e);
       }
+    }
+
+    // [Tra link theo từ khóa — không phụ thuộc RAG index / danh sách link]
+    // Quét TRỰC TIẾP nội dung mọi nguồn để tìm các DÒNG khớp từ khóa câu hỏi (đặc biệt hữu ích cho file
+    // "danh sách link": bắt đúng dòng chứa tên tài liệu + link, kể cả khi chưa lập chỉ mục hoặc danh sách link bị cắt).
+    try {
+      if (message && message.trim()) {
+        const kws = extractKeywords(message);
+        if (kws.length) {
+          const snippets: string[] = [];
+          const MAX_SNIPPETS = 20;
+          outer:
+          for (const k of filteredKnowledgeSources) {
+            const content = (k && k.content) ? String(k.content) : '';
+            if (!content) continue;
+            const lines = content.split(/\r?\n/);
+            for (let i = 0; i < lines.length; i++) {
+              const low = lines[i].toLowerCase();
+              if (kws.some((kw) => low.includes(kw))) {
+                // Ghép dòng khớp + dòng kế (phòng khi link nằm ở dòng ngay sau tên tài liệu).
+                let snip = lines[i].trim();
+                if (!/https?:\/\//i.test(snip) && lines[i + 1] && /https?:\/\//i.test(lines[i + 1])) {
+                  snip += ' ' + lines[i + 1].trim();
+                }
+                if (snip) snippets.push(`[${k.title}] ${snip}`.slice(0, 400));
+                if (snippets.length >= MAX_SNIPPETS) break outer;
+              }
+            }
+          }
+          if (snippets.length) {
+            knowledgeContextText += `\n\n=== DÒNG DỮ LIỆU KHỚP TỪ KHÓA CÂU HỎI (có thể chứa LINK cần tìm — ưu tiên dùng) ===\n` + snippets.join('\n');
+            console.log(`[KeywordScan] Bổ sung ${snippets.length} dòng khớp từ khóa vào ngữ cảnh.`);
+          }
+        }
+      }
+    } catch (e: any) {
+      console.warn('[KeywordScan] error:', e?.message || e);
     }
 
     // Construct System Instruction with Data Priority Hierarchy
