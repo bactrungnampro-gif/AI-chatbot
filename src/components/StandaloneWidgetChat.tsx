@@ -8,7 +8,8 @@ import {
   User, 
   Sparkles,
   MessageSquare,
-  Image as ImageIcon
+  Image as ImageIcon,
+  ChevronDown
 } from 'lucide-react';
 import { AgentConfig, Attachment, ChatMessage, KnowledgeSource, ProductItem, WidgetSettings } from '../types';
 import { FormattedMessage } from './FormattedMessage';
@@ -80,6 +81,15 @@ export const StandaloneWidgetChat: React.FC<StandaloneWidgetChatProps> = ({
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const chatContainerRef = useRef<HTMLDivElement>(null);
+  const [showScrollBtn, setShowScrollBtn] = useState(false);
+
+  // Hiện nút "xuống cuối" khi khách cuộn LÊN xem lịch sử; ẩn khi đã ở gần cuối.
+  const handleChatScroll = () => {
+    const el = chatContainerRef.current;
+    if (!el) return;
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    setShowScrollBtn(!nearBottom);
+  };
 
   const [messages, setMessages] = useState<ChatMessage[]>(() => {
     try {
@@ -273,7 +283,7 @@ export const StandaloneWidgetChat: React.FC<StandaloneWidgetChatProps> = ({
   };
 
   return (
-    <div className="w-full h-screen max-h-screen flex flex-col bg-slate-50 font-sans overflow-hidden border-0">
+    <div className="w-full h-screen max-h-screen flex flex-col bg-slate-50 font-sans overflow-hidden border-0 relative">
       
       {/* Header Bar */}
       <header 
@@ -326,7 +336,7 @@ export const StandaloneWidgetChat: React.FC<StandaloneWidgetChatProps> = ({
       </header>
 
       {/* Chat Messages List */}
-      <div ref={chatContainerRef} className="flex-1 overflow-y-auto p-3 sm:p-4 space-y-3.5 bg-slate-50">
+      <div ref={chatContainerRef} onScroll={handleChatScroll} className="flex-1 overflow-y-auto p-3 sm:p-4 space-y-3.5 bg-slate-50">
         {messages.map((msg) => (
           <div
             key={msg.id}
@@ -444,6 +454,20 @@ export const StandaloneWidgetChat: React.FC<StandaloneWidgetChatProps> = ({
             </div>
           ))}
         </div>
+      )}
+
+      {/* Nút "xuống cuối" — chỉ hiện khi khách đã cuộn lên xem lịch sử */}
+      {showScrollBtn && (
+        <button
+          type="button"
+          onClick={() => { scrollToBottom('smooth'); setShowScrollBtn(false); }}
+          aria-label="Xuống tin nhắn mới nhất"
+          title="Xuống tin nhắn mới nhất"
+          className="absolute right-3 z-20 w-9 h-9 rounded-full bg-white shadow-lg border border-slate-200 flex items-center justify-center hover:bg-slate-50 transition-colors"
+          style={{ bottom: '78px', color: primaryColor }}
+        >
+          <ChevronDown className="w-5 h-5" />
+        </button>
       )}
 
       {/* Input Area */}
