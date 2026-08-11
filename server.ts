@@ -136,7 +136,7 @@ const RAG_ENABLED = process.env.RAG_ENABLED === 'true';
 const RAG_MAX_CHUNKS = parseInt(process.env.RAG_MAX_CHUNKS || '3000', 10);
 // Trạng thái lập chỉ mục RAG (chạy nền để tránh 502 do request quá lâu).
 let ragIndexing = false;
-let ragProgress: { running: boolean; done: boolean; chunks: number; sources: number; skipped: number; error?: string; startedAt?: number; finishedAt?: number } =
+let ragProgress: { running: boolean; done: boolean; complete?: boolean; chunks: number; sources: number; skipped: number; already?: number; error?: string; startedAt?: number; finishedAt?: number } =
   { running: false, done: false, chunks: 0, sources: 0, skipped: 0 };
 
 // Các endpoint công khai (không cần đăng nhập): widget nhúng, health, đọc config, callback OAuth, public-config.
@@ -280,8 +280,8 @@ app.post("/api/rag/index", asyncHandler(async (_req, res) => {
         ragProgress = { ...ragProgress, running: true, chunks, sources };
       });
       ragProgress = {
-        running: false, done: true,
-        chunks: result.chunks, sources: result.sources, skipped: result.skipped,
+        running: false, done: true, complete: result.done,
+        chunks: result.chunks, sources: result.sources, skipped: result.skipped, already: result.already,
         error: result.error, startedAt: ragProgress.startedAt, finishedAt: Date.now(),
       };
     } catch (e: any) {

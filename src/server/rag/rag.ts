@@ -59,10 +59,11 @@ export async function embedText(ai: any, text: string, retries = 4): Promise<num
   return null;
 }
 
-export interface IndexResult { sources: number; chunks: number; skipped: number; error?: string; }
+export interface IndexResult { sources: number; chunks: number; skipped: number; already: number; done: boolean; error?: string; }
 
-// Xây dựng/cập nhật chỉ mục vector cho các nguồn tri thức đang bật.
-// maxChunks: giới hạn tổng số đoạn cho PoC để kiểm soát chi phí/thời gian.
+// Xây dựng/cập nhật chỉ mục vector — KIỂU RESUMABLE:
+// chỉ embed những đoạn CHƯA có trong bảng, nên bấm lại nhiều lần sẽ CỘNG DỒN cho tới khi xong.
+// maxChunks: số đoạn MỚI tối đa xử lý trong MỘT lần chạy (kiểm soát thời gian/hạn ngạch). done=true nếu đã phủ hết.
 export async function indexKnowledge(
   client: any,
   ai: any,
@@ -72,56 +73,76 @@ export async function indexKnowledge(
   concurrency = 3
 ): Promise<IndexResult> {
   const active = (Array.isArray(sources) ? sources : []).filter((s) => s && s.active !== false && s.content);
-  let totalChunks = 0;
+  let newlyIndexed = 0;
   let indexedSources = 0;
   let skipped = 0;
+  let already = 0;
+  let capReached = false;
+
+  // Lấy tập id chunk ĐÃ CÓ để bỏ qua (resumable).
+  const existingIds = new Set<string>();
+  try {
+    const { data: existing } = await client.from(CHUNK_TABLE).select('id');
+    for (const r of (existing || [])) if (r?.id) existingIds.add(r.id);
+  } catch (e: any) {
+    return { sources: 0, chunks: 0, skipped: 0, already: 0, done: false, error: 'Không đọc được chỉ mục hiện có: ' + (e?.message || e) };
+  }
 
   for (const s of active) {
-    if (totalChunks >= maxChunks) { skipped++; continue; }
     const chunks = chunkText(s.content);
-    if (!chunks.length) { skipped++; continue; }
+    if (!chunks.length) continue;
 
-    // Xóa chunk cũ của nguồn này trước khi ghi mới
-    try {
-      await client.from(CHUNK_TABLE).delete().eq('source_id', s.id);
-    } catch (e: any) {
-      return { sources: indexedSources, chunks: totalChunks, skipped, error: 'Không xóa được chunk cũ: ' + (e?.message || e) };
+    // Chỉ những chunk chưa có trong bảng
+    const pending: { id: string; idx: number; text: string }[] = [];
+    for (let i = 0; i < chunks.length; i++) {
+      const id = `${s.id}_${i}`;
+      if (existingIds.has(id)) { already++; continue; }
+      pending.push({ id, idx: i, text: chunks[i] });
     }
+    if (!pending.length) continue;
 
+    let sourceHadNew = false;
     const rows: any[] = [];
-    // Tạo embedding SONG SONG theo lô để nhanh hơn (thay vì tuần tự từng đoạn).
-    for (let i = 0; i < chunks.length; i += concurrency) {
-      if (totalChunks >= maxChunks) break;
-      const batch = chunks.slice(i, i + concurrency);
-      const embs = await Promise.all(batch.map((c) => embedText(ai, c)));
+    for (let i = 0; i < pending.length; i += concurrency) {
+      if (newlyIndexed >= maxChunks) { capReached = true; break; }
+      const batch = pending.slice(i, i + concurrency);
+      const embs = await Promise.all(batch.map((c) => embedText(ai, c.text)));
       for (let j = 0; j < batch.length; j++) {
-        if (totalChunks >= maxChunks) { skipped++; continue; }
+        if (newlyIndexed >= maxChunks) { capReached = true; break; }
         const emb = embs[j];
         if (!emb) { skipped++; continue; }
         rows.push({
-          id: `${s.id}_${i + j}`,
+          id: batch[j].id,
           source_id: s.id,
-          chunk_index: i + j,
-          content: batch[j],
+          chunk_index: batch[j].idx,
+          content: batch[j].text,
           embedding: emb,
           updated_at: new Date().toISOString(),
         });
-        totalChunks++;
+        newlyIndexed++;
+        sourceHadNew = true;
       }
-      if (onProgress) onProgress(totalChunks, indexedSources);
-      await sleep(200); // giãn cách giữa các lô để tránh vượt giới hạn tốc độ (RPM) của API embedding
+      // Ghi dần theo lô nhỏ để không mất tiến độ nếu gián đoạn
+      if (rows.length >= 20) {
+        const { error } = await client.from(CHUNK_TABLE).upsert(rows.splice(0, rows.length), { onConflict: 'id' });
+        if (error) return { sources: indexedSources, chunks: newlyIndexed, skipped, already, done: false, error: error.message };
+      }
+      if (onProgress) onProgress(newlyIndexed, indexedSources);
+      await sleep(200); // giãn cách tránh vượt rate limit
+      if (capReached) break;
     }
-
-    // Ghi theo lô để tránh statement timeout
-    for (let i = 0; i < rows.length; i += 20) {
-      const { error } = await client.from(CHUNK_TABLE).upsert(rows.slice(i, i + 20), { onConflict: 'id' });
-      if (error) return { sources: indexedSources, chunks: totalChunks, skipped, error: error.message };
+    if (rows.length) {
+      const { error } = await client.from(CHUNK_TABLE).upsert(rows, { onConflict: 'id' });
+      if (error) return { sources: indexedSources, chunks: newlyIndexed, skipped, already, done: false, error: error.message };
     }
-    if (rows.length) indexedSources++;
-    if (onProgress) onProgress(totalChunks, indexedSources);
+    if (sourceHadNew) indexedSources++;
+    if (onProgress) onProgress(newlyIndexed, indexedSources);
+    if (capReached) break;
   }
 
-  return { sources: indexedSources, chunks: totalChunks, skipped };
+  // done nếu không chạm cap và không còn đoạn nào bị lỗi bỏ qua (nghĩa là đã phủ hết những gì embed được)
+  const done = !capReached;
+  return { sources: indexedSources, chunks: newlyIndexed, skipped, already, done };
 }
 
 // Truy hồi các đoạn liên quan nhất tới câu hỏi. Trả về mảng { content, source_id, similarity } hoặc null.

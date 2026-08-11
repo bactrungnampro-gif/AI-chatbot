@@ -938,39 +938,46 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
     setIsBuildingRag(true);
     setRagNotice(null);
     try {
-      const res = await fetch('/api/rag/index', { method: 'POST' });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        setRagNotice({ type: 'error', message: data.error || `Lỗi lập chỉ mục (HTTP ${res.status}).` });
-        setIsBuildingRag(false);
-        return;
+      // Nếu đang có tiến trình chạy nền thì BÁM theo nó, ngược lại bắt đầu tiến trình mới.
+      const st = await fetch('/api/rag/status').then((r) => r.json()).catch(() => null);
+      if (!(st && st.indexing)) {
+        const res = await fetch('/api/rag/index', { method: 'POST' });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          setRagNotice({ type: 'error', message: data.error || `Lỗi lập chỉ mục (HTTP ${res.status}).` });
+          setIsBuildingRag(false);
+          return;
+        }
       }
-      // Lập chỉ mục chạy nền -> hỏi tiến độ định kỳ tới khi xong.
-      setRagNotice({ type: 'success', message: 'Đang lập chỉ mục ở chế độ nền... (kho lớn có thể mất vài phút)' });
+      setRagNotice({ type: 'success', message: 'Đang lập chỉ mục ở chế độ nền... (kho lớn có thể mất nhiều phút)' });
       let tries = 0;
+      const MAX_TRIES = 400; // ~20 phút theo dõi
       const poll = async () => {
         tries++;
         try {
           const s = await fetch('/api/rag/status').then((r) => r.json());
-          if (s?.progress?.done) {
-            if (s.progress.error) {
-              setRagNotice({ type: 'error', message: 'Lỗi lập chỉ mục: ' + s.progress.error });
+          if (s?.progress?.done && !s.indexing) {
+            const p = s.progress;
+            if (p.error) {
+              setRagNotice({ type: 'error', message: 'Lỗi lập chỉ mục: ' + p.error });
+            } else if (p.complete) {
+              setRagNotice({ type: 'success', message: `✅ Hoàn tất! Đã lập chỉ mục ${p.chunks} đoạn mới từ ${p.sources} nguồn (đã có sẵn ${p.already || 0}${p.skipped ? `, bỏ qua ${p.skipped} do lỗi/hạn ngạch` : ''}).` });
             } else {
-              setRagNotice({ type: 'success', message: `✅ Đã lập chỉ mục ${s.progress.chunks} đoạn từ ${s.progress.sources} nguồn${s.progress.skipped ? ` (bỏ qua ${s.progress.skipped})` : ''}.` });
+              setRagNotice({ type: 'success', message: `⏳ Đã xử lý thêm ${p.chunks} đoạn (đã có ${p.already || 0}). Chưa xong hết — hãy BẤM LẠI để tiếp tục cho đến khi báo "Hoàn tất".` });
             }
             setIsBuildingRag(false);
             return;
           }
           const processed = (s?.progress && typeof s.progress.chunks === 'number') ? s.progress.chunks : s?.chunkCount;
           if (typeof processed === 'number') {
-            setRagNotice({ type: 'success', message: `Đang lập chỉ mục... (${processed} đoạn đã xử lý)` });
+            setRagNotice({ type: 'success', message: `Đang lập chỉ mục... (${processed} đoạn mới đã xử lý)` });
           }
         } catch { /* bỏ qua, thử lại */ }
-        if (tries < 120) {
+        if (tries < MAX_TRIES) {
           setTimeout(poll, 3000);
         } else {
           setIsBuildingRag(false);
-          setRagNotice({ type: 'error', message: 'Hết thời gian chờ theo dõi. Bấm lại hoặc kiểm tra sau.' });
+          setRagNotice({ type: 'success', message: 'Vẫn đang chạy nền. Cứ để yên, nó tiếp tục chạy — bấm lại để xem tiến độ/kết quả.' });
         }
       };
       setTimeout(poll, 3000);
