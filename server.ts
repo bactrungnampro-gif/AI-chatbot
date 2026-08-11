@@ -34,25 +34,27 @@ import { indexKnowledge, retrieveRelevant, reindexSources, sourceContentSig, ext
 import { generateChatResponse } from "./src/server/providers/ai";
 import { buildChatSystemInstruction } from "./src/server/services/promptBuilder";
 import { extractDocxText, extractXlsxText, extractTextFromAttachmentData } from "./src/server/services/documents";
+// [Giai đoạn 2] Tầng cấu hình: các hằng số đọc từ biến môi trường (env.ts tự gọi dotenv.config()).
+import {
+  PORT, MAX_BODY_SIZE, RL_WINDOW_MS, RL_MAX, RL_CHAT_MAX, ALLOWED_ORIGINS,
+  AUTH_ENABLED, ADMIN_EMAILS, INTERNAL_API_SECRET,
+  RAG_ENABLED, RAG_MAX_CHUNKS, RAG_MATCH_COUNT, LINK_DIR_MAX_CHARS, RAG_AUTO_INDEX,
+  OAUTH_STATE_SECRET,
+} from "./src/server/config/env";
 
 dotenv.config();
 
 const app = express();
-const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 
 app.set('trust proxy', true); // để lấy đúng IP client sau reverse proxy (Cloud Run/Nginx)
 
-// [Security] Giới hạn kích thước body (giảm từ 50mb). Cấu hình qua MAX_BODY_SIZE (mặc định 15mb).
-const MAX_BODY_SIZE = process.env.MAX_BODY_SIZE || '15mb';
+// [Security] Giới hạn kích thước body (cấu hình MAX_BODY_SIZE trong env.ts).
 app.use(express.json({ limit: MAX_BODY_SIZE }));
 app.use(express.urlencoded({ extended: true, limit: MAX_BODY_SIZE }));
 
 // [Security] Rate limiting đơn giản trong bộ nhớ (fixed window theo IP), không cần thư viện ngoài.
 // Cấu hình: RATE_LIMIT_WINDOW_MS (mặc định 60000), RATE_LIMIT_MAX (mặc định 100 cho /api chung),
 // RATE_LIMIT_CHAT_MAX (mặc định 20 cho /api/chat vì tốn tài nguyên AI).
-const RL_WINDOW_MS = parseInt(process.env.RATE_LIMIT_WINDOW_MS || '60000', 10);
-const RL_MAX = parseInt(process.env.RATE_LIMIT_MAX || '100', 10);
-const RL_CHAT_MAX = parseInt(process.env.RATE_LIMIT_CHAT_MAX || '20', 10);
 const rlBuckets = new Map<string, { count: number; resetAt: number }>();
 function rateLimit(req: express.Request, res: express.Response, next: express.NextFunction) {
   if (req.method === 'OPTIONS' || !req.path.startsWith('/api/')) return next();
@@ -88,11 +90,6 @@ setInterval(() => {
 // ALLOWED_ORIGINS = danh sách origin quản trị, phân tách bằng dấu phẩy
 // (vd: https://admin.example.com,http://localhost:3000). Endpoint công khai cho widget
 // (chat / widget.js / health / GET config) mới cho phép mọi origin.
-const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || '')
-  .split(',')
-  .map((o) => o.trim())
-  .filter(Boolean);
-
 const PUBLIC_WIDGET_PATHS = ['/api/chat', '/api/widget.js', '/api/health'];
 
 app.use((req, res, next) => {
@@ -123,26 +120,8 @@ app.use((req, res, next) => {
 // --- AUTHENTICATION (Supabase Auth) ---
 // Bật khi AUTH_ENABLED=true. Xác thực JWT Supabase (email/password) và chặn các endpoint quản trị/ghi.
 // Cần SUPABASE_URL + SUPABASE_ANON_KEY. Giới hạn tài khoản đăng nhập qua ADMIN_EMAILS (danh sách email, phân tách dấu phẩy).
-const AUTH_ENABLED = process.env.AUTH_ENABLED === 'true';
-const ADMIN_EMAILS = (process.env.ADMIN_EMAILS || '')
-  .split(',')
-  .map((e) => e.trim().toLowerCase())
-  .filter(Boolean);
-
-// Bí mật cho các lời gọi nội bộ server-đến-server (vd resync tự gọi /api/knowledge/scrape).
-// Sinh ngẫu nhiên mỗi lần khởi động; không lộ ra ngoài.
-const INTERNAL_API_SECRET = crypto.randomBytes(24).toString('hex');
-
-// [PoC RAG] Bật truy hồi ngữ nghĩa (embeddings + pgvector) cho /api/chat. Cần Supabase + GEMINI_API_KEY.
-const RAG_ENABLED = process.env.RAG_ENABLED === 'true';
-// Giới hạn tổng số đoạn lập chỉ mục mỗi lần (kiểm soát thời gian/chi phí/hạn ngạch embedding). Cấu hình qua RAG_MAX_CHUNKS.
-const RAG_MAX_CHUNKS = parseInt(process.env.RAG_MAX_CHUNKS || '3000', 10);
-// Số đoạn truy hồi mỗi câu hỏi (vector) — tăng để agent "nhìn" đủ ngữ cảnh hơn. Cấu hình qua RAG_MATCH_COUNT.
-const RAG_MATCH_COUNT = parseInt(process.env.RAG_MATCH_COUNT || '12', 10);
-// Trần ký tự cho DANH SÁCH LINK trong prompt. Nâng cao để kho nhiều nguồn (100+) vẫn liệt kê đủ link. Cấu hình qua LINK_DIR_MAX_CHARS.
-const LINK_DIR_MAX_CHARS = parseInt(process.env.LINK_DIR_MAX_CHARS || '40000', 10);
-// Tự động cập nhật chỉ mục RAG khi tri thức thay đổi (mặc định bật khi RAG bật). Tắt bằng RAG_AUTO_INDEX=false.
-const RAG_AUTO_INDEX = RAG_ENABLED && process.env.RAG_AUTO_INDEX !== 'false';
+// [Giai đoạn 2] AUTH_ENABLED, ADMIN_EMAILS, INTERNAL_API_SECRET, RAG_ENABLED, RAG_MAX_CHUNKS,
+// RAG_MATCH_COUNT, LINK_DIR_MAX_CHARS, RAG_AUTO_INDEX -> đã chuyển sang src/server/config/env.ts.
 
 // Chữ ký RAG theo nguồn để phát hiện thay đổi. Prime baseline 1 lần để KHÔNG tự index lại "backlog" cũ.
 let ragSigMap: Record<string, string> = {};
@@ -2354,8 +2333,7 @@ function googleUserKey(req: express.Request): string {
   return (u && u.id) ? `u:${u.id}` : 'default';
 }
 
-// [Security] Bí mật để ký tham số OAuth `state` (gắn callback với đúng người dùng, chống CSRF/nhầm phiên).
-const OAUTH_STATE_SECRET = process.env.OAUTH_STATE_SECRET || crypto.randomBytes(32).toString('hex');
+// [Security] OAUTH_STATE_SECRET (ký tham số OAuth `state`) -> đã chuyển sang src/server/config/env.ts.
 function signState(payload: object): string {
   const body = Buffer.from(JSON.stringify(payload)).toString('base64url');
   const sig = crypto.createHmac('sha256', OAUTH_STATE_SECRET).update(body).digest('base64url');

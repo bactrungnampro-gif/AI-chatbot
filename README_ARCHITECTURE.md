@@ -30,7 +30,13 @@ src/server/
    └─ errorHandler.ts             # error-handler tập trung
 ```
 
-## Increment 4 — Tầng tài liệu (documents.ts) (vừa làm)
+## Increment 5 — Tầng cấu hình (config/env.ts) (vừa làm)
+- Gom toàn bộ HẰNG SỐ đọc từ biến môi trường (PORT, MAX_BODY_SIZE, RATE_LIMIT_*, ALLOWED_ORIGINS, AUTH_ENABLED, ADMIN_EMAILS, INTERNAL_API_SECRET, RAG_*, LINK_DIR_MAX_CHARS, OAUTH_STATE_SECRET) về `src/server/config/env.ts`.
+- `env.ts` TỰ gọi `dotenv.config()` ở đầu (vì import nạp trước thân server.ts) -> đọc `.env` đúng thời điểm.
+- Định nghĩa giữ NGUYÊN; đã kiểm thử runtime: các giá trị parse/mặc định/derived (vd RAG_AUTO_INDEX) khớp logic cũ.
+- `server.ts` giảm khai báo cấu hình rải rác, chỉ còn import từ env.ts.
+
+## Increment 4 — Tầng tài liệu (documents.ts) (đã làm)
 - Tách 3 hàm bóc tách tài liệu khỏi `server.ts` sang `src/server/services/documents.ts`: `extractDocxText`, `extractXlsxText` (thuần, chỉ dùng zlib), và `extractTextFromAttachmentData` (nhận `getAi` qua tham số — dependency injection cho OCR PDF).
 - Sao chép NGUYÊN VĂN; đã kiểm thử trên tệp thật: .xlsx (29 dòng, 28 link) và .docx (tiêu đề + link) cho kết quả GIỐNG HỆT trước -> không đổi hành vi.
 - `server.ts` bỏ luôn import `zlib` (không còn dùng trực tiếp) và giảm ~187 dòng.
@@ -53,7 +59,7 @@ src/server/
 1. **Store layer** (`src/server/store.ts`): gom state toàn cục (agentConfig, products, knowledgeSources, googleSessions) + persistence (file/Firestore/Supabase) + ensureKnowledgeLoaded sau một API rõ ràng. RỦI RO CAO (đụng nhiều tham chiếu) -> làm khi có thể chạy test.
 2. ~~**PromptBuilder**~~ ✅ ĐÃ LÀM (Increment 3).
 3. **Routers** (`src/server/routes/*`): chuyển từng nhóm route (chat, knowledge, google, supabase, config, rag) sang router riêng, controller mỏng gọi service.
-4. **Config layer** (`src/server/config/env.ts`): tập trung đọc biến môi trường + hằng số.
+4. ~~**Config layer**~~ ✅ ĐÃ LÀM (Increment 5).
 5. Khi cài được package: thay validate tự viết bằng **zod**; bật `tsconfig` strict cho server.
 
 ## Kiểm tra
