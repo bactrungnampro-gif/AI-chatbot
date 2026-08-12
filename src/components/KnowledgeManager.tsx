@@ -75,7 +75,9 @@ function sourceTypeLabel(type: string | undefined): string {
     case 'process_guide': return 'Quy trình';
     case 'api_endpoint': return 'REST API';
     case 'google_sheet':
+    case 'google_sheets':
     case 'sheet': return 'Google Sheet';
+    case 'google_drive': return 'Google Drive';
     default: return type ? type.replace(/_/g, ' ') : 'Nguồn';
   }
 }
@@ -109,7 +111,9 @@ function resyncLabel(type: string | undefined): string {
     case 'website': return 'Cào lại nội dung (Re-crawl)';
     case 'api_endpoint': return 'Đồng bộ lại API';
     case 'google_sheet':
+    case 'google_sheets':
     case 'sheet': return 'Đồng bộ lại Sheet';
+    case 'google_drive': return 'Đồng bộ lại Google Drive';
     case 'document': return 'Cập nhật lại tệp';
     default: return 'Cập nhật / Làm mới';
   }
@@ -2411,16 +2415,19 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
             <div>
               <div className="flex items-start justify-between gap-2 mb-3">
                 <div className="flex items-center gap-1.5 flex-wrap">
+                  {/* [UX] Badge theo NHÓM: màu + icon nhất quán (khớp cả google_sheets/google_drive) */}
                   <span className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-semibold ${
-                    source.type === 'website' ? 'bg-indigo-50 text-indigo-700 border border-indigo-200' :
-                    source.type === 'process_guide' ? 'bg-purple-50 text-purple-700 border border-purple-200' :
-                    'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                    sourceGroup(source.type) === 'website' ? 'bg-indigo-50 text-indigo-700 border border-indigo-200' :
+                    sourceGroup(source.type) === 'google' ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' :
+                    sourceGroup(source.type) === 'api' ? 'bg-purple-50 text-purple-700 border border-purple-200' :
+                    sourceGroup(source.type) === 'file' ? 'bg-sky-50 text-sky-700 border border-sky-200' :
+                    'bg-slate-100 text-slate-600 border border-slate-200'
                   }`}>
-                    {source.type === 'website' && <Globe className="w-3 h-3" />}
-                    {source.type === 'process_guide' && <FileCheck className="w-3 h-3" />}
-                    {source.type === 'document' && <FileText className="w-3 h-3" />}
-                    {source.type === 'api_endpoint' && <Server className="w-3 h-3" />}
-                    {(source.type === 'google_sheet' || source.type === 'sheet') && <FileSpreadsheet className="w-3 h-3" />}
+                    {sourceGroup(source.type) === 'website' && <Globe className="w-3 h-3" />}
+                    {sourceGroup(source.type) === 'google' && <FileSpreadsheet className="w-3 h-3" />}
+                    {sourceGroup(source.type) === 'api' && <Server className="w-3 h-3" />}
+                    {sourceGroup(source.type) === 'file' && <FileText className="w-3 h-3" />}
+                    {sourceGroup(source.type) === 'other' && <FileCheck className="w-3 h-3" />}
                     {/* [UX #3] Nhãn loại thân thiện thay cho tên enum thô */}
                     <span>{sourceTypeLabel(source.type)}</span>
                   </span>
@@ -2460,12 +2467,23 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
                   href={source.url}
                   target="_blank"
                   rel="noreferrer"
-                  className="text-[11px] text-indigo-600 hover:underline flex items-center gap-1 truncate mb-3"
+                  className="text-[11px] text-indigo-600 hover:underline flex items-center gap-1 truncate mb-1.5"
                 >
                   <LinkIcon className="w-3 h-3" />
                   <span className="truncate">{source.url}</span>
                 </a>
               )}
+
+              {/* [UX] Dải META gọn (số từ · lần cập nhật) — thay cho "728 từ" đứng lẻ ở chân thẻ */}
+              <div className="flex items-center flex-wrap gap-x-2 text-[10px] text-slate-400 mb-3">
+                <span className="font-semibold text-slate-500">{(source.wordCount ?? 0).toLocaleString('vi-VN')} từ</span>
+                <span aria-hidden>·</span>
+                <span>
+                  Cập nhật {(source.updatedAt || source.lastSyncedAt)
+                    ? new Date(source.updatedAt || source.lastSyncedAt).toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit', year: '2-digit' })
+                    : '—'}
+                </span>
+              </div>
 
               {/* [UX #2+#4] Xem trước SẠCH + THU GỌN: mặc định ẩn, bấm "Xem nội dung" để mở (giảm chiều cao thẻ) */}
               {(() => {
@@ -2614,8 +2632,11 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
               </div>
             </div>
 
-            <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between text-[11px] text-slate-400">
-              <span>{source.wordCount} từ</span>
+            {/* [UX] Chân thẻ gọn: trạng thái bật/tắt (trái) + nút xoá (phải); số từ đã chuyển lên dải meta */}
+            <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between text-[11px]">
+              <span className={source.active ? 'text-emerald-600 font-medium' : 'text-slate-400'}>
+                {source.active ? '● Đang dùng' : '○ Đang tắt'}
+              </span>
               <button
                 onClick={() => handleDeleteSource(source.id)}
                 className="text-slate-400 hover:text-red-600 transition-colors"
