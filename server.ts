@@ -1256,6 +1256,8 @@ app.post("/api/knowledge/upload-file", async (req, res) => {
         'gemini-flash-latest',
       ]));
       let visionErrMsg = '';
+      let quotaHit = false;
+      let retrySec = 0;
       for (const m of visionModels) {
         try {
           console.log(`[File Upload] Vision thử model ${m} cho ảnh ${cleanName} (${imgMime})...`);
@@ -1271,13 +1273,20 @@ app.post("/api/knowledge/upload-file", async (req, res) => {
         } catch (visionErr: any) {
           visionErrMsg = visionErr?.message || String(visionErr);
           console.warn(`[File Upload] Vision model ${m} lỗi:`, visionErrMsg);
+          // [Fix 429] Hết hạn ngạch: các model khác DÙNG CHUNG quota của project -> thử tiếp vô ích, dừng ngay.
+          if (/429|RESOURCE_EXHAUSTED|quota|rate limit/i.test(visionErrMsg)) {
+            quotaHit = true;
+            const mm = visionErrMsg.match(/retry in ([\d.]+)s/i) || visionErrMsg.match(/"retryDelay"\s*:\s*"(\d+)s"/i);
+            retrySec = mm ? Math.ceil(parseFloat(mm[1] || '0')) : 0;
+            break;
+          }
         }
       }
       if (!extractedText) {
-        res.json({
-          success: false,
-          error: `Không thể phân tích ảnh bằng AI Vision (đã thử: ${visionModels.join(', ')}). ${visionErrMsg ? 'Lỗi: ' + visionErrMsg : 'Model không trả về nội dung — kiểm tra GEMINI_API_KEY và quyền truy cập model.'}`
-        });
+        const friendly = quotaHit
+          ? `⚠️ Đã hết hạn ngạch Gemini (lỗi 429 – RESOURCE_EXHAUSTED). Gói MIỄN PHÍ giới hạn số lượt gọi mỗi ngày/mỗi phút cho mỗi model (ví dụ 20 lượt/ngày). ${retrySec ? `Vui lòng thử lại sau ~${retrySec}s` : 'Vui lòng thử lại sau'}, hoặc nâng cấp gói trả phí / dùng GEMINI_API_KEY khác. (OCR ảnh và PDF scan bắt buộc dùng Gemini nên cùng tiêu hạn ngạch với chat.)`
+          : `Không thể phân tích ảnh bằng AI Vision (đã thử: ${visionModels.join(', ')}). ${visionErrMsg ? 'Lỗi: ' + visionErrMsg : 'Model không trả về nội dung — kiểm tra GEMINI_API_KEY và quyền truy cập model.'}`;
+        res.json({ success: false, error: friendly });
         return;
       }
     } else if (isPdf) {
