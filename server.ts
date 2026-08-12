@@ -1203,6 +1203,76 @@ app.post("/api/knowledge/fetch-api-endpoint", validateBody({ apiUrl: { type: 'st
 // [Giai đoạn 2] Các hàm bóc tách tài liệu (extractDocxText/extractXlsxText/extractTextFromAttachmentData)
 // đã chuyển sang src/server/services/documents.ts.
 
+// [Option B] OCR ảnh DỰ PHÒNG bằng provider Vision khác khi Gemini hết hạn ngạch (429) hoặc lỗi.
+// Chỉ dùng provider có API key trong ENV (không nhận key từ client). Host cố định -> không rủi ro SSRF.
+// Trả { text, provider } nếu đọc được; { error:'no_provider' } nếu không có key nào; hoặc { error } tổng hợp.
+async function ocrImageFallback(
+  fileBase64: string,
+  imgMime: string,
+  prompt: string
+): Promise<{ text?: string; provider?: string; error?: string }> {
+  const dataUrl = `data:${imgMime};base64,${fileBase64}`;
+  const errors: string[] = [];
+
+  // 1) OpenAI (mặc định gpt-4o có Vision; đổi qua OPENAI_VISION_MODEL nếu cần).
+  if (process.env.OPENAI_API_KEY) {
+    try {
+      const model = process.env.OPENAI_VISION_MODEL || 'gpt-4o';
+      console.log(`[File Upload] OCR fallback -> OpenAI (${model})...`);
+      const r = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${process.env.OPENAI_API_KEY}` },
+        body: JSON.stringify({
+          model,
+          temperature: 0.2,
+          messages: [{ role: 'user', content: [
+            { type: 'text', text: prompt },
+            { type: 'image_url', image_url: { url: dataUrl } },
+          ] }],
+        }),
+      });
+      const d: any = await r.json();
+      if (r.ok) {
+        const t = (d?.choices?.[0]?.message?.content || '').trim();
+        if (t) return { text: t, provider: `OpenAI (${model})` };
+        errors.push('OpenAI: phản hồi rỗng');
+      } else {
+        errors.push('OpenAI: ' + (d?.error?.message || `HTTP ${r.status}`));
+      }
+    } catch (e: any) { errors.push('OpenAI: ' + (e?.message || String(e))); }
+  }
+
+  // 2) Anthropic Claude (đặt ANTHROPIC_VISION_MODEL để chọn model Vision hiện hành).
+  if (process.env.ANTHROPIC_API_KEY) {
+    try {
+      const model = process.env.ANTHROPIC_VISION_MODEL || 'claude-3-5-sonnet-20241022';
+      console.log(`[File Upload] OCR fallback -> Anthropic (${model})...`);
+      const r = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01' },
+        body: JSON.stringify({
+          model, max_tokens: 2048, temperature: 0.2,
+          messages: [{ role: 'user', content: [
+            { type: 'image', source: { type: 'base64', media_type: imgMime, data: fileBase64 } },
+            { type: 'text', text: prompt },
+          ] }],
+        }),
+      });
+      const d: any = await r.json();
+      if (r.ok) {
+        const t = (d?.content?.[0]?.text || '').trim();
+        if (t) return { text: t, provider: `Anthropic (${model})` };
+        errors.push('Anthropic: phản hồi rỗng');
+      } else {
+        errors.push('Anthropic: ' + (d?.error?.message || `HTTP ${r.status}`));
+      }
+    } catch (e: any) { errors.push('Anthropic: ' + (e?.message || String(e))); }
+  }
+
+  if (errors.length === 0) return { error: 'no_provider' };
+  return { error: errors.join(' | ') };
+}
+
 // 4. Direct PDF & Document File Upload Endpoint
 app.post("/api/knowledge/upload-file", async (req, res) => {
   try {
@@ -1216,6 +1286,7 @@ app.post("/api/knowledge/upload-file", async (req, res) => {
     const fileBuffer = Buffer.from(fileBase64, 'base64');
     let extractedText = "";
     let pageCount = 1;
+    let imageOcrProvider = 'Gemini Vision'; // [Option B] provider đã OCR ảnh (Gemini hoặc fallback)
 
     console.log(`[File Upload] Processing uploaded file: ${cleanName} (${fileType || 'unknown'}, ${fileBuffer.length} bytes)`);
 
@@ -1283,11 +1354,22 @@ app.post("/api/knowledge/upload-file", async (req, res) => {
         }
       }
       if (!extractedText) {
-        const friendly = quotaHit
-          ? `⚠️ Đã hết hạn ngạch Gemini (lỗi 429 – RESOURCE_EXHAUSTED). Gói MIỄN PHÍ giới hạn số lượt gọi mỗi ngày/mỗi phút cho mỗi model (ví dụ 20 lượt/ngày). ${retrySec ? `Vui lòng thử lại sau ~${retrySec}s` : 'Vui lòng thử lại sau'}, hoặc nâng cấp gói trả phí / dùng GEMINI_API_KEY khác. (OCR ảnh và PDF scan bắt buộc dùng Gemini nên cùng tiêu hạn ngạch với chat.)`
-          : `Không thể phân tích ảnh bằng AI Vision (đã thử: ${visionModels.join(', ')}). ${visionErrMsg ? 'Lỗi: ' + visionErrMsg : 'Model không trả về nội dung — kiểm tra GEMINI_API_KEY và quyền truy cập model.'}`;
-        res.json({ success: false, error: friendly });
-        return;
+        // [Option B] Gemini lỗi/hết quota -> thử provider Vision khác (OpenAI/Anthropic) nếu có API key trong ENV.
+        const fb = await ocrImageFallback(fileBase64, imgMime, visionPrompt);
+        if (fb.text) {
+          extractedText = fb.text;
+          imageOcrProvider = fb.provider || 'provider dự phòng';
+          console.log(`[File Upload] OCR ảnh ${cleanName} dùng fallback ${imageOcrProvider} (Gemini 429/lỗi).`);
+        } else {
+          const friendly = quotaHit
+            ? `⚠️ Đã hết hạn ngạch Gemini (lỗi 429 – RESOURCE_EXHAUSTED). Gói MIỄN PHÍ giới hạn số lượt gọi mỗi ngày/mỗi phút cho mỗi model (ví dụ 20 lượt/ngày). ${retrySec ? `Vui lòng thử lại sau ~${retrySec}s` : 'Vui lòng thử lại sau'}, hoặc nâng cấp gói trả phí / dùng GEMINI_API_KEY khác.`
+            : `Không thể phân tích ảnh bằng AI Vision Gemini (đã thử: ${visionModels.join(', ')}). ${visionErrMsg ? 'Lỗi: ' + visionErrMsg : 'Model không trả về nội dung — kiểm tra GEMINI_API_KEY và quyền truy cập model.'}`;
+          const fbNote = fb.error === 'no_provider'
+            ? ' Chưa cấu hình provider Vision dự phòng — đặt OPENAI_API_KEY (hoặc ANTHROPIC_API_KEY) trên máy chủ để TỰ ĐỘNG chuyển OCR ảnh sang provider đó khi Gemini hết quota.'
+            : (fb.error ? ` | Provider dự phòng cũng lỗi: ${fb.error}` : '');
+          res.json({ success: false, error: friendly + fbNote });
+          return;
+        }
       }
     } else if (isPdf) {
       try {
@@ -1371,7 +1453,7 @@ app.post("/api/knowledge/upload-file", async (req, res) => {
 
     let formattedContent = `=== TÀI LIỆU NẠP TRỰC TIẾP TỪ FILE ===\n`;
     formattedContent += `Tên tệp: ${cleanName}\n`;
-    formattedContent += `Loại tệp: ${isImage ? 'Hình ảnh (phân tích bằng AI Vision)' : isPdf ? 'Tài liệu PDF' : isXlsx ? 'Bảng tính Excel' : isDocx ? 'Tài liệu Word' : 'Tập tin văn bản'}\n`;
+    formattedContent += `Loại tệp: ${isImage ? `Hình ảnh (phân tích bằng ${imageOcrProvider})` : isPdf ? 'Tài liệu PDF' : isXlsx ? 'Bảng tính Excel' : isDocx ? 'Tài liệu Word' : 'Tập tin văn bản'}\n`;
     if (isPdf && pageCount > 1) {
       formattedContent += `Số trang PDF: ${pageCount} trang\n`;
     }
