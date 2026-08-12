@@ -225,7 +225,7 @@ export const StandaloneWidgetChat: React.FC<StandaloneWidgetChatProps> = ({
     if (!messageContent.trim() && attachments.length === 0) return;
 
     const userMessage: ChatMessage = {
-      id: `msg_${Date.now()}`,
+      id: `msg_${Date.now()}_${Math.random().toString(36).slice(2,6)}`,
       sender: 'user',
       text: messageContent.trim(),
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
@@ -265,7 +265,7 @@ export const StandaloneWidgetChat: React.FC<StandaloneWidgetChatProps> = ({
       }
 
       const agentMessage: ChatMessage = {
-        id: `msg_agent_${Date.now()}`,
+        id: `msg_agent_${Date.now()}_${Math.random().toString(36).slice(2,6)}`,
         sender: 'agent',
         text: data.responseText,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
@@ -284,7 +284,7 @@ export const StandaloneWidgetChat: React.FC<StandaloneWidgetChatProps> = ({
         friendly = 'Kết nối đang chập chờn. Quý khách vui lòng kiểm tra mạng và gửi lại tin nhắn ạ.';
       }
       const errorMessage: ChatMessage = {
-        id: `msg_err_${Date.now()}`,
+        id: `msg_err_${Date.now()}_${Math.random().toString(36).slice(2,6)}`,
         sender: 'system',
         text: `⚠️ ${friendly}`,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),

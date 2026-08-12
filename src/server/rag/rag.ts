@@ -26,13 +26,15 @@ export function chunkText(text: string, size = 2200, overlap = 200): string[] {
 }
 
 // Tạo embedding cho 1 đoạn văn bản, có THỬ LẠI khi bị rate limit (429). Trả về mảng EMBED_DIM chiều đã chuẩn hóa, hoặc null.
-export async function embedText(ai: any, text: string, retries = 4): Promise<number[] | null> {
+// [Low] taskType nâng chất lượng truy hồi: câu hỏi dùng RETRIEVAL_QUERY, đoạn tài liệu dùng RETRIEVAL_DOCUMENT
+// (embedding bất đối xứng của Gemini — query và document nhúng khác "vai trò" nhưng khớp nhau tốt hơn).
+export async function embedText(ai: any, text: string, retries = 4, taskType = 'RETRIEVAL_QUERY'): Promise<number[] | null> {
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
       const res: any = await ai.models.embedContent({
         model: EMBED_MODEL,
         contents: text,
-        config: { outputDimensionality: EMBED_DIM },
+        config: { outputDimensionality: EMBED_DIM, taskType },
       });
       let v: any =
         res?.embeddings?.[0]?.values ||
@@ -70,14 +72,14 @@ function normalizeVec(v: any): number[] | null {
 
 // Embedding THEO LÔ: gộp nhiều đoạn vào MỘT request -> giảm mạnh số request (đỡ chạm rate-limit/hạn ngạch) và nhanh hơn.
 // Trả mảng vector (phần tử null nếu 1 đoạn lỗi) nếu thành công; trả null nếu cả lô lỗi/không đúng định dạng -> caller lùi về embed từng đoạn.
-export async function embedTexts(ai: any, texts: string[], retries = 5): Promise<(number[] | null)[] | null> {
+export async function embedTexts(ai: any, texts: string[], retries = 5, taskType = 'RETRIEVAL_DOCUMENT'): Promise<(number[] | null)[] | null> {
   if (!Array.isArray(texts) || texts.length === 0) return [];
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
       const res: any = await ai.models.embedContent({
         model: EMBED_MODEL,
         contents: texts,
-        config: { outputDimensionality: EMBED_DIM },
+        config: { outputDimensionality: EMBED_DIM, taskType },
       });
       const arr: any[] = Array.isArray(res?.embeddings) ? res.embeddings : [];
       if (arr.length !== texts.length) return null; // API không trả đúng số vector -> để caller lùi về cách cũ
@@ -155,7 +157,7 @@ export async function indexKnowledge(
       if (!embs) {
         // Batch lỗi/không được hỗ trợ -> lùi về embed TỪNG đoạn (tuần tự, nhẹ nhàng để tránh rate-limit).
         embs = [];
-        for (const c of batch) embs.push(await embedText(ai, c.text));
+        for (const c of batch) embs.push(await embedText(ai, c.text, 4, 'RETRIEVAL_DOCUMENT')); // đoạn tài liệu
       }
       for (let j = 0; j < batch.length; j++) {
         if (newlyIndexed >= maxChunks) { capReached = true; break; }
@@ -214,10 +216,14 @@ export async function reindexSources(client: any, ai: any, sources: any[], maxCh
   for (const s of (Array.isArray(sources) ? sources : [])) {
     if (!s?.id || !s.content) continue;
     const chunks = chunkText(s.content);
+    // [Low] Cảnh báo khi nguồn lớn bị cắt ở maxChunksPerSource -> phần nội dung sau bị bỏ lập chỉ mục (im lặng trước đây).
+    if (chunks.length > maxChunksPerSource) {
+      console.warn(`[RAG] Nguồn "${s.title || s.id}" có ${chunks.length} đoạn > trần ${maxChunksPerSource}; chỉ lập chỉ mục ${maxChunksPerSource} đoạn đầu, phần còn lại BỎ QUA.`);
+    }
     const rows: any[] = [];
     for (let i = 0; i < chunks.length && rows.length < maxChunksPerSource; i += concurrency) {
       const batch = chunks.slice(i, i + concurrency);
-      const embs = await Promise.all(batch.map((c) => embedText(ai, c)));
+      const embs = await Promise.all(batch.map((c) => embedText(ai, c, 4, 'RETRIEVAL_DOCUMENT'))); // đoạn tài liệu
       for (let j = 0; j < batch.length; j++) {
         const emb = embs[j];
         if (!emb) continue;
@@ -269,7 +275,11 @@ export async function retrieveRelevant(
 ): Promise<Array<{ content: string; source_id: string; similarity: number }> | null> {
   if (!query || !query.trim()) return null;
   const merged = new Map<string, { content: string; source_id: string; similarity: number }>();
-  const keyOf = (r: any) => `${r?.source_id || ''}#${typeof r?.chunk_index === 'number' ? r.chunk_index : (r?.content || '').slice(0, 60)}`;
+  // [Fix M8] Khóa dedupe DÙNG CHUNG cho cả hai nhánh = source_id + hash NỘI DUNG.
+  // Trước đây nhánh vector (RPC không trả chunk_index) khóa theo tiền tố nội dung, còn nhánh keyword
+  // khóa theo chunk_index -> CÙNG một đoạn vào hai khóa khác nhau -> lặp, phí slot & token.
+  // Nội dung của cùng một chunk giống hệt ở cả hai nhánh (cùng cột `content`) nên hash nội dung khớp chắc chắn.
+  const keyOf = (r: any) => `${r?.source_id || ''}#${(r?.content || '').length}:${hashStr(r?.content || '')}`;
 
   // 1) Tìm theo VECTOR (ngữ nghĩa)
   const emb = await embedText(ai, query);
@@ -303,8 +313,12 @@ export async function retrieveRelevant(
     console.warn('[RAG] keyword retrieve error:', e?.message || e);
   }
 
-  // Nếu cả hai đều không trả về gì và vector cũng lỗi (emb null) -> báo null để caller fallback về full KB.
-  if (merged.size === 0 && !emb) return null;
+  // [Fix M10] Nếu KHÔNG embed được câu hỏi (emb null, thường do 429/hết hạn ngạch) -> KHÔNG tin nhánh keyword đơn lẻ:
+  // trả null để caller fallback về TOÀN BỘ KB. Trước đây khi emb null nhưng keyword bắt được vài dòng, hàm trả
+  // keyword-only, caller coi là "có hit" và thay TOÀN BỘ KB bằng vài dòng đó -> mất gần hết ngữ cảnh chỉ vì lỗi tạm thời.
+  if (!emb) return null;
+  // Vector chạy được nhưng cả hai nhánh đều rỗng -> cũng để caller dùng full KB.
+  if (merged.size === 0) return null;
   // Ưu tiên similarity cao trước; giới hạn tổng số đoạn để kiểm soát token.
   return Array.from(merged.values())
     .sort((a, b) => (b.similarity || 0) - (a.similarity || 0))

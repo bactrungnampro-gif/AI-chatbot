@@ -176,8 +176,10 @@ app.post("/api/rag/index", asyncHandler(async (_req, res) => {
   if (!process.env.GEMINI_API_KEY) {
     return res.status(400).json({ error: "Cần GEMINI_API_KEY trên máy chủ để tạo embeddings." });
   }
-  if (ragIndexing) {
-    return res.status(202).json({ started: false, message: "Đang lập chỉ mục, vui lòng đợi...", progress: ragProgress });
+  // [Low] Cũng chặn khi AUTO-INDEX đang chạy: trước đây chỉ kiểm `ragIndexing` -> manual có thể chạy song song
+  // với auto (ragAutoRunning) và cùng ghi `kb_chunks` -> tranh chấp/ghi trùng. Kiểm cả hai cờ.
+  if (ragIndexing || ragAutoRunning) {
+    return res.status(202).json({ started: false, message: "Đang lập chỉ mục (tự động hoặc thủ công), vui lòng đợi...", progress: ragProgress });
   }
 
   ragIndexing = true;
@@ -844,6 +846,32 @@ app.post("/api/knowledge/scrape", validateBody({ url: { type: 'string', required
 
 // --- GOOGLE SHEETS & GOOGLE DRIVE & CUSTOM REST API INTEGRATION ENDPOINTS ---
 
+// [Fix M11] Bộ parse CSV chuẩn (RFC-4180): xử lý ĐÚNG ô có dấu phẩy/xuống dòng/ngoặc kép bên trong ("...").
+// Trước đây split(',')/split('\n') thô làm lệch cột hoặc vỡ dòng khi ô chứa các ký tự này.
+function parseCsv(text: string): string[][] {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let field = '';
+  let inQuotes = false;
+  const s = (text || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (inQuotes) {
+      if (c === '"') {
+        if (s[i + 1] === '"') { field += '"'; i++; } // "" -> dấu ngoặc kép thoát
+        else inQuotes = false;
+      } else field += c;
+    } else {
+      if (c === '"') inQuotes = true;
+      else if (c === ',') { row.push(field); field = ''; }
+      else if (c === '\n') { row.push(field); rows.push(row); row = []; field = ''; }
+      else field += c;
+    }
+  }
+  if (field.length > 0 || row.length > 0) { row.push(field); rows.push(row); }
+  return rows;
+}
+
 async function fetchGoogleSheetHelper(sheetUrl: string, sheetName?: string) {
   if (!sheetUrl || typeof sheetUrl !== "string") {
     return { success: false, error: "Vui lòng nhập URL Google Sheet hợp lệ." };
@@ -881,22 +909,23 @@ async function fetchGoogleSheetHelper(sheetUrl: string, sheetName?: string) {
     };
   }
 
-  const lines = csvText.split('\n').filter(l => l.trim().length > 0);
-  if (lines.length === 0) {
+  // [Fix M11] Dùng parser CSV chuẩn + bỏ hàng rỗng (thay cho split thô làm lệch cột khi ô có dấu phẩy/xuống dòng).
+  const allRows = parseCsv(csvText).filter((r) => r.some((c) => (c || '').trim().length > 0));
+  if (allRows.length === 0) {
     return { success: false, error: "Google Sheet trống hoặc không chứa dữ liệu." };
   }
 
-  const headers = lines[0].split(',').map(h => h.replace(/^"|"$/g, '').trim());
+  const headers = allRows[0].map((h) => (h || '').trim());
+  const dataRows = allRows.slice(1);
   let formattedData = `=== DỮ LIỆU ĐỒNG BỘ TỪ GOOGLE SHEETS ===\n`;
   formattedData += `Nguồn bảng tính: ${sheetUrl}\n`;
-  formattedData += `Số dòng dữ liệu: ${lines.length - 1}\n\n`;
+  formattedData += `Số dòng dữ liệu: ${dataRows.length}\n\n`;
   formattedData += `BẢNG CỘT THÔNG TIN: ${headers.join(' | ')}\n\n`;
 
-  lines.slice(1).forEach((line, index) => {
-    const cells = line.split(',').map(c => c.replace(/^"|"$/g, '').trim());
+  dataRows.forEach((cells, index) => {
     formattedData += `--- HÀNG ${index + 1} ---\n`;
     headers.forEach((header, hIdx) => {
-      const val = cells[hIdx] || "N/A";
+      const val = (cells[hIdx] || '').trim() || "N/A";
       formattedData += `• ${header || `Cột ${hIdx + 1}`}: ${val}\n`;
     });
     formattedData += `\n`;
@@ -906,11 +935,11 @@ async function fetchGoogleSheetHelper(sheetUrl: string, sheetName?: string) {
 
   return {
     success: true,
-    title: `Google Sheet: ${sheetTitle} (${lines.length - 1} dòng)`,
+    title: `Google Sheet: ${sheetTitle} (${dataRows.length} dòng)`,
     url: sheetUrl,
     content: formattedData,
     wordCount: wordCount,
-    rowCount: lines.length - 1
+    rowCount: dataRows.length
   };
 }
 
@@ -2275,36 +2304,50 @@ function verifyState(state: string): any | null {
   }
 }
 
+// [Low] Khóa in-flight theo userKey: nhiều request đồng thời cùng thấy token sắp hết hạn sẽ CHỈ refresh một lần
+// (tránh gọi refresh trùng lặp — Google có thể thu hồi refresh_token khi bị gọi dồn dập).
+const googleRefreshInFlight = new Map<string, Promise<string | null>>();
+
 async function getValidGoogleAccessToken(userKey: string) {
   const session = serverGoogleSessions[userKey];
   if (!session || !session.tokens) return null;
   const { access_token, refresh_token, expiry_date } = session.tokens;
 
   if (expiry_date && Date.now() >= expiry_date - 60000 && refresh_token) {
-    try {
-      const clientId = process.env.GOOGLE_WORKSPACE_CLIENT_ID;
-      const clientSecret = process.env.GOOGLE_WORKSPACE_CLIENT_SECRET;
-      const res = await fetch('https://oauth2.googleapis.com/token', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: new URLSearchParams({
-          client_id: clientId || '',
-          client_secret: clientSecret || '',
-          refresh_token: refresh_token,
-          grant_type: 'refresh_token',
-        }),
-      });
-      const data = await res.json();
-      if (data.access_token) {
-        session.tokens.access_token = data.access_token;
-        if (data.expires_in) {
-          session.tokens.expiry_date = Date.now() + data.expires_in * 1000;
+    const existing = googleRefreshInFlight.get(userKey);
+    if (existing) return existing; // đã có một lượt refresh đang chạy -> dùng chung kết quả
+
+    const p = (async () => {
+      try {
+        const clientId = process.env.GOOGLE_WORKSPACE_CLIENT_ID;
+        const clientSecret = process.env.GOOGLE_WORKSPACE_CLIENT_SECRET;
+        const res = await fetch('https://oauth2.googleapis.com/token', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({
+            client_id: clientId || '',
+            client_secret: clientSecret || '',
+            refresh_token: refresh_token,
+            grant_type: 'refresh_token',
+          }),
+        });
+        const data = await res.json();
+        if (data.access_token) {
+          session.tokens.access_token = data.access_token;
+          if (data.expires_in) {
+            session.tokens.expiry_date = Date.now() + data.expires_in * 1000;
+          }
+          return data.access_token as string;
         }
-        return data.access_token;
+      } catch (e) {
+        console.error("Failed to refresh Google OAuth token", e);
       }
-    } catch (e) {
-      console.error("Failed to refresh Google OAuth token", e);
-    }
+      return session.tokens.access_token || access_token || null;
+    })();
+
+    googleRefreshInFlight.set(userKey, p);
+    p.finally(() => { googleRefreshInFlight.delete(userKey); });
+    return p;
   }
   return access_token;
 }
@@ -2482,6 +2525,12 @@ async function loadStoreFromSupabase() {
 // Có chống hammer: chỉ đọc bảng tối đa mỗi 15 giây (hoặc khi bộ nhớ trống).
 let knowledgeHydrating: Promise<void> | null = null;
 let lastKnowledgeRefreshAt = 0;
+// [Fix M1] Tải theo DELTA: sau lần tải đầy đủ đầu tiên, các lần làm mới chỉ kéo hàng có `updated_at` MỚI HƠN
+// mốc đã thấy -> không kéo lại vài MB content mỗi 15s. Định kỳ (FULL_REFRESH_MS) tải đầy đủ lại để bắt kịp
+// xóa từ instance khác (trên Render 1 instance thì instance tự cập nhật bộ nhớ khi xóa nên không thiếu).
+let lastHydrateMaxUpdatedAt: string | null = null; // updated_at lớn nhất đã nạp (ISO)
+let lastFullHydrateAt = 0;
+const FULL_REFRESH_MS = 5 * 60 * 1000;
 
 // [Chống trùng] Gom các nguồn có CÙNG URL (bản trùng do id cũ kèm Date.now()): giữ bản MỚI NHẤT,
 // xóa các bản trùng cũ khỏi Supabase (+ chunk RAG) để không tái xuất hiện khi hydrate lần sau.
@@ -2492,8 +2541,12 @@ async function dedupeKnowledgeByUrl(client: any, tableName: string) {
     for (const s of list) {
       const u = ((s && (s.url || s.sheetUrl)) || '').trim();
       if (!u) continue; // chỉ gom khi có URL thật (bỏ qua tài liệu/faq không có URL)
-      if (!groups.has(u)) groups.set(u, []);
-      groups.get(u)!.push(s);
+      // [Fix M2] Khóa gom = URL + LOẠI. Trước đây chỉ theo URL -> hai nguồn KHÁC LOẠI cùng base URL
+      // (ví dụ trang web nhập kiểu 'website' và cùng URL nhập kiểu 'faq') bị coi là trùng và XÓA CỨNG nhầm một cái.
+      // Chỉ những bản THỰC SỰ trùng (cùng URL + cùng loại, do quét lại) mới bị gộp.
+      const key = u + '|' + ((s && s.type) || 'website');
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key)!.push(s);
     }
     const loserIds: string[] = [];
     for (const arr of groups.values()) {
@@ -2530,13 +2583,19 @@ async function ensureKnowledgeLoaded() {
   knowledgeHydrating = (async () => {
     let ok = false;
     try {
-      const queryPromise = client.from(tableName).select('*');
+      // [Fix M1] Chọn chế độ: FULL khi bộ nhớ trống, chưa từng nạp, hoặc đã tới hạn làm mới đầy đủ; ngược lại DELTA.
+      const needFull = empty || !lastHydrateMaxUpdatedAt || (Date.now() - lastFullHydrateAt) > FULL_REFRESH_MS;
+      let query = client.from(tableName).select('*');
+      if (!needFull && lastHydrateMaxUpdatedAt) {
+        query = query.gt('updated_at', lastHydrateMaxUpdatedAt); // chỉ hàng đổi sau mốc -> nhẹ
+      }
       const timeoutPromise = new Promise((_, reject) =>
         setTimeout(() => reject(new Error("Supabase query timeout (20s)")), 20000)
       );
-      const { data, error }: any = await Promise.race([queryPromise, timeoutPromise]);
+      const { data, error }: any = await Promise.race([query, timeoutPromise]);
       if (!error && Array.isArray(data)) {
         // Union theo id: giữ mục client-only trong bộ nhớ, ghi đè bằng bản trong bảng (đã lưu, đầy đủ content).
+        // Ở chế độ DELTA, các hàng KHÔNG đổi không nằm trong `data` -> giữ nguyên bản trong bộ nhớ (còn content).
         const byId = new Map<string, any>();
         for (const s of (Array.isArray(serverKnowledgeSources) ? serverKnowledgeSources : [])) {
           if (s && s.id) byId.set(s.id, s);
@@ -2553,13 +2612,20 @@ async function ensureKnowledgeLoaded() {
             active: item.active !== false,
             updatedAt: item.updated_at,
           });
+          // Theo dõi updated_at lớn nhất để lần sau chỉ kéo delta.
+          if (item.updated_at && (!lastHydrateMaxUpdatedAt || item.updated_at > lastHydrateMaxUpdatedAt)) {
+            lastHydrateMaxUpdatedAt = item.updated_at;
+          }
         }
         serverKnowledgeSources = Array.from(byId.values());
-        await dedupeKnowledgeByUrl(client, tableName); // [Chống trùng] dọn bản trùng cùng URL
+        if (needFull) {
+          lastFullHydrateAt = Date.now();
+          await dedupeKnowledgeByUrl(client, tableName); // [Chống trùng] chỉ dọn khi tải đầy đủ (thấy toàn bộ)
+        }
         primeKnowledgeSyncSig(serverKnowledgeSources);
         lastKnowledgeRefreshAt = Date.now();
         ok = true;
-        console.log(`⚡ [SupabaseStore] Hydrated/merged ${data.length} rows từ bảng -> tổng ${serverKnowledgeSources.length} nguồn.`);
+        console.log(`⚡ [SupabaseStore] Hydrate ${needFull ? 'FULL' : 'DELTA'}: ${data.length} rows -> tổng ${serverKnowledgeSources.length} nguồn.`);
       } else if (error) {
         console.warn("⚠️ [SupabaseStore] Hydrate error:", error.message);
       }
@@ -2734,8 +2800,8 @@ async function loadServerStore() {
   await loadStoreFromSupabase();
 }
 
-function saveServerStore() {
-  const data = {
+function buildStoreSnapshot() {
+  return {
     agentConfig: serverAgentConfig,
     widgetSettings: serverWidgetSettings,
     knowledgeSources: serverKnowledgeSources,
@@ -2743,18 +2809,40 @@ function saveServerStore() {
     googleSessions: serverGoogleSessions,
     updatedAt: new Date().toISOString(),
   };
+}
 
+function writeStoreFile(data: any) {
   try {
     fs.writeFileSync(STORE_FILE, JSON.stringify(data, null, 2), 'utf-8');
   } catch (e) {
     console.warn("⚠️ [ServerStore] Failed to save server_store.json:", e);
   }
+}
 
+function saveServerStore() {
+  const data = buildStoreSnapshot();
+  writeStoreFile(data);
   // [SEC-08] Không còn ghi credential Supabase ra .env lúc runtime; cấu hình Supabase chỉ qua env.
-
-  // Asynchronously persist to Firestore REST and Supabase
+  // Đường "bắn-và-quên" cho các hot-path không cần chờ (đã .catch để không rò unhandledRejection).
   saveStoreToFirestoreRest(data);
-  saveStoreToSupabase(data);
+  saveStoreToSupabase(data).catch((e: any) =>
+    console.warn("⚠️ [ServerStore] Async Supabase persist error:", e?.message || e)
+  );
+}
+
+// [Fix M4] Biến thể CÓ CHỜ: dùng cho endpoint mà việc mất-ghi-âm-thầm là nghiêm trọng
+// (xóa nguồn, người dùng bấm "Đồng bộ") -> await ghi Supabase và TRẢ trạng thái thật để client biết.
+async function saveServerStoreAsync(): Promise<{ synced: boolean; error?: string }> {
+  const data = buildStoreSnapshot();
+  writeStoreFile(data);
+  saveStoreToFirestoreRest(data); // legacy best-effort, không chặn
+  try {
+    const r: any = await saveStoreToSupabase(data);
+    const error = r?.error || r?.appConfigError || r?.ksError || undefined;
+    return { synced: !!r?.synced, error: error || undefined };
+  } catch (e: any) {
+    return { synced: false, error: e?.message || String(e) };
+  }
 }
 
 // --- GOOGLE OAUTH 2.0 ROUTING ---
@@ -3057,12 +3145,15 @@ app.post("/api/google/drive/import", async (req, res) => {
     } else {
       serverKnowledgeSources.push(newKnowledge);
     }
-    saveServerStore();
+    // [Fix M4] Chờ ghi Supabase và báo trạng thái thật -> nếu ghi lỗi, client biết (tránh mất nguồn mới âm thầm khi redeploy).
+    const persist = await saveServerStoreAsync();
 
     res.json({
       success: true,
       knowledgeSource: newKnowledge,
       textLength: extractedText.length,
+      persisted: persist.synced,
+      ...(persist.synced ? {} : { warning: "Đã lưu trên máy chủ nhưng CHƯA ghi được vào Supabase: " + (persist.error || 'không rõ') + ". Nguồn có thể mất khi máy chủ khởi động lại." }),
     });
   } catch (e: any) {
     res.status(500).json({ error: e.message || "Lỗi nạp tệp từ Google Drive" });
@@ -3250,8 +3341,13 @@ app.post("/api/supabase/sync", async (req, res) => {
     }
 
     // Update server memory if client passed fresher state
+    // [Fix M3] HỢP NHẤT (union theo id) thay vì THAY THẾ: một client có danh sách cũ/thiếu bấm "Đồng bộ"
+    // không được phép cắt kho về tập con (mất dữ liệu). Xóa mục làm qua /api/knowledge/delete-source.
     if (Array.isArray(knowledgeSources) && knowledgeSources.length > 0) {
-      serverKnowledgeSources = knowledgeSources;
+      const byId = new Map<string, any>();
+      for (const s of (serverKnowledgeSources || [])) if (s && s.id) byId.set(s.id, s);
+      for (const s of knowledgeSources) if (s && s.id) byId.set(s.id, s); // client mới nhất thắng cho mục nó có
+      serverKnowledgeSources = Array.from(byId.values());
     }
     if (agentConfig && typeof agentConfig === 'object') {
       serverAgentConfig = stripAiSecrets({ ...(serverAgentConfig || {}), ...agentConfig });

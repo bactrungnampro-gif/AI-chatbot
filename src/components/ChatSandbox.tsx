@@ -102,7 +102,7 @@ export const ChatSandbox: React.FC<ChatSandboxProps> = ({
     if (!messageContent.trim() && attachments.length === 0) return;
 
     const userMessage: ChatMessage = {
-      id: `msg_${Date.now()}`,
+      id: `msg_${Date.now()}_${Math.random().toString(36).slice(2,6)}`,
       sender: 'user',
       text: messageContent.trim(),
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
@@ -139,7 +139,7 @@ export const ChatSandbox: React.FC<ChatSandboxProps> = ({
       }
 
       const agentMessage: ChatMessage = {
-        id: `msg_agent_${Date.now()}`,
+        id: `msg_agent_${Date.now()}_${Math.random().toString(36).slice(2,6)}`,
         sender: 'agent',
         text: data.responseText,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
@@ -150,7 +150,7 @@ export const ChatSandbox: React.FC<ChatSandboxProps> = ({
     } catch (err: any) {
       console.error('Chat error:', err);
       const errorMessage: ChatMessage = {
-        id: `msg_err_${Date.now()}`,
+        id: `msg_err_${Date.now()}_${Math.random().toString(36).slice(2,6)}`,
         sender: 'system',
         text: `⚠️ Khổng thể kết nối với Agent: ${err.message || 'Lỗi mạng'}. Vui lòng kiểm tra lại cấu hình API.`,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
