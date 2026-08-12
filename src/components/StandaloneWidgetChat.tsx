@@ -16,6 +16,14 @@ import { AgentConfig, Attachment, ChatMessage, KnowledgeSource, ProductItem, Wid
 import { FormattedMessage } from './FormattedMessage';
 import { fetchWithTimeout } from '../lib/fetchWithTimeout';
 
+// [Bước 4] Các câu "tiếp nhận" hiện ngay khi khách gửi (xoay vòng cho đỡ lặp) -> khách không thấy trạng thái chờ vô hồn.
+const ACK_LINES = [
+  'Dạ em nhận được thông tin rồi ạ! Anh/Chị chờ em một chút, em phản hồi ngay ạ. 😊',
+  'Dạ vâng, để em xem giúp mình ngay đây ạ, Anh/Chị đợi em xíu nhé!',
+  'Dạ em đã nhận ạ! Em tìm thông tin cho mình trong giây lát, Anh/Chị chờ em chút xíu nha.',
+  'Dạ em ghi nhận rồi ạ, Anh/Chị vui lòng đợi em một lát, em trả lời ngay ạ. 🌸',
+];
+
 interface StandaloneWidgetChatProps {
   agentConfig: AgentConfig;
   knowledgeSources: KnowledgeSource[];
@@ -101,6 +109,9 @@ export const StandaloneWidgetChat: React.FC<StandaloneWidgetChatProps> = ({
   const chatContainerRef = useRef<HTMLDivElement>(null);
   // [Bước 4 - streaming] Bộ đếm giờ cho hiệu ứng "gõ chữ dần" của câu trả lời agent.
   const typingTimerRef = useRef<any>(null);
+  // [Bước 4] Bong bóng "tiếp nhận" hiện NGAY khi khách gửi, sau đó biến thành câu trả lời thật.
+  const pendingAckIdRef = useRef<string>('');
+  const ackCounterRef = useRef<number>(0);
   const [showScrollBtn, setShowScrollBtn] = useState(false);
 
   // Hiện nút "xuống cuối" khi khách cuộn LÊN xem lịch sử; ẩn khi đã ở gần cuối.
@@ -134,12 +145,12 @@ export const StandaloneWidgetChat: React.FC<StandaloneWidgetChatProps> = ({
   useEffect(() => {
     // [Bước 4 - streaming] Khi có tin đang "gõ dần" -> BỎ QUA việc lưu (tránh ghi localStorage ~55 lần/câu).
     // Lần cập nhật cuối (khi gõ xong) không còn cờ _typing nên sẽ lưu bản đầy đủ như bình thường.
-    if (messages.some((m) => (m as any)._typing)) return;
+    if (messages.some((m) => (m as any)._typing || (m as any)._pending)) return;
     // [Fix M15] Chỉ lưu ~60 tin gần nhất và LOẠI base64 (dataUrl) đính kèm khỏi localStorage
     // (tránh vượt hạn ngạch localStorage khiến không lưu được gì; ảnh phiên hiện tại vẫn hiện trong RAM).
     const persistMessages = (msgs: ChatMessage[]) =>
       msgs.slice(-60).map((m) => {
-        const { _full, _typing, ...clean } = m as any; // không lưu trường nội bộ của hiệu ứng gõ
+        const { _full, _typing, _ack, _pending, ...clean } = m as any; // không lưu trường nội bộ (hiệu ứng gõ / tiếp nhận)
         return clean.attachments && clean.attachments.length > 0
           ? { ...clean, attachments: clean.attachments.map((a: any) => ({ ...a, dataUrl: undefined })) }
           : clean;
@@ -187,20 +198,8 @@ export const StandaloneWidgetChat: React.FC<StandaloneWidgetChatProps> = ({
     setMessages((prev) => prev.map((m) => (m as any)._full ? { ...m, text: (m as any)._full, _full: undefined, _typing: undefined } as any : m));
   };
 
-  // [Bước 4 - streaming] Thêm câu trả lời agent nhưng HIỆN DẦN từng cụm chữ như đang gõ.
-  // Máy chủ đã trả về văn bản HOÀN CHỈNH (đã lọc link/kiểm duyệt) -> ở đây chỉ là hiệu ứng hiển thị, an toàn tuyệt đối.
-  const revealAgentMessage = (msg: ChatMessage) => {
-    const full = msg.text || '';
-    // Nếu tắt hiệu ứng hoặc câu ngắn -> hiện luôn.
-    const enabled = (currentAgent as any)?.typingEffect !== false;
-    if (!enabled || full.length < 12) {
-      setMessages((prev) => [...prev, msg]);
-      return;
-    }
-    // Đưa vào với text rỗng, giữ nội dung đầy đủ ở _full để có thể "nhảy cóc" khi cần.
-    const seed: any = { ...msg, text: '', _full: full, _typing: true };
-    setMessages((prev) => [...prev, seed]);
-
+  // [Bước 4 - streaming] Chạy hiệu ứng gõ chữ cho MỘT bong bóng có sẵn (theo id).
+  const startTyping = (id: string, full: string) => {
     if (typingTimerRef.current) { clearInterval(typingTimerRef.current); typingTimerRef.current = null; }
     let shown = 0;
     // Tổng thời lượng ~1.1s bất kể độ dài (bước nhảy theo độ dài) -> câu dài không gõ lê thê.
@@ -208,14 +207,46 @@ export const StandaloneWidgetChat: React.FC<StandaloneWidgetChatProps> = ({
     typingTimerRef.current = setInterval(() => {
       shown = Math.min(full.length, shown + step);
       const slice = full.slice(0, shown);
-      setMessages((prev) => prev.map((m) => (m.id === msg.id ? { ...m, text: slice } as any : m)));
+      setMessages((prev) => prev.map((m) => (m.id === id ? { ...m, text: slice } as any : m)));
       if (shown % (step * 6) === 0) scrollToBottom('auto');
       if (shown >= full.length) {
         clearInterval(typingTimerRef.current);
         typingTimerRef.current = null;
-        setMessages((prev) => prev.map((m) => (m.id === msg.id ? { ...m, text: full, _full: undefined, _typing: undefined } as any : m)));
+        setMessages((prev) => prev.map((m) => (m.id === id ? { ...m, text: full, _full: undefined, _typing: undefined } as any : m)));
       }
     }, 20);
+  };
+
+  // [Bước 4] Giao câu trả lời thật: BIẾN bong bóng "tiếp nhận" (nếu có) thành câu trả lời, kèm hiệu ứng gõ chữ.
+  // Máy chủ đã trả về văn bản HOÀN CHỈNH (đã lọc link/kiểm duyệt) -> đây chỉ là hiển thị, an toàn tuyệt đối.
+  const deliverAgentAnswer = (fullText: string, clarificationAsked?: boolean) => {
+    const full = fullText || '';
+    const enabled = (currentAgent as any)?.typingEffect !== false && full.length >= 12;
+    const ackId = pendingAckIdRef.current;
+    pendingAckIdRef.current = '';
+
+    if (ackId) {
+      // Tái sử dụng bong bóng tiếp nhận -> khung chat sạch, không thêm bong bóng mới.
+      if (!enabled) {
+        setMessages((prev) => prev.map((m) => (m.id === ackId
+          ? { ...m, text: full, clarificationAsked, _ack: undefined, _pending: undefined, _full: undefined, _typing: undefined } as any : m)));
+        return;
+      }
+      setMessages((prev) => prev.map((m) => (m.id === ackId
+        ? { ...m, text: '', clarificationAsked, _ack: undefined, _pending: undefined, _full: full, _typing: true } as any : m)));
+      startTyping(ackId, full);
+      return;
+    }
+
+    // Không có bong bóng tiếp nhận (trường hợp hiếm) -> thêm bong bóng mới.
+    const id = `msg_agent_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    const base: any = {
+      id, sender: 'agent', clarificationAsked,
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    };
+    if (!enabled) { setMessages((prev) => [...prev, { ...base, text: full }]); return; }
+    setMessages((prev) => [...prev, { ...base, text: '', _full: full, _typing: true }]);
+    startTyping(id, full);
   };
 
   // Dọn bộ đếm giờ khi rời màn hình.
@@ -301,7 +332,22 @@ export const StandaloneWidgetChat: React.FC<StandaloneWidgetChatProps> = ({
       attachments: [...attachments],
     };
 
-    setMessages((prev) => [...prev, userMessage]);
+    // [Bước 4] Hiện NGAY một bong bóng "tiếp nhận" (thay cho trạng thái chờ vô hồn).
+    // Khi có câu trả lời thật, chính bong bóng này sẽ biến thành câu trả lời (deliverAgentAnswer).
+    const ackId = `msg_ack_${Date.now()}`;
+    pendingAckIdRef.current = ackId;
+    const ackText = ACK_LINES[ackCounterRef.current % ACK_LINES.length];
+    ackCounterRef.current++;
+    const ackMsg: any = {
+      id: ackId,
+      sender: 'agent',
+      text: ackText,
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      _ack: true,
+      _pending: true,
+    };
+
+    setMessages((prev) => [...prev, userMessage, ackMsg]);
     setInputText('');
     const currentAttachments = [...attachments];
     setAttachments([]);
@@ -334,15 +380,8 @@ export const StandaloneWidgetChat: React.FC<StandaloneWidgetChatProps> = ({
         throw new Error(errorText);
       }
 
-      const agentMessage: ChatMessage = {
-        id: `msg_agent_${Date.now()}_${Math.random().toString(36).slice(2,6)}`,
-        sender: 'agent',
-        text: data.responseText,
-        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        clarificationAsked: data.clarificationAsked,
-      };
-
-      revealAgentMessage(agentMessage);
+      // [Bước 4] Biến bong bóng "tiếp nhận" thành câu trả lời thật (kèm hiệu ứng gõ chữ).
+      deliverAgentAnswer(data.responseText, data.clarificationAsked);
     } catch (err: any) {
       console.error('Widget Chat error:', err);
       // KHONG pho bay loi ky thuat cho khach -> thong bao than thien; chi tiet log o console.
@@ -359,7 +398,10 @@ export const StandaloneWidgetChat: React.FC<StandaloneWidgetChatProps> = ({
         text: `⚠️ ${friendly}`,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       };
-      setMessages((prev) => [...prev, errorMessage]);
+      // [Bước 4] Bỏ bong bóng "tiếp nhận" đang chờ (nếu có) rồi hiện thông báo lỗi -> không để lại lời hứa "phản hồi ngay" cụt.
+      const ackId = pendingAckIdRef.current;
+      pendingAckIdRef.current = '';
+      setMessages((prev) => [...prev.filter((m) => m.id !== ackId), errorMessage]);
     } finally {
       setIsLoading(false);
     }
@@ -534,8 +576,8 @@ export const StandaloneWidgetChat: React.FC<StandaloneWidgetChatProps> = ({
           </div>
         ))}
 
-        {/* Loading Indicator */}
-        {isLoading && (
+        {/* Loading Indicator — ẩn khi đã có bong bóng "tiếp nhận"/đang gõ (tránh trùng lặp trạng thái chờ) */}
+        {isLoading && !messages.some((m) => (m as any)._pending || (m as any)._typing) && (
           <div className="flex items-center gap-2 text-slate-500 text-xs py-2">
             {avatarUrl ? (
               <img
