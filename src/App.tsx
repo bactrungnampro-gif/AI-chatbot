@@ -6,6 +6,7 @@ import { ProductCatalog } from './components/ProductCatalog';
 import { AgentPersonaConfig } from './components/AgentPersonaConfig';
 import { IntegrationWidget } from './components/IntegrationWidget';
 import { ConversationHistory } from './components/ConversationHistory';
+import { SalesInbox } from './components/SalesInbox';
 import { StandaloneWidgetChat } from './components/StandaloneWidgetChat';
 
 import {
@@ -425,6 +426,10 @@ export default function App() {
             setWidgetSettings={setWidgetSettings}
           />
           )
+        )}
+
+        {activeTab === 'inbox' && (
+          <SalesInbox />
         )}
 
         {activeTab === 'history' && (

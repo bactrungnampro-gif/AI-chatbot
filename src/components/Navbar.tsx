@@ -10,7 +10,8 @@ import {
   Sparkles,
   ExternalLink,
   ShieldCheck,
-  FileText
+  FileText,
+  Inbox
 } from 'lucide-react';
 
 interface NavbarProps {
@@ -32,6 +33,7 @@ export const Navbar: React.FC<NavbarProps> = ({
     { id: 'products', label: 'Danh Mục Sản Phẩm', icon: ShoppingBag },
     { id: 'persona', label: 'Cấu Hình Agent & Qui Tắc', icon: Sliders },
     { id: 'integration', label: 'Tích Hợp Website Widget', icon: Code2 },
+    { id: 'inbox', label: 'Lead & Hội Thoại Khách', icon: Inbox },
     { id: 'history', label: 'Lịch Sử & Nhật Ký', icon: History },
   ];
 
