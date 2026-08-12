@@ -1230,6 +1230,13 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
     );
   };
 
+  // [#1] Bật/tắt "Ưu tiên như FAQ" cho một nguồn bất kỳ (kể cả CSV/Google Sheet) -> đưa vào khối ưu tiên đáp án.
+  const toggleFaqPriority = (id: string) => {
+    setKnowledgeSources((prev) =>
+      prev.map((item) => (item.id === id ? ({ ...item, faqPriority: !(item as any).faqPriority } as any) : item))
+    );
+  };
+
   // Delete Knowledge item — PHẢI xóa trên máy chủ + Supabase, nếu không redeploy/đồng bộ sẽ khiến mục quay lại.
   const handleDeleteSource = async (id: string) => {
     if (!window.confirm('Bạn có chắc chắn muốn xoá mục tri thức này?')) return;
@@ -2562,6 +2569,20 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
                     )}
                   </button>
                 )}
+
+                {/* [#1] Đánh dấu "Ưu tiên như FAQ" -> nội dung nguồn này luôn được đưa vào khối ưu tiên đáp án của agent */}
+                <button
+                  type="button"
+                  onClick={() => toggleFaqPriority(source.id)}
+                  title="Khi bật: nội dung nguồn này (kể cả CSV/Google Sheet) luôn nằm trong prompt và được ưu tiên khớp câu hỏi khách."
+                  className={`w-full py-1.5 px-3 rounded-xl text-[11px] font-semibold transition-colors flex items-center justify-center gap-1.5 border ${
+                    (source as any).faqPriority
+                      ? 'bg-amber-500 text-white border-amber-500 hover:bg-amber-600'
+                      : 'bg-white text-slate-600 border-slate-200/80 hover:bg-amber-50 hover:text-amber-700'
+                  }`}
+                >
+                  <span>{(source as any).faqPriority ? '⭐ Đang ưu tiên như FAQ' : '☆ Ưu tiên như FAQ'}</span>
+                </button>
               </div>
 
               {/* [UX #4] Auto-sync THU GỌN: hàng tóm tắt luôn hiện (bật/tắt + chu kỳ); bấm để mở chi tiết */}

@@ -2259,8 +2259,9 @@ app.post("/api/chat", async (req, res) => {
     const FAQ_MAX_CHARS = parseInt(process.env.FAQ_MAX_CONTEXT_CHARS || '12000', 10);
     let faqContext = '';
     try {
+      // [#1] Gồm cả nguồn loại 'faq' LẪN nguồn được đánh dấu "Ưu tiên như FAQ" (faqPriority) — vd CSV/Google Sheet.
       const faqSources = (Array.isArray(filteredKnowledgeSources) ? filteredKnowledgeSources : [])
-        .filter((k: any) => k && k.active !== false && k.type === 'faq' && k.content);
+        .filter((k: any) => k && k.active !== false && k.content && (k.type === 'faq' || k.faqPriority === true));
       const parts: string[] = [];
       let total = 0;
       for (const k of faqSources) {
@@ -2529,6 +2530,7 @@ function knowledgeMetaOnly(sources: any[]): any[] {
     url: s.url || '',
     wordCount: s.wordCount || 0,
     active: s.active !== false,
+    faqPriority: s.faqPriority === true, // [#1] cờ "Ưu tiên như FAQ" (lưu trong metadata JSON, không cần đổi schema)
     subPages: s.subPages || undefined,
     createdAt: s.createdAt,
     updatedAt: s.updatedAt,
@@ -2744,6 +2746,9 @@ async function ensureKnowledgeLoaded() {
         }
         for (const item of data) {
           if (!item || !item.id) continue;
+          // [#1] Giữ lại cờ faqPriority từ bản trong bộ nhớ (nạp từ app_config metadata) khi ghi đè bằng hàng bảng
+          // (bảng chỉ có content/metadata cơ bản, không có faqPriority) -> cờ không bị mất sau mỗi lần hydrate.
+          const prevFaq = byId.get(item.id)?.faqPriority === true;
           byId.set(item.id, {
             id: item.id,
             title: item.title,
@@ -2752,6 +2757,7 @@ async function ensureKnowledgeLoaded() {
             content: item.content || '',
             wordCount: item.word_count || 0,
             active: item.active !== false,
+            faqPriority: prevFaq,
             updatedAt: item.updated_at,
           });
           // Theo dõi updated_at lớn nhất để lần sau chỉ kéo delta.
