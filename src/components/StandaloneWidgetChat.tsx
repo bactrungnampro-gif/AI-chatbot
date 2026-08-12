@@ -9,7 +9,8 @@ import {
   Sparkles,
   MessageSquare,
   Image as ImageIcon,
-  ChevronDown
+  ChevronDown,
+  Headset
 } from 'lucide-react';
 import { AgentConfig, Attachment, ChatMessage, KnowledgeSource, ProductItem, WidgetSettings } from '../types';
 import { FormattedMessage } from './FormattedMessage';
@@ -312,6 +313,33 @@ export const StandaloneWidgetChat: React.FC<StandaloneWidgetChatProps> = ({
     }
   };
 
+  // [Bước 4] Khách bấm "Gặp nhân viên tư vấn" -> báo máy chủ + hiện xác nhận, khuyến khích để lại SĐT.
+  const [handoffSent, setHandoffSent] = useState(false);
+  const requestHandoff = async () => {
+    if (handoffSent || isLoading) return;
+    setHandoffSent(true);
+    // Nếu khách đã nhập gì đó có thể là SĐT thì gửi kèm.
+    const maybePhone = inputText.trim();
+    try {
+      await fetch('/api/handoff', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId: sessionIdRef.current, phone: maybePhone, note: 'Khách bấm nút "Gặp nhân viên tư vấn"' }),
+      });
+    } catch {
+      /* bắn-và-quên, không chặn trải nghiệm */
+    }
+    const confirmMsg: ChatMessage = {
+      id: `msg_handoff_${Date.now()}`,
+      sender: 'agent',
+      text: 'Dạ em đã chuyển yêu cầu tới nhân viên tư vấn ạ. Anh/Chị vui lòng để lại **số điện thoại** để được gọi lại sớm nhất, hoặc cứ tiếp tục nhắn tin, em vẫn ở đây hỗ trợ ạ. 💐',
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    };
+    setMessages((prev) => [...prev, confirmMsg]);
+    // Cho phép bấm lại sau 60s (phòng khi khách cần nhắc lại).
+    setTimeout(() => setHandoffSent(false), 60000);
+  };
+
   const handleResetChat = () => {
     setMessages([
       {
@@ -514,6 +542,21 @@ export const StandaloneWidgetChat: React.FC<StandaloneWidgetChatProps> = ({
 
       {/* Input Area */}
       <footer className="p-2.5 bg-white border-t border-slate-200 shrink-0">
+        {/* [Bước 4] Nút yêu cầu gặp nhân viên tư vấn */}
+        <div className="flex justify-center mb-1.5">
+          <button
+            type="button"
+            onClick={requestHandoff}
+            disabled={handoffSent || isLoading}
+            className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-semibold border transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            style={{ color: primaryColor, borderColor: primaryColor + '55', backgroundColor: primaryColor + '10' }}
+            title="Kết nối với nhân viên tư vấn"
+          >
+            <Headset className="w-3 h-3" />
+            {handoffSent ? 'Đã gửi yêu cầu tới nhân viên' : 'Gặp nhân viên tư vấn'}
+          </button>
+        </div>
+
         <form
           onSubmit={(e) => {
             e.preventDefault();

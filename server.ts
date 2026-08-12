@@ -2001,12 +2001,15 @@ function notifyNewLead(lead: { sessionId?: string; name?: string; phone?: string
   try {
     const phone = (lead.phone || '').trim();
     const name = (lead.name || '').trim();
-    const src = lead.source === 'form' ? 'Form để lại SĐT' : (lead.source === 'chat_auto' ? 'Tự bắt trong chat' : (lead.source || 'chat'));
+    const isHandoff = lead.source === 'handoff';
+    const src = isHandoff ? 'Yêu cầu gặp nhân viên'
+      : (lead.source === 'form' ? 'Form để lại SĐT'
+      : (lead.source === 'chat_auto' ? 'Tự bắt trong chat' : (lead.source || 'chat')));
     const note = (lead.note || '').trim();
 
     // Nội dung dạng text thuần (dùng cho Telegram & Email).
     const lines = [
-      '🔔 LEAD MỚI từ Trợ lý AI',
+      isHandoff ? '🙋 KHÁCH CẦN GẶP NHÂN VIÊN' : '🔔 LEAD MỚI từ Trợ lý AI',
       phone ? `📞 SĐT: ${phone}` : '',
       name ? `👤 Tên: ${name}` : '',
       `🔗 Nguồn: ${src}`,
@@ -2050,7 +2053,7 @@ function notifyNewLead(lead: { sessionId?: string; name?: string; phone?: string
         body: JSON.stringify({
           from: mailFrom,
           to: mailTo.split(',').map((s) => s.trim()).filter(Boolean),
-          subject: `🔔 Lead mới${phone ? ' - ' + phone : ''}`,
+          subject: `${isHandoff ? '🙋 Khách cần gặp nhân viên' : '🔔 Lead mới'}${phone ? ' - ' + phone : ''}`,
           html,
         }),
       }).then((r: any) => { if (!r.ok) console.warn('[LeadNotify] Email HTTP', r.status); })
@@ -2087,6 +2090,59 @@ async function saveLead(lead: { sessionId?: string; name?: string; phone?: strin
   } catch (e: any) {
     return { ok: false, reason: e?.message || String(e) };
   }
+}
+
+// [Bước 4] BÀN GIAO NHÂN VIÊN — nhận diện ý định khách muốn gặp người thật.
+function detectHandoffIntent(text: string): boolean {
+  if (!text) return false;
+  const t = String(text).toLowerCase();
+  const kws = [
+    'gặp nhân viên', 'gap nhan vien', 'nhân viên tư vấn', 'nhan vien tu van', 'tư vấn viên',
+    'gặp người', 'gap nguoi', 'người thật', 'nguoi that', 'nói chuyện với người', 'noi chuyen voi nguoi',
+    'nói chuyện với nhân viên', 'chat với người', 'cần người', 'can nguoi', 'người hỗ trợ', 'nhân viên hỗ trợ',
+    'gọi cho tôi', 'goi cho toi', 'gọi lại cho', 'goi lai cho', 'nhân viên gọi', 'tổng đài', 'tong dai',
+    'gặp nhân viên thật', 'gặp người thật', 'nhân viên thật',
+  ];
+  return kws.some((k) => t.includes(k));
+}
+
+// Chống spam thông báo bàn giao: mỗi phiên chỉ báo tối đa 1 lần / 10 phút.
+const handoffThrottle = new Map<string, number>();
+function handoffAllowed(sessionId: string): boolean {
+  if (!sessionId) return true;
+  const now = Date.now();
+  const last = handoffThrottle.get(sessionId) || 0;
+  if (now - last < 10 * 60 * 1000) return false;
+  handoffThrottle.set(sessionId, now);
+  if (handoffThrottle.size > 5000) handoffThrottle.clear(); // dọn map định kỳ, tránh phình bộ nhớ
+  return true;
+}
+
+// Lưu yêu cầu bàn giao như 1 lead source='handoff' (KHÔNG dedupe theo phone) + thông báo ngay.
+async function saveHandoff(req: { sessionId?: string; phone?: string; note?: string }) {
+  const lead = {
+    sessionId: req.sessionId,
+    phone: (req.phone || '').trim(),
+    note: req.note || 'Khách yêu cầu gặp nhân viên tư vấn',
+    source: 'handoff',
+  };
+  try {
+    const client = getSupabaseClient();
+    if (client) {
+      const { error } = await client.from('leads').insert([{
+        session_id: lead.sessionId || null,
+        name: null,
+        phone: lead.phone || null,
+        note: (lead.note || '').slice(0, 2000) || null,
+        source: 'handoff',
+        status: 'new',
+      }]);
+      if (error) console.warn('[Handoff] insert lỗi:', error.message);
+    }
+  } catch (e: any) {
+    console.warn('[Handoff] lỗi lưu:', e?.message || e);
+  }
+  notifyNewLead(lead); // dùng chung kênh thông báo; tiêu đề tự đổi thành "🙋 KHÁCH CẦN GẶP NHÂN VIÊN"
 }
 
 // Main AI Support Chat Endpoint
@@ -2606,6 +2662,11 @@ app.post("/api/chat", async (req, res) => {
         saveLead({ sessionId: sid, phone, note: 'Khách để lại SĐT trong hội thoại: ' + String(message || '').slice(0, 300), source: 'chat_auto' })
           .then((r) => { if (r.ok && !r.dedup) console.log(`[Lead] Tự bắt SĐT ${phone} từ hội thoại.`); });
       }
+      // [Bước 4] Khách muốn gặp nhân viên -> ghi nhận + báo Telegram (giới hạn 1 lần/10 phút mỗi phiên).
+      if (detectHandoffIntent(message || '') && handoffAllowed(sid)) {
+        saveHandoff({ sessionId: sid, phone: phone || '', note: 'Khách muốn gặp nhân viên. Lời khách: ' + String(message || '').slice(0, 300) });
+        console.log(`[Handoff] Phiên ${sid} yêu cầu gặp nhân viên.`);
+      }
     }
 
     res.json({
@@ -2640,6 +2701,21 @@ app.post("/api/lead", async (req, res) => {
     res.json({ success: true, saved: true, dedup: !!r.dedup });
   } catch (e: any) {
     res.status(500).json({ success: false, error: 'Lỗi lưu thông tin: ' + (e?.message || String(e)) });
+  }
+});
+
+// [Bước 4] CÔNG KHAI: khách bấm nút "Gặp nhân viên tư vấn" trên widget.
+app.post("/api/handoff", async (req, res) => {
+  try {
+    const { sessionId, phone, note } = req.body || {};
+    const sid = (typeof sessionId === 'string' ? sessionId.trim() : '').slice(0, 80);
+    // Chống spam khi bấm nút liên tục.
+    if (sid && !handoffAllowed(sid)) return res.json({ success: true, throttled: true });
+    const cleanPhone = detectPhone(String(phone || '')) || String(phone || '').replace(/[^\d+]/g, '');
+    await saveHandoff({ sessionId: sid, phone: cleanPhone, note: note || 'Khách bấm nút "Gặp nhân viên tư vấn"' });
+    res.json({ success: true });
+  } catch (e: any) {
+    res.status(500).json({ success: false, error: e?.message || String(e) });
   }
 });
 

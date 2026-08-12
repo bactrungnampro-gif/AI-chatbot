@@ -259,7 +259,14 @@ const LeadsPanel: React.FC = () => {
                         <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold border ${meta.cls}`}>
                           {meta.label}
                         </span>
-                        <span className="text-[10px] text-slate-400">{l.source === 'form' ? 'Từ form' : 'Tự bắt trong chat'}</span>
+                        {l.source === 'handoff' && (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-50 text-rose-600 border border-rose-200">
+                            🙋 Cần gặp NV
+                          </span>
+                        )}
+                        <span className="text-[10px] text-slate-400">
+                          {l.source === 'form' ? 'Từ form' : l.source === 'handoff' ? 'Yêu cầu gặp nhân viên' : 'Tự bắt trong chat'}
+                        </span>
                       </div>
                       {l.note && <p className="text-xs text-slate-500 mt-0.5 line-clamp-2">{l.note}</p>}
                       <div className="text-[10px] text-slate-400 mt-0.5 flex items-center gap-1">
