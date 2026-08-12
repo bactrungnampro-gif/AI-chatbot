@@ -44,6 +44,54 @@ interface KnowledgeManagerProps {
   onNavigateToProducts?: () => void;
 }
 
+// [UX #2] Dọn phần XEM TRƯỚC: bỏ khối tiêu đề máy móc (=== ... ===, Tên tệp:, Loại tệp:, Thời gian nạp:, marker
+// "NỘI DUNG ...:") để ô preview hiển thị đúng nội dung thật thay vì metadata.
+function cleanPreview(raw: string): string {
+  let t = raw || '';
+  // Nếu có marker "NỘI DUNG ...:" -> lấy phần SAU nó (bỏ toàn bộ header phía trên).
+  const m = t.match(/N[ỘO]I DUNG[^\n:]*:[ \t]*\n?/i);
+  if (m && m.index != null) t = t.slice(m.index + m[0].length);
+  // Bỏ các dòng tiêu đề còn sót lại.
+  t = t
+    .split('\n')
+    .filter((line) => !/^\s*(={2,}|Tên tệp:|Loại tệp:|Thời gian nạp:|Thời gian đồng bộ:|Nguồn bảng tính:|API Endpoint:|Số trang PDF:|Số dòng dữ liệu:)/i.test(line))
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n');
+  return t.trim();
+}
+
+// [UX #2] Nội dung "dạng mã" (JSON/CSV/API) thì để font monospace cho dễ đọc; văn bản tiếng Việt thì dùng font thường.
+function looksLikeCode(type: string | undefined, text: string): boolean {
+  if (type === 'api_endpoint') return true;
+  const head = (text || '').trimStart().slice(0, 40);
+  return /^[[{]/.test(head) || /[;,].*[;,]/.test(head); // bắt đầu bằng {/[ (JSON) hoặc nhiều dấu phẩy/; (CSV)
+}
+
+// [UX #3] Nhãn LOẠI nguồn thân thiện thay cho tên enum thô (vd 'api_endpoint' -> 'REST API').
+function sourceTypeLabel(type: string | undefined): string {
+  switch (type) {
+    case 'website': return 'Website';
+    case 'document': return 'Tài liệu';
+    case 'process_guide': return 'Quy trình';
+    case 'api_endpoint': return 'REST API';
+    case 'google_sheet':
+    case 'sheet': return 'Google Sheet';
+    default: return type ? type.replace(/_/g, ' ') : 'Nguồn';
+  }
+}
+
+// [UX #3] Nhãn nút "cập nhật lại" theo đúng loại nguồn (file không phải "cào web").
+function resyncLabel(type: string | undefined): string {
+  switch (type) {
+    case 'website': return 'Cào lại nội dung (Re-crawl)';
+    case 'api_endpoint': return 'Đồng bộ lại API';
+    case 'google_sheet':
+    case 'sheet': return 'Đồng bộ lại Sheet';
+    case 'document': return 'Cập nhật lại tệp';
+    default: return 'Cập nhật / Làm mới';
+  }
+}
+
 export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
   knowledgeSources,
   setKnowledgeSources,
@@ -67,6 +115,18 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
   const [scrapeError, setScrapeError] = useState<string | null>(null);
   const [scrapeSuccess, setScrapeSuccess] = useState<string | null>(null);
   const [expandedSubPagesId, setExpandedSubPagesId] = useState<string | null>(null);
+
+  // [UX #4] Thu gọn thẻ: mặc định ẩn xem-trước-nội-dung & hộp cài đặt tự-đồng-bộ; bấm để mở từng thẻ.
+  const [expandedPreviewIds, setExpandedPreviewIds] = useState<Set<string>>(new Set());
+  const [expandedSyncIds, setExpandedSyncIds] = useState<Set<string>>(new Set());
+  const toggleInSet = (
+    setFn: React.Dispatch<React.SetStateAction<Set<string>>>,
+    id: string
+  ) => setFn((prev) => {
+    const next = new Set(prev);
+    next.has(id) ? next.delete(id) : next.add(id);
+    return next;
+  });
 
   // Firecrawl API Integration State
   const [firecrawlApiKey, setFirecrawlApiKey] = useState<string>(() => localStorage.getItem('firecrawl_api_key') || '');
@@ -491,6 +551,10 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
   const [newUrl, setNewUrl] = useState('');
 
   const [searchTerm, setSearchTerm] = useState('');
+  // [UX #5] Lọc & sắp xếp danh sách nguồn tri thức.
+  const [typeFilter, setTypeFilter] = useState<string>('all');
+  const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'inactive'>('all');
+  const [sortBy, setSortBy] = useState<'newest' | 'oldest' | 'name'>('newest');
 
   // [UX #1] Thu gọn khu NẠP nguồn để danh sách tri thức ở ngay tầm mắt khi kho đã có dữ liệu.
   // Mặc định: mở khi kho TRỐNG (giúp người mới bắt đầu), thu gọn khi đã có nguồn.
@@ -1163,13 +1227,35 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
   // Khi không tìm kiếm -> trả nguyên danh sách, không quét nội dung. Chuẩn hóa từ khóa 1 lần.
   const filteredSources = useMemo(() => {
     const q = searchTerm.trim().toLowerCase();
-    if (!q) return knowledgeSources;
-    return knowledgeSources.filter(
-      (source) =>
-        (source.title || '').toLowerCase().includes(q) ||
-        (source.content || '').toLowerCase().includes(q)
-    );
-  }, [knowledgeSources, searchTerm]);
+    let list = knowledgeSources.filter((source) => {
+      // Lọc theo LOẠI nguồn.
+      if (typeFilter !== 'all' && (source.type || '') !== typeFilter) return false;
+      // Lọc theo TRẠNG THÁI bật/tắt.
+      if (statusFilter === 'active' && source.active === false) return false;
+      if (statusFilter === 'inactive' && source.active !== false) return false;
+      // Lọc theo TỪ KHÓA (tiêu đề + nội dung).
+      if (q && !((source.title || '').toLowerCase().includes(q) || (source.content || '').toLowerCase().includes(q))) return false;
+      return true;
+    });
+    // SẮP XẾP (không đột biến mảng gốc).
+    const ts = (s: any) => new Date(s?.updatedAt || s?.createdAt || s?.lastSyncedAt || 0).getTime();
+    list = [...list].sort((a, b) => {
+      if (sortBy === 'name') return (a.title || '').localeCompare(b.title || '', 'vi');
+      if (sortBy === 'oldest') return ts(a) - ts(b);
+      return ts(b) - ts(a); // newest
+    });
+    return list;
+  }, [knowledgeSources, searchTerm, typeFilter, statusFilter, sortBy]);
+
+  // [UX #5] Danh sách LOẠI nguồn thực có (để đổ vào dropdown lọc, kèm số lượng).
+  const availableTypes = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const s of knowledgeSources) {
+      const t = (s && s.type) || 'document';
+      counts[t] = (counts[t] || 0) + 1;
+    }
+    return Object.keys(counts).sort().map((t) => ({ type: t, count: counts[t] }));
+  }, [knowledgeSources]);
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
@@ -1213,16 +1299,18 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
         </button>
 
         {showIngest && (
-        <div className="pt-1">
+        <div className="pt-1 grid grid-cols-1 lg:grid-cols-[260px_minmax(0,1fr)] gap-5">
+        {/* [UX 2 cột] CỘT TRÁI: chọn nguồn nạp (menu DỌC trên desktop, cuộn ngang trên mobile) */}
+        <div className="space-y-2 lg:border-r lg:border-slate-800 lg:pr-4">
         {/* [UX #3] Nhãn thay cho việc đánh số tab (đây là 5 CÁCH nạp độc lập, không phải quy trình bắt buộc tuần tự) */}
-        <p className="text-xs font-semibold text-slate-400 mb-3">Chọn nguồn nạp dữ liệu:</p>
+        <p className="text-xs font-semibold text-slate-400 mb-1">Chọn nguồn nạp dữ liệu:</p>
 
-        {/* Connector Navigation Tabs */}
-        <div className="flex flex-wrap items-center gap-2 border-b border-slate-800 pb-4 mb-4">
+        {/* Connector Navigation Tabs -> menu dọc bên trái (mobile: hàng ngang cuộn được) */}
+        <div className="flex flex-row lg:flex-col flex-nowrap items-stretch gap-2 overflow-x-auto lg:overflow-visible pb-1 lg:pb-0">
           <button
             type="button"
             onClick={() => setActiveTab('file')}
-            className={`px-4 py-2 rounded-xl text-xs sm:text-sm font-bold transition-all flex items-center gap-2 border ${
+            className={`px-4 py-2 rounded-xl text-xs sm:text-sm font-bold transition-all flex items-center gap-2 border w-full justify-start shrink-0 whitespace-nowrap ${
               activeTab === 'file'
                 ? 'bg-amber-600 text-white border-amber-500 shadow-md'
                 : 'bg-slate-800/80 text-slate-300 border-slate-700/80 hover:bg-slate-800 hover:text-white'
@@ -1235,7 +1323,7 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
           <button
             type="button"
             onClick={() => setActiveTab('website')}
-            className={`px-4 py-2 rounded-xl text-xs sm:text-sm font-bold transition-all flex items-center gap-2 border ${
+            className={`px-4 py-2 rounded-xl text-xs sm:text-sm font-bold transition-all flex items-center gap-2 border w-full justify-start shrink-0 whitespace-nowrap ${
               activeTab === 'website'
                 ? 'bg-indigo-600 text-white border-indigo-500 shadow-md'
                 : 'bg-slate-800/80 text-slate-300 border-slate-700/80 hover:bg-slate-800 hover:text-white'
@@ -1248,7 +1336,7 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
           <button
             type="button"
             onClick={() => setActiveTab('sheets')}
-            className={`px-4 py-2 rounded-xl text-xs sm:text-sm font-bold transition-all flex items-center gap-2 border ${
+            className={`px-4 py-2 rounded-xl text-xs sm:text-sm font-bold transition-all flex items-center gap-2 border w-full justify-start shrink-0 whitespace-nowrap ${
               activeTab === 'sheets'
                 ? 'bg-emerald-600 text-white border-emerald-500 shadow-md'
                 : 'bg-slate-800/80 text-slate-300 border-slate-700/80 hover:bg-slate-800 hover:text-white'
@@ -1261,7 +1349,7 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
           <button
             type="button"
             onClick={() => setActiveTab('drive')}
-            className={`px-4 py-2 rounded-xl text-xs sm:text-sm font-bold transition-all flex items-center gap-2 border ${
+            className={`px-4 py-2 rounded-xl text-xs sm:text-sm font-bold transition-all flex items-center gap-2 border w-full justify-start shrink-0 whitespace-nowrap ${
               activeTab === 'drive'
                 ? 'bg-blue-600 text-white border-blue-500 shadow-md'
                 : 'bg-slate-800/80 text-slate-300 border-slate-700/80 hover:bg-slate-800 hover:text-white'
@@ -1274,7 +1362,7 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
           <button
             type="button"
             onClick={() => setActiveTab('api')}
-            className={`px-4 py-2 rounded-xl text-xs sm:text-sm font-bold transition-all flex items-center gap-2 border ${
+            className={`px-4 py-2 rounded-xl text-xs sm:text-sm font-bold transition-all flex items-center gap-2 border w-full justify-start shrink-0 whitespace-nowrap ${
               activeTab === 'api'
                 ? 'bg-purple-600 text-white border-purple-500 shadow-md'
                 : 'bg-slate-800/80 text-slate-300 border-slate-700/80 hover:bg-slate-800 hover:text-white'
@@ -1284,6 +1372,10 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
             <span>REST API Endpoint</span>
           </button>
         </div>
+        </div>{/* hết CỘT TRÁI (menu nguồn) */}
+
+        {/* [UX 2 cột] CỘT PHẢI: khu vực nạp dữ liệu theo nguồn đang chọn */}
+        <div className="min-w-0">
 
         {/* TAB 1: DIRECT FILE UPLOAD (PDF, DOCX, TXT, CSV) */}
         {activeTab === 'file' && (
@@ -2104,6 +2196,7 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
             </form>
           </div>
         )}
+        </div>{/* hết CỘT PHẢI */}
         </div>
         )}
 
@@ -2210,7 +2303,71 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
         </div>
       )}
 
+      {/* [UX #5] Thanh LỌC & SẮP XẾP nguồn tri thức */}
+      <div className="flex flex-col sm:flex-row sm:flex-wrap items-stretch sm:items-center gap-2 bg-white px-3 py-2.5 rounded-2xl border border-slate-200/80 shadow-2xs">
+        {/* Lọc theo loại */}
+        <div className="flex items-center gap-1.5">
+          <span className="text-[11px] font-semibold text-slate-500 shrink-0">Loại:</span>
+          <select
+            value={typeFilter}
+            onChange={(e) => setTypeFilter(e.target.value)}
+            className="bg-slate-50 border border-slate-200 rounded-lg px-2 py-1.5 text-xs font-medium text-slate-700 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+          >
+            <option value="all">Tất cả loại ({knowledgeSources.length})</option>
+            {availableTypes.map((t) => (
+              <option key={t.type} value={t.type}>{sourceTypeLabel(t.type)} ({t.count})</option>
+            ))}
+          </select>
+        </div>
+
+        {/* Lọc theo trạng thái */}
+        <div className="flex items-center gap-1.5">
+          <span className="text-[11px] font-semibold text-slate-500 shrink-0">Trạng thái:</span>
+          <select
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value as 'all' | 'active' | 'inactive')}
+            className="bg-slate-50 border border-slate-200 rounded-lg px-2 py-1.5 text-xs font-medium text-slate-700 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+          >
+            <option value="all">Tất cả</option>
+            <option value="active">Đang bật</option>
+            <option value="inactive">Đang tắt</option>
+          </select>
+        </div>
+
+        {/* Sắp xếp */}
+        <div className="flex items-center gap-1.5">
+          <span className="text-[11px] font-semibold text-slate-500 shrink-0">Sắp xếp:</span>
+          <select
+            value={sortBy}
+            onChange={(e) => setSortBy(e.target.value as 'newest' | 'oldest' | 'name')}
+            className="bg-slate-50 border border-slate-200 rounded-lg px-2 py-1.5 text-xs font-medium text-slate-700 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+          >
+            <option value="newest">Mới nhất trước</option>
+            <option value="oldest">Cũ nhất trước</option>
+            <option value="name">Theo tên (A→Z)</option>
+          </select>
+        </div>
+
+        <div className="sm:ml-auto flex items-center gap-2">
+          <span className="text-[11px] text-slate-400">Hiển thị {filteredSources.length}/{knowledgeSources.length} nguồn</span>
+          {(typeFilter !== 'all' || statusFilter !== 'all' || sortBy !== 'newest' || searchTerm) && (
+            <button
+              type="button"
+              onClick={() => { setTypeFilter('all'); setStatusFilter('all'); setSortBy('newest'); setSearchTerm(''); }}
+              className="text-[11px] font-semibold text-indigo-600 hover:text-indigo-800 hover:underline shrink-0"
+            >
+              Xóa lọc
+            </button>
+          )}
+        </div>
+      </div>
+
       {/* Knowledge Items Grid */}
+      {filteredSources.length === 0 ? (
+        <div className="text-center py-12 text-slate-400 text-sm bg-white rounded-2xl border border-dashed border-slate-200">
+          Không có nguồn nào khớp bộ lọc hiện tại.
+        </div>
+      ) : (
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         {filteredSources.map((source) => (
           <div
@@ -2230,7 +2387,10 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
                     {source.type === 'website' && <Globe className="w-3 h-3" />}
                     {source.type === 'process_guide' && <FileCheck className="w-3 h-3" />}
                     {source.type === 'document' && <FileText className="w-3 h-3" />}
-                    <span className="capitalize">{source.type}</span>
+                    {source.type === 'api_endpoint' && <Server className="w-3 h-3" />}
+                    {(source.type === 'google_sheet' || source.type === 'sheet') && <FileSpreadsheet className="w-3 h-3" />}
+                    {/* [UX #3] Nhãn loại thân thiện thay cho tên enum thô */}
+                    <span>{sourceTypeLabel(source.type)}</span>
                   </span>
 
                   {source.crawlMode && (
@@ -2275,9 +2435,29 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
                 </a>
               )}
 
-              <p className="text-xs text-slate-600 line-clamp-4 leading-relaxed bg-slate-50 p-3 rounded-xl border border-slate-100 font-mono text-[11px]">
-                {source.content}
-              </p>
+              {/* [UX #2+#4] Xem trước SẠCH + THU GỌN: mặc định ẩn, bấm "Xem nội dung" để mở (giảm chiều cao thẻ) */}
+              {(() => {
+                const preview = cleanPreview(source.content);
+                const codey = looksLikeCode(source.type, preview);
+                const open = expandedPreviewIds.has(source.id);
+                return (
+                  <div>
+                    <button
+                      type="button"
+                      onClick={() => toggleInSet(setExpandedPreviewIds, source.id)}
+                      className="text-[11px] font-semibold text-slate-500 hover:text-indigo-600 flex items-center gap-1"
+                    >
+                      <ChevronDown className={`w-3.5 h-3.5 transition-transform ${open ? 'rotate-180' : ''}`} />
+                      <span>{open ? 'Ẩn nội dung' : 'Xem nội dung'}</span>
+                    </button>
+                    {open && (
+                      <p className={`mt-2 text-slate-600 leading-relaxed bg-slate-50 p-3 rounded-xl border border-slate-100 text-[11px] max-h-56 overflow-y-auto ${codey ? 'font-mono' : ''} whitespace-pre-wrap`}>
+                        {preview || <span className="italic text-slate-400">(Chưa có nội dung xem trước)</span>}
+                      </p>
+                    )}
+                  </div>
+                );
+              })()}
 
               {/* Subpages inspector accordion */}
               {Array.isArray(source.subPages) && source.subPages.length > 0 && (
@@ -2309,7 +2489,8 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
                   className="w-full py-2 px-3 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-[11px] shadow-xs transition-colors flex items-center justify-center gap-1.5"
                 >
                   <RefreshCw className={`w-3.5 h-3.5 ${resyncingId === source.id ? 'animate-spin' : ''}`} />
-                  <span>{resyncingId === source.id ? 'Đang cào & cập nhật dữ liệu...' : 'Cập nhật / Làm mới (Re-crawl 🔄)'}</span>
+                  {/* [UX #3] Nhãn theo đúng loại nguồn (file không phải "cào web") */}
+                  <span>{resyncingId === source.id ? 'Đang cập nhật dữ liệu...' : resyncLabel(source.type)}</span>
                 </button>
 
                 {setProducts && (
@@ -2333,57 +2514,71 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
                 )}
               </div>
 
-              {/* Auto-sync Schedule Settings */}
-              <div className="mt-3 p-3 rounded-xl bg-slate-50 border border-slate-200/80 text-[11px] space-y-2">
-                <div className="flex items-center justify-between">
-                  <label className="flex items-center gap-1.5 font-semibold text-slate-700 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={!!source.autoSyncEnabled}
-                      onChange={(e) => handleToggleAutoSync(source.id, e.target.checked)}
-                      className="w-3.5 h-3.5 text-indigo-600 rounded border-slate-300 focus:ring-indigo-500"
-                    />
-                    <span>Tự động cập nhật định kỳ</span>
-                  </label>
-                  {source.autoSyncEnabled ? (
-                    <span className="px-2 py-0.5 rounded-md bg-emerald-100 text-emerald-800 font-bold text-[10px] flex items-center gap-1">
-                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
-                      Đang bật
-                    </span>
-                  ) : (
-                    <span className="px-2 py-0.5 rounded-md bg-slate-200 text-slate-600 font-medium text-[10px]">
-                      Tắt
-                    </span>
-                  )}
-                </div>
+              {/* [UX #4] Auto-sync THU GỌN: hàng tóm tắt luôn hiện (bật/tắt + chu kỳ); bấm để mở chi tiết */}
+              <div className="mt-3 rounded-xl bg-slate-50 border border-slate-200/80 text-[11px]">
+                <button
+                  type="button"
+                  onClick={() => toggleInSet(setExpandedSyncIds, source.id)}
+                  className="w-full flex items-center justify-between gap-2 p-2.5"
+                >
+                  <span className="flex items-center gap-1.5 font-semibold text-slate-700">
+                    <RefreshCw className="w-3.5 h-3.5 text-slate-400" />
+                    Tự động cập nhật
+                  </span>
+                  <span className="flex items-center gap-1.5">
+                    {source.autoSyncEnabled ? (
+                      <span className="px-2 py-0.5 rounded-md bg-emerald-100 text-emerald-800 font-bold text-[10px] flex items-center gap-1">
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                        Mỗi {source.syncIntervalHours || 24}h
+                      </span>
+                    ) : (
+                      <span className="px-2 py-0.5 rounded-md bg-slate-200 text-slate-600 font-medium text-[10px]">Tắt</span>
+                    )}
+                    <ChevronDown className={`w-3.5 h-3.5 text-slate-400 transition-transform ${expandedSyncIds.has(source.id) ? 'rotate-180' : ''}`} />
+                  </span>
+                </button>
 
-                {source.autoSyncEnabled && (
-                  <div className="flex items-center justify-between gap-2 pt-1.5 border-t border-slate-200/60 text-[10px]">
-                    <span className="text-slate-600 font-medium">Chu kỳ quét lại:</span>
-                    <select
-                      value={source.syncIntervalHours || 24}
-                      onChange={(e) => handleChangeSyncInterval(source.id, parseInt(e.target.value, 10))}
-                      className="bg-white border border-slate-300 rounded-lg px-2 py-1 font-semibold text-slate-800 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                    >
-                      <option value={6}>Mỗi 6 giờ</option>
-                      <option value={12}>Mỗi 12 giờ</option>
-                      <option value={24}>Hằng ngày (24 giờ)</option>
-                      <option value={72}>Mỗi 3 ngày (72 giờ)</option>
-                      <option value={168}>Hằng tuần (168 giờ)</option>
-                    </select>
+                {expandedSyncIds.has(source.id) && (
+                  <div className="px-2.5 pb-2.5 space-y-2 border-t border-slate-200/60 pt-2">
+                    <label className="flex items-center gap-1.5 font-semibold text-slate-700 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={!!source.autoSyncEnabled}
+                        onChange={(e) => handleToggleAutoSync(source.id, e.target.checked)}
+                        className="w-3.5 h-3.5 text-indigo-600 rounded border-slate-300 focus:ring-indigo-500"
+                      />
+                      <span>Bật tự động cập nhật định kỳ</span>
+                    </label>
+
+                    {source.autoSyncEnabled && (
+                      <div className="flex items-center justify-between gap-2 text-[10px]">
+                        <span className="text-slate-600 font-medium">Chu kỳ quét lại:</span>
+                        <select
+                          value={source.syncIntervalHours || 24}
+                          onChange={(e) => handleChangeSyncInterval(source.id, parseInt(e.target.value, 10))}
+                          className="bg-white border border-slate-300 rounded-lg px-2 py-1 font-semibold text-slate-800 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                        >
+                          <option value={6}>Mỗi 6 giờ</option>
+                          <option value={12}>Mỗi 12 giờ</option>
+                          <option value={24}>Hằng ngày (24 giờ)</option>
+                          <option value={72}>Mỗi 3 ngày (72 giờ)</option>
+                          <option value={168}>Hằng tuần (168 giờ)</option>
+                        </select>
+                      </div>
+                    )}
+
+                    <div className="text-[10px] text-slate-400 flex items-center justify-between pt-1 border-t border-slate-200/40">
+                      <span>Lần đồng bộ gần nhất:</span>
+                      <span className="font-mono text-slate-600 font-medium">
+                        {source.lastSyncedAt
+                          ? new Date(source.lastSyncedAt).toLocaleString('vi-VN', { dateStyle: 'short', timeStyle: 'short' })
+                          : source.updatedAt
+                          ? new Date(source.updatedAt).toLocaleString('vi-VN', { dateStyle: 'short', timeStyle: 'short' })
+                          : 'Chưa có'}
+                      </span>
+                    </div>
                   </div>
                 )}
-
-                <div className="text-[10px] text-slate-400 flex items-center justify-between pt-1 border-t border-slate-200/40">
-                  <span>Lần đồng bộ gần nhất:</span>
-                  <span className="font-mono text-slate-600 font-medium">
-                    {source.lastSyncedAt
-                      ? new Date(source.lastSyncedAt).toLocaleString('vi-VN', { dateStyle: 'short', timeStyle: 'short' })
-                      : source.updatedAt
-                      ? new Date(source.updatedAt).toLocaleString('vi-VN', { dateStyle: 'short', timeStyle: 'short' })
-                      : 'Chưa có'}
-                  </span>
-                </div>
               </div>
             </div>
 
@@ -2400,6 +2595,7 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
           </div>
         ))}
       </div>
+      )}
 
       {/* Add Manual Modal */}
       {showAddModal && (

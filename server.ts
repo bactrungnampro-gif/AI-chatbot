@@ -1423,13 +1423,12 @@ app.post("/api/knowledge/upload-file", async (req, res) => {
       if (cleanName.toLowerCase().endsWith('.docx')) {
         extractedText = extractDocxText(fileBuffer);
       }
-      // .doc cũ (binary) hoặc docx giải nén thất bại: thử đọc thô như cũ để không mất trắng.
-      if (!extractedText || extractedText.length < 30) {
+      // [Fix #1] KHÔNG đọc byte thô nếu tệp là ZIP (.docx) -> tránh lưu rác nhị phân "PK...[Content_Types].xml".
+      // Chỉ .doc cũ (không phải ZIP) mới thử đọc thô để không mất trắng.
+      const isZipDoc = fileBuffer.length > 3 && fileBuffer[0] === 0x50 && fileBuffer[1] === 0x4B; // 'PK'
+      if ((!extractedText || extractedText.length < 30) && !isZipDoc) {
         const raw = fileBuffer.toString('utf-8').replace(/[\x00-\x09\x0B-\x1F\x7F-\x9F]/g, '').trim();
         if (raw.length >= 30) extractedText = raw;
-      }
-      if (!extractedText || extractedText.length < 30) {
-        extractedText = `Tài liệu Word: ${cleanName}\n(Không bóc tách được nội dung — nếu là file .doc cũ, vui lòng lưu sang .docx hoặc PDF rồi nạp lại.)`;
       }
     } else {
       // Default plain text / CSV / JSON / MD
@@ -1442,6 +1441,23 @@ app.post("/api/knowledge/upload-file", async (req, res) => {
         error: "Không thể trích xuất văn bản từ tệp này. Tệp có thể bị khóa mật khẩu hoặc ở định dạng không hỗ trợ."
       });
       return;
+    }
+
+    // [Fix #1] LƯỚI CHẶN rác nhị phân: nếu nội dung bóc tách trông như byte thô của ZIP/Office
+    // (ví dụ .docx/.xlsx giải nén hỏng) hoặc quá nhiều ký tự lỗi -> TỪ CHỐI, không lưu nguồn rác
+    // (rác này nếu lưu sẽ được đưa vào prompt cho agent + lập chỉ mục RAG, làm nhiễu tri thức).
+    if (!isImage) {
+      const sample = extractedText.slice(0, 3000);
+      const looksBinary =
+        /\[Content_Types\]\.xml|word\/document\.xml|xl\/worksheets|PK\x03\x04/.test(sample) ||
+        (sample.match(/�/g) || []).length > 20;
+      if (looksBinary) {
+        res.json({
+          success: false,
+          error: `Không bóc tách được nội dung văn bản từ "${cleanName}" (tệp có thể bị hỏng hoặc ở định dạng nhị phân không hỗ trợ). Vui lòng mở tệp và "Lưu thành" (Save As) sang PDF rồi nạp lại, hoặc dán nội dung vào ô "Thêm Dữ Liệu Mới".`
+        });
+        return;
+      }
     }
 
     // Limit maximum text size to preserve fast AI processing while keeping full information
