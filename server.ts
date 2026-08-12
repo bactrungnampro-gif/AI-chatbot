@@ -1962,33 +1962,106 @@ Yêu cầu trả về JSON chuẩn xác:
   }
 });
 
+// [Bước 2] Trần chi phí theo ngày cho /api/chat (chống lạm dụng key AI trả phí). Bộ đếm trong bộ nhớ, reset mỗi ngày/khởi động lại.
+let chatDailyDate = '';
+let chatDailyCount = 0;
+
+// ============ [Bước 3 - Lõi bán hàng] LƯU HỘI THOẠI + THU LEAD ============
+// Nhận diện số điện thoại VN trong tin nhắn khách -> tự tạo lead. Trả về SĐT chuẩn hóa (bắt đầu bằng 0) hoặc null.
+function detectPhone(text: string): string | null {
+  if (!text) return null;
+  const m = String(text).match(/(?:\+?84|0)\d[\d\s.\-]{7,12}\d/);
+  if (!m) return null;
+  let d = m[0].replace(/[^\d+]/g, '');
+  if (d.startsWith('+84')) d = '0' + d.slice(3);
+  else if (d.startsWith('84') && d.length >= 11) d = '0' + d.slice(2);
+  d = d.replace(/\D/g, '');
+  if (d.length >= 9 && d.length <= 11 && d.startsWith('0')) return d;
+  return null;
+}
+
+// Ghi 1 lượt hội thoại (tin khách + trả lời agent) vào bảng chat_logs. Bắn-và-quên, KHÔNG chặn phản hồi; no-op nếu chưa cấu hình.
+function logChatTurn(sessionId: string, userText: string, agentText: string) {
+  try {
+    const client = getSupabaseClient();
+    if (!client || !sessionId) return;
+    const rows = [
+      { session_id: sessionId, sender: 'user', text: (userText || '').slice(0, 4000) },
+      { session_id: sessionId, sender: 'agent', text: (agentText || '').slice(0, 8000) },
+    ];
+    client.from('chat_logs').insert(rows).then((r: any) => {
+      if (r?.error) console.warn('[ChatLog] insert error:', r.error.message);
+    }).catch(() => {});
+  } catch { /* bỏ qua */ }
+}
+
+// Lưu/gộp lead. dedupe theo (phone). Bắn-và-quên; no-op nếu chưa cấu hình.
+async function saveLead(lead: { sessionId?: string; name?: string; phone?: string; note?: string; source?: string }): Promise<{ ok: boolean; dedup?: boolean; reason?: string }> {
+  try {
+    const client = getSupabaseClient();
+    if (!client) return { ok: false, reason: 'no_client' };
+    const phone = (lead.phone || '').trim();
+    // Nếu có phone: kiểm tra đã tồn tại lead cùng phone trong 30 ngày chưa -> tránh trùng.
+    if (phone) {
+      const { data: existing } = await client.from('leads').select('id').eq('phone', phone).limit(1);
+      if (Array.isArray(existing) && existing.length > 0) return { ok: true, dedup: true };
+    }
+    const { error } = await client.from('leads').insert([{
+      session_id: lead.sessionId || null,
+      name: (lead.name || '').slice(0, 200) || null,
+      phone: phone || null,
+      note: (lead.note || '').slice(0, 2000) || null,
+      source: lead.source || 'chat',
+      status: 'new',
+    }]);
+    if (error) { console.warn('[Lead] insert error:', error.message); return { ok: false, reason: error.message }; }
+    return { ok: true };
+  } catch (e: any) {
+    return { ok: false, reason: e?.message || String(e) };
+  }
+}
+
 // Main AI Support Chat Endpoint
 app.post("/api/chat", async (req, res) => {
   try {
+    // [Bước 2 - bảo mật] (B) GIỚI HẠN DOMAIN NHÚNG: nếu đặt CHAT_ALLOWED_ORIGINS thì chỉ nhận request từ các domain đó
+    // (và trang admin same-origin). Mặc định để trống = cho phép mọi nơi (không phá vỡ hiện trạng).
+    const CHAT_ALLOWED = (process.env.CHAT_ALLOWED_ORIGINS || '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
+    if (CHAT_ALLOWED.length > 0) {
+      const origin = String(req.headers.origin || '').toLowerCase();
+      let host = '';
+      try { if (origin) host = new URL(origin).hostname.toLowerCase(); } catch { /* ignore */ }
+      if (!host && req.headers.referer) { try { host = new URL(String(req.headers.referer)).hostname.toLowerCase(); } catch { /* ignore */ } }
+      const inAllow = !!host && CHAT_ALLOWED.some((a) => host === a || host.endsWith('.' + a));
+      const sameOrigin = !origin || (!!req.headers.host && origin.includes(String(req.headers.host).toLowerCase()));
+      if (!inAllow && !sameOrigin) {
+        return res.status(403).json({ error: 'Tên miền này chưa được cấp phép sử dụng trợ lý AI.' });
+      }
+    }
+
+    // [Bước 2 - bảo mật] (C) TRẦN CHI PHÍ: giới hạn tổng số lượt chat/ngày. Đặt CHAT_DAILY_MAX (mặc định 0 = không giới hạn).
+    const CHAT_DAILY_MAX = parseInt(process.env.CHAT_DAILY_MAX || '0', 10);
+    if (CHAT_DAILY_MAX > 0) {
+      const today = new Date().toISOString().slice(0, 10);
+      if (chatDailyDate !== today) { chatDailyDate = today; chatDailyCount = 0; }
+      if (chatDailyCount >= CHAT_DAILY_MAX) {
+        return res.status(429).json({ error: 'Hệ thống đang bận, quý khách vui lòng thử lại sau ít phút ạ.' });
+      }
+      chatDailyCount++;
+    }
+
     // [Tối ưu băng thông] Widget khách KHÔNG còn gửi kèm kho tri thức -> đảm bảo máy chủ đã nạp KB từ Supabase.
     await ensureKnowledgeLoaded();
 
-    const {
-      message,
-      history = [],
-      agentConfig: clientAgentConfig,
-      knowledgeSources: clientKnowledgeSources,
-      products: clientProducts,
-      attachments = []
-    } = req.body;
+    // [Bước 2 - bảo mật] (A) CHỈ nhận `message`, `history`, `attachments` từ client.
+    // KHÔNG tin persona/model/provider/tri thức/sản phẩm từ client -> LUÔN dùng dữ liệu SERVER. Ngăn:
+    //  (1) lạm dụng key trả phí như "LLM miễn phí" với persona tùy ý; (2) ép model đắt/endpoint lạ;
+    //  (3) chèn nguồn/URL giả để LÁCH guardrail link (guardrail dựa trên tri thức server nên phải dùng server).
+    const { message, history = [], attachments = [], sessionId } = req.body;
 
-    // Use client data if provided & non-empty, otherwise fallback to server store
-    const agentConfig = (clientAgentConfig && (clientAgentConfig.name || clientAgentConfig.businessName)) 
-      ? { ...(serverAgentConfig || {}), ...clientAgentConfig } 
-      : (serverAgentConfig || clientAgentConfig || {});
-
-    const knowledgeSources = (Array.isArray(clientKnowledgeSources) && clientKnowledgeSources.length > 0)
-      ? clientKnowledgeSources
-      : (Array.isArray(serverKnowledgeSources) && serverKnowledgeSources.length > 0 ? serverKnowledgeSources : (clientKnowledgeSources || []));
-
-    const products = (Array.isArray(clientProducts) && clientProducts.length > 0)
-      ? clientProducts
-      : (Array.isArray(serverProducts) && serverProducts.length > 0 ? serverProducts : (clientProducts || []));
+    const agentConfig = serverAgentConfig || {};
+    const knowledgeSources = Array.isArray(serverKnowledgeSources) ? serverKnowledgeSources : [];
+    const products = Array.isArray(serverProducts) ? serverProducts : [];
 
     // Filter active knowledge sources & active products
     const filteredKnowledgeSources = knowledgeSources.filter((k: any) => k.active !== false);
@@ -2456,6 +2529,17 @@ app.post("/api/chat", async (req, res) => {
       responseText.toLowerCase().includes("model")
     );
 
+    // [Bước 3] Lưu hội thoại + tự bắt SĐT thành lead (bắn-và-quên, không chặn phản hồi).
+    const sid = (typeof sessionId === 'string' && sessionId.trim()) ? sessionId.trim().slice(0, 80) : '';
+    if (sid) {
+      logChatTurn(sid, message || '', responseText);
+      const phone = detectPhone(message || '');
+      if (phone) {
+        saveLead({ sessionId: sid, phone, note: 'Khách để lại SĐT trong hội thoại: ' + String(message || '').slice(0, 300), source: 'chat_auto' })
+          .then((r) => { if (r.ok && !r.dedup) console.log(`[Lead] Tự bắt SĐT ${phone} từ hội thoại.`); });
+      }
+    }
+
     res.json({
       success: true,
       responseText,
@@ -2470,6 +2554,91 @@ app.post("/api/chat", async (req, res) => {
     res.status(500).json({
       error: "Đã xảy ra lỗi khi kết nối với Trợ lý AI. Vui lòng thử lại sau."
     });
+  }
+});
+
+// [Bước 3] CÔNG KHAI: khách để lại thông tin liên hệ từ widget (form "Để lại SĐT").
+app.post("/api/lead", async (req, res) => {
+  try {
+    const { sessionId, name, phone, note } = req.body || {};
+    const cleanPhone = detectPhone(String(phone || '')) || String(phone || '').replace(/[^\d+]/g, '');
+    if (!cleanPhone && !name) {
+      return res.status(400).json({ success: false, error: 'Vui lòng để lại số điện thoại hoặc tên ạ.' });
+    }
+    const r = await saveLead({ sessionId, name, phone: cleanPhone, note, source: 'form' });
+    if (!r.ok && r.reason === 'no_client') {
+      return res.status(200).json({ success: true, saved: false, message: 'Đã ghi nhận (chưa bật lưu trữ máy chủ).' });
+    }
+    res.json({ success: true, saved: true, dedup: !!r.dedup });
+  } catch (e: any) {
+    res.status(500).json({ success: false, error: 'Lỗi lưu thông tin: ' + (e?.message || String(e)) });
+  }
+});
+
+// [Bước 3] QUẢN TRỊ (được middleware auth bảo vệ khi AUTH_ENABLED): danh sách lead.
+app.get("/api/admin/leads", async (req, res) => {
+  try {
+    const client = getSupabaseClient();
+    if (!client) return res.json({ leads: [] });
+    const limit = Math.min(parseInt(String(req.query.limit || '200'), 10) || 200, 1000);
+    const { data, error } = await client.from('leads').select('*').order('created_at', { ascending: false }).limit(limit);
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ leads: data || [] });
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || String(e) });
+  }
+});
+
+// [Bước 3] QUẢN TRỊ: cập nhật trạng thái lead (new/called/won/lost).
+app.post("/api/admin/lead-status", async (req, res) => {
+  try {
+    const { id, status } = req.body || {};
+    const allowed = ['new', 'called', 'won', 'lost'];
+    if (!id || !allowed.includes(String(status))) return res.status(400).json({ error: 'Tham số không hợp lệ.' });
+    const client = getSupabaseClient();
+    if (!client) return res.status(400).json({ error: 'Chưa cấu hình Supabase.' });
+    const { error } = await client.from('leads').update({ status }).eq('id', id);
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ success: true });
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || String(e) });
+  }
+});
+
+// [Bước 3] QUẢN TRỊ: danh sách phiên hội thoại (gom theo session_id, kèm số tin + thời điểm cuối).
+app.get("/api/admin/conversations", async (req, res) => {
+  try {
+    const client = getSupabaseClient();
+    if (!client) return res.json({ conversations: [] });
+    // Lấy tối đa N log gần nhất rồi gom nhóm phía server (đơn giản, không cần view SQL).
+    const cap = Math.min(parseInt(String(req.query.scan || '4000'), 10) || 4000, 20000);
+    const { data, error } = await client.from('chat_logs').select('session_id, sender, text, created_at').order('created_at', { ascending: false }).limit(cap);
+    if (error) return res.status(500).json({ error: error.message });
+    const map = new Map<string, any>();
+    for (const row of (data || [])) {
+      const s = row.session_id;
+      if (!map.has(s)) map.set(s, { session_id: s, messages: 0, lastAt: row.created_at, lastText: row.text });
+      const c = map.get(s);
+      c.messages++;
+    }
+    res.json({ conversations: Array.from(map.values()).slice(0, 500) });
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || String(e) });
+  }
+});
+
+// [Bước 3] QUẢN TRỊ: toàn bộ tin nhắn của MỘT phiên hội thoại.
+app.get("/api/admin/conversation", async (req, res) => {
+  try {
+    const session = String(req.query.session || '').trim();
+    if (!session) return res.status(400).json({ error: 'Thiếu session.' });
+    const client = getSupabaseClient();
+    if (!client) return res.json({ messages: [] });
+    const { data, error } = await client.from('chat_logs').select('*').eq('session_id', session).order('created_at', { ascending: true }).limit(2000);
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ messages: data || [] });
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || String(e) });
   }
 });
 

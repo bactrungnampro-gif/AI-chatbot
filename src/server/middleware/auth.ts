@@ -13,6 +13,7 @@ export function isPublicApi(req: express.Request): boolean {
   if (path === '/api/widget.js') return true;
   if (path === '/api/auth/google/callback') return true; // Google redirect (không gắn được Bearer)
   if (path.startsWith('/api/chat')) return true;          // widget chat công khai
+  if (path === '/api/lead' && req.method === 'POST') return true; // widget gửi thông tin liên hệ (lead) công khai
   if (path === '/api/config' && req.method === 'GET') return true; // widget đọc cấu hình
   if (path === '/api/widget-config' && req.method === 'GET') return true; // widget đọc cấu hình NHẸ (không kèm tri thức)
   return false;

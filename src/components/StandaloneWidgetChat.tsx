@@ -80,6 +80,22 @@ export const StandaloneWidgetChat: React.FC<StandaloneWidgetChatProps> = ({
   const [inputText, setInputText] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
+
+  // [Step 3] Mã phiên trò chuyện ổn định cho mỗi khách (lưu localStorage) để máy chủ ghi log hội thoại & gom lead theo phiên.
+  const sessionIdRef = useRef<string>('');
+  if (!sessionIdRef.current) {
+    try {
+      let sid = localStorage.getItem('aistudio_widget_session') || '';
+      if (!sid) {
+        const rnd = Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
+        sid = 'sess_' + Date.now().toString(36) + '_' + rnd.slice(0, 12);
+        localStorage.setItem('aistudio_widget_session', sid);
+      }
+      sessionIdRef.current = sid;
+    } catch {
+      sessionIdRef.current = 'sess_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 14);
+    }
+  }
   const fileInputRef = useRef<HTMLInputElement>(null);
   const chatContainerRef = useRef<HTMLDivElement>(null);
   const [showScrollBtn, setShowScrollBtn] = useState(false);
@@ -254,6 +270,7 @@ export const StandaloneWidgetChat: React.FC<StandaloneWidgetChatProps> = ({
           history: lightHistory,
           agentConfig: currentAgent,
           attachments: currentAttachments,
+          sessionId: sessionIdRef.current,
         }),
       }, 60000); // [Fix M14] timeout 60s -> không kẹt "đang gõ..." vô hạn nếu máy chủ treo
 
