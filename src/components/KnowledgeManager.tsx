@@ -29,7 +29,9 @@ import {
   File,
   Flame,
   Zap,
-  Key
+  Key,
+  ChevronDown,
+  Database
 } from 'lucide-react';
 import { KnowledgeSource, KnowledgeType, ProductItem } from '../types';
 import { fetchWithTimeout } from '../lib/fetchWithTimeout';
@@ -489,6 +491,12 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
   const [newUrl, setNewUrl] = useState('');
 
   const [searchTerm, setSearchTerm] = useState('');
+
+  // [UX #1] Thu gọn khu NẠP nguồn để danh sách tri thức ở ngay tầm mắt khi kho đã có dữ liệu.
+  // Mặc định: mở khi kho TRỐNG (giúp người mới bắt đầu), thu gọn khi đã có nguồn.
+  const [showIngest, setShowIngest] = useState<boolean>(
+    () => !(Array.isArray(knowledgeSources) && knowledgeSources.length > 0)
+  );
 
   // Extract products from a knowledge source
   const handleExtractProducts = async (source: KnowledgeSource) => {
@@ -1190,43 +1198,24 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
           </div>
         </div>
 
-        {/* Sample Data Cleanup Banner if sample items exist */}
-        {knowledgeSources.some(k => ['kb_1', 'kb_2', 'kb_3', 'kb_4'].includes(k.id) || k.title.includes('TechLife')) && (
-          <div className="bg-amber-500/15 border border-amber-500/40 rounded-xl p-3.5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs text-amber-200">
-            <div className="flex items-center gap-2">
-              <AlertCircle className="w-4 h-4 text-amber-400 shrink-0" />
-              <span>
-                <b>Mẹo:</b> Danh sách đang chứa dữ liệu mẫu ban đầu (TechLife). Khi bạn nạp dữ liệu thương hiệu mới, hệ thống sẽ tự động ưu tiên dữ liệu mới của bạn. Bạn cũng có thể dọn dẹp dữ liệu mẫu ban đầu để danh sách gọn gàng hơn.
-              </span>
-            </div>
-            <button
-              type="button"
-              onClick={async () => {
-                if (!window.confirm('Xóa tất cả các tài liệu mẫu mặc định ban đầu (TechLife)? các tài liệu do bạn nạp vẫn sẽ được giữ nguyên.')) return;
-                // Xóa trên máy chủ + Supabase cho từng mục mẫu, nếu không chúng sẽ quay lại sau khi tải lại/redeploy.
-                const toDelete = knowledgeSources.filter((item) => ['kb_1', 'kb_2', 'kb_3', 'kb_4'].includes(item.id) || item.title.includes('TechLife'));
-                for (const it of toDelete) {
-                  try {
-                    await fetch('/api/knowledge/delete-source', {
-                      method: 'POST',
-                      headers: { 'Content-Type': 'application/json' },
-                      body: JSON.stringify({ id: it.id })
-                    });
-                  } catch { /* bỏ qua, vẫn xóa cục bộ bên dưới */ }
-                }
-                setKnowledgeSources((prev) => prev.filter((item) => !['kb_1', 'kb_2', 'kb_3', 'kb_4'].includes(item.id) && !item.title.includes('TechLife')));
-                if (setProducts) {
-                  setProducts((prev) => prev.filter((p) => !['prod_1', 'prod_2', 'prod_3'].includes(p.id) && !p.name.includes('TechLife')));
-                }
-                setScrapeSuccess('✨ Đã dọn dẹp xong dữ liệu mẫu ban đầu! Hiện tại Agent chỉ sử dụng nguồn dữ liệu mới do bạn cung cấp.');
-              }}
-              className="px-3 py-1.5 bg-amber-600 hover:bg-amber-500 text-white font-bold rounded-lg transition-colors shrink-0 shadow-sm flex items-center gap-1.5"
-            >
-              <Trash2 className="w-3.5 h-3.5" />
-              <span>Xóa Dữ Liệu Mẫu (TechLife)</span>
-            </button>
-          </div>
-        )}
+        {/* [UX #1] Nút thu gọn/mở khu NẠP nguồn -> khi kho lớn, danh sách tri thức ở ngay tầm mắt */}
+        <button
+          type="button"
+          onClick={() => setShowIngest((v) => !v)}
+          className="w-full flex items-center justify-between gap-2 px-4 py-3 rounded-xl bg-slate-800/80 hover:bg-slate-800 border border-slate-700/80 text-white transition-colors"
+        >
+          <span className="flex items-center gap-2 font-bold text-sm">
+            <Plus className="w-4 h-4 text-amber-400 shrink-0" />
+            Nạp nguồn tri thức mới
+            <span className="hidden sm:inline text-[11px] font-normal text-slate-400">(File · Website · Google Sheets/Drive · REST API)</span>
+          </span>
+          <ChevronDown className={`w-4 h-4 shrink-0 transition-transform ${showIngest ? 'rotate-180' : ''}`} />
+        </button>
+
+        {showIngest && (
+        <div className="pt-1">
+        {/* [UX #3] Nhãn thay cho việc đánh số tab (đây là 5 CÁCH nạp độc lập, không phải quy trình bắt buộc tuần tự) */}
+        <p className="text-xs font-semibold text-slate-400 mb-3">Chọn nguồn nạp dữ liệu:</p>
 
         {/* Connector Navigation Tabs */}
         <div className="flex flex-wrap items-center gap-2 border-b border-slate-800 pb-4 mb-4">
@@ -1240,7 +1229,7 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
             }`}
           >
             <FileUp className="w-4 h-4 text-amber-400" />
-            <span>1. Nạp File PDF / Word / Text</span>
+            <span>Nạp File PDF / Word / Text</span>
           </button>
 
           <button
@@ -1253,7 +1242,7 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
             }`}
           >
             <Globe className="w-4 h-4 text-sky-400" />
-            <span>2. Website Scraper</span>
+            <span>Website Scraper</span>
           </button>
 
           <button
@@ -1266,7 +1255,7 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
             }`}
           >
             <FileSpreadsheet className="w-4 h-4 text-emerald-400" />
-            <span>3. Google Sheets</span>
+            <span>Google Sheets</span>
           </button>
 
           <button
@@ -1279,7 +1268,7 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
             }`}
           >
             <HardDrive className="w-4 h-4 text-blue-400" />
-            <span>4. Google Drive / Docs</span>
+            <span>Google Drive / Docs</span>
           </button>
 
           <button
@@ -1292,7 +1281,7 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
             }`}
           >
             <Server className="w-4 h-4 text-purple-400" />
-            <span>5. REST API Endpoint</span>
+            <span>REST API Endpoint</span>
           </button>
         </div>
 
@@ -2115,6 +2104,8 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
             </form>
           </div>
         )}
+        </div>
+        )}
 
           {scrapeSuccess && (
             <div className="mt-4 p-3 rounded-xl bg-emerald-500/20 border border-emerald-400/30 text-emerald-200 text-xs flex items-center gap-2">
@@ -2171,25 +2162,29 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
             onClick={handleResyncAll}
             disabled={isResyncingAll || knowledgeSources.filter(k => k.active).length === 0}
             className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-semibold transition-colors shadow-xs disabled:opacity-50 shrink-0"
-            title="Tải lại/làm mới toàn bộ các nguồn tri thức đang bật"
+            title="Tải lại/làm mới nội dung MỚI NHẤT từ tất cả nguồn đang bật (crawl lại website, đồng bộ Sheet/Drive)"
           >
             <RefreshCw className={`w-3.5 h-3.5 ${isResyncingAll ? 'animate-spin' : ''}`} />
-            <span>{isResyncingAll ? 'Đang làm mới tất cả...' : 'Làm mới Tất cả (🔄)'}</span>
+            <span>{isResyncingAll ? 'Đang đồng bộ...' : 'Đồng bộ lại Nguồn'}</span>
           </button>
 
           <button
             onClick={handleBuildRagIndex}
             disabled={isIndexingRag || (ragStatus ? !ragStatus.ragEnabled : false)}
             className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2 bg-violet-600 hover:bg-violet-700 text-white rounded-xl text-xs font-semibold transition-colors shadow-xs disabled:opacity-50 shrink-0"
-            title="Xây/cập nhật chỉ mục RAG để agent tra cứu ngữ nghĩa. Kho lớn: bấm lại nhiều lần cho tới khi 'Hoàn tất'."
+            title="Xây/cập nhật CHỈ MỤC RAG để agent tra cứu ngữ nghĩa. Kho lớn: bấm lại nhiều lần cho tới khi 'Hoàn tất'."
           >
-            <RefreshCw className={`w-3.5 h-3.5 ${isIndexingRag ? 'animate-spin' : ''}`} />
+            {/* [UX #2] Icon RIÊNG (Database) để không lẫn với nút 'Đồng bộ lại Nguồn' cũng dùng biểu tượng xoay */}
+            {isIndexingRag
+              ? <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+              : <Database className="w-3.5 h-3.5" />}
             <span>{isIndexingRag ? 'Đang lập chỉ mục...' : `Lập chỉ mục RAG${ragStatus?.chunkCount != null ? ` (${ragStatus.chunkCount})` : ''}`}</span>
           </button>
 
+          {/* [UX #2] Tách nút 'Thêm Dữ Liệu' (hành động chính) khỏi 2 nút hệ thống ở trên bằng vạch ngăn */}
           <button
             onClick={() => setShowAddModal(true)}
-            className="inline-flex items-center justify-center gap-1.5 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-semibold transition-colors shadow-xs shrink-0"
+            className="inline-flex items-center justify-center gap-1.5 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-semibold transition-colors shadow-xs shrink-0 sm:ml-1 sm:border-l sm:border-slate-200 sm:pl-3"
           >
             <Plus className="w-4 h-4" />
             <span>Thêm Dữ Liệu Mới</span>
