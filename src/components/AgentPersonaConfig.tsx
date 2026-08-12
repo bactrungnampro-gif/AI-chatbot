@@ -739,6 +739,24 @@ export const AgentPersonaConfig: React.FC<AgentPersonaConfigProps> = ({
           )}
         </div>
 
+        {/* SECTION 3B: Kịch bản / Quy trình tư vấn */}
+        <div className="bg-white p-6 rounded-2xl border border-slate-200/80 shadow-2xs space-y-3">
+          <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
+            <Sparkles className="w-4 h-4 text-indigo-600" />
+            <h3 className="font-bold text-slate-900 text-sm">Kịch Bản / Quy Trình Tư Vấn (Workflow)</h3>
+          </div>
+          <p className="text-xs text-slate-600 leading-relaxed">
+            Mô tả <b>cách agent dẫn dắt hội thoại</b> (chào → hỏi nhu cầu → đề xuất → báo giá → chốt đơn/xin SĐT). Viết bằng tiếng Việt tự nhiên, ngắn gọn, ưu tiên các BƯỚC. Đây là cách <i>dẫn dắt</i>; mọi <i>dữ kiện</i> (giá, sản phẩm, link) agent vẫn lấy từ FAQ/kho tri thức, không bịa. Để trống nếu chưa dùng.
+          </p>
+          <textarea
+            value={(formData as any).salesWorkflow || ''}
+            onChange={(e) => setFormData({ ...formData, salesWorkflow: e.target.value } as any)}
+            rows={10}
+            placeholder={'Ví dụ:\n### KỊCH BẢN TƯ VẤN & CHỐT ĐƠN\n- Kích hoạt: khách hỏi mua/giá/"nên chọn loại nào".\n- Bước 1: chào + hỏi 1–2 câu làm rõ nhu cầu (mục đích, diện tích, ngân sách).\n- Bước 2: đề xuất 1–2 sản phẩm phù hợp nhất kèm lý do.\n- Bước 3: báo giá/ưu đãi (lấy từ dữ liệu, không bịa).\n- Bước 4: mời chốt đơn, xin Tên + SĐT + địa chỉ.\n- Cấm: không hứa giá/khuyến mãi không có trong dữ liệu.'}
+            className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-mono leading-relaxed focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 focus:outline-none"
+          />
+        </div>
+
         {/* SECTION 4: Supabase Integration & Vector DB Setup */}
         <div className="bg-white p-6 rounded-2xl border border-slate-200/80 shadow-2xs space-y-5">
           <div className="flex items-center justify-between border-b border-slate-100 pb-3">

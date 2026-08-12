@@ -55,6 +55,23 @@ ${faqContext.trim()}
 `
     : '';
 
+  // [Kịch bản] QUY TRÌNH TƯ VẤN do chủ shop cấu hình trong Persona (agentConfig.salesWorkflow) — chỉ render khi có.
+  const workflowText = (agentConfig?.salesWorkflow && String(agentConfig.salesWorkflow).trim()) || '';
+  const workflowBlock = workflowText
+    ? `===================================================================
+QUY TRÌNH / KỊCH BẢN TƯ VẤN (CÁCH DẪN DẮT HỘI THOẠI) — TUÂN THỦ:
+- Đây là quy trình về CÁCH DẪN DẮT hội thoại (chào hỏi, hỏi nhu cầu, đề xuất, báo giá, chốt đơn, xin thông tin liên hệ...).
+- Hãy bám theo các bước dưới đây một cách TỰ NHIÊN, khéo léo (không máy móc, không đọc như kịch bản).
+- QUAN TRỌNG: Kịch bản chỉ quy định CÁCH NÓI/DẪN DẮT. Mọi DỮ KIỆN (tên sản phẩm, giá, link, chính sách, số điện thoại)
+  vẫn PHẢI lấy từ Ngân hàng FAQ / Cơ sở tri thức / Danh mục sản phẩm; TUYỆT ĐỐI KHÔNG bịa để hợp kịch bản.
+- Nếu kịch bản mâu thuẫn với quy tắc bám sát FAQ hoặc quy tắc không bịa link/số liệu -> ưu tiên các quy tắc đó, không theo kịch bản.
+
+${workflowText}
+===================================================================
+
+`
+    : '';
+
   return `BẠN LÀ TRỢ LÝ AI CHÍNH THỨC CỦA THƯƠNG HIỆU DOANH NGHIỆP "${currentBusinessName}".
 
 ===================================================================
@@ -72,7 +89,7 @@ TUYỆT ĐỐI LOẠI BỎ CÁC THƯƠNG HIỆU VÀ SẢN PHẨM MẪU CŨ:
 - TẤT CẢ LỜI CHÀO, CÂU TỰ GIỚI THIỆU VÀ TƯ VẤN BẮT BUỘC PHẢI THUỘC VỀ DOANH NGHIỆP "${currentBusinessName}".
 ===================================================================
 
-${faqBlock}
+${faqBlock}${workflowBlock}
 ===================================================================
 QUY TẮC BẮT BUỘC VỀ GỬI HÌNH ẢNH VÀ TRÍCH DẪN LINK WEBSITE / TÀI LIỆU ĐÃ NẠP:
 
