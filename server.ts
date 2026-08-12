@@ -1996,6 +1996,15 @@ app.post("/api/chat", async (req, res) => {
 
     // Extract domains for link-sending permission dynamically
     const allowedDomainsSet = new Set<string>();
+    // [Bước 1 - guardrail] Tập URL THẬT (chuẩn hóa) có trong dữ liệu -> để hậu kiểm câu trả lời, loại link bịa.
+    const knownUrlSet = new Set<string>();
+    const normUrl = (raw: string): string | null => {
+      try {
+        const u = new URL(raw);
+        const path = u.pathname.replace(/\/+$/, '');
+        return u.hostname.toLowerCase() + path + (u.search || '');
+      } catch { return null; }
+    };
 
     const parseAndRegisterUrl = (rawUrl?: string) => {
       if (!rawUrl || typeof rawUrl !== 'string') return;
@@ -2008,6 +2017,8 @@ app.post("/api/chat", async (req, res) => {
           if (parts.length >= 2) {
             allowedDomainsSet.add(parts.slice(-2).join('.'));
           }
+          const n = normUrl(rawUrl);
+          if (n) knownUrlSet.add(n);
         }
       } catch (e) {
         // Ignore invalid URL
@@ -2397,6 +2408,43 @@ app.post("/api/chat", async (req, res) => {
 
     if (!responseText) {
       responseText = "Xin lỗi, em chưa nhận được câu trả lời từ mô hình AI. Anh/Chị có thể vui lòng thử lại được không ạ?";
+    }
+
+    // [Bước 1 - guardrail hậu kiểm link] Loại các URL KHÔNG có trong dữ liệu (chống bịa link/SDS/Drive giả ở TẦNG CODE).
+    // Cho phép: URL trùng khớp chính xác với link thật trong dữ liệu, HOẶC link gốc (trang chủ) của domain hợp lệ.
+    try {
+      const urlAllowed = (raw: string): boolean => {
+        const n = normUrl(raw);
+        if (!n) return true; // không phân giải được -> để nguyên
+        if (knownUrlSet.has(n)) return true;
+        try {
+          const u = new URL(raw);
+          if ((u.pathname === '' || u.pathname === '/') && allowedDomainsSet.has(u.hostname.toLowerCase())) return true;
+        } catch { /* ignore */ }
+        return false;
+      };
+      let strippedLinks = 0;
+      // 1) Link Markdown [nhãn](url) không hợp lệ -> giữ nhãn, bỏ link.
+      responseText = responseText.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, (m, label: string, url: string) => {
+        if (urlAllowed(url.replace(/[.,;:!?]+$/, ''))) return m;
+        strippedLinks++;
+        return label;
+      });
+      // 2) URL trần còn lại (không nằm trong markdown link) -> bỏ nếu không hợp lệ (tách dấu câu ở đuôi để không cắt nhầm).
+      responseText = responseText.replace(/(?<!\]\()https?:\/\/[^\s"'<>)\]]+/g, (raw: string) => {
+        const mm = raw.match(/^(.*?)([.,;:!?]*)$/);
+        const core = mm ? mm[1] : raw;
+        const tail = mm ? mm[2] : '';
+        if (urlAllowed(core)) return raw; // hợp lệ -> giữ nguyên cả dấu câu
+        strippedLinks++;
+        return tail; // bỏ URL, giữ lại dấu câu
+      });
+      if (strippedLinks > 0) {
+        responseText = responseText.replace(/\(\s*\)/g, '').replace(/[ \t]{2,}/g, ' ').trim();
+        console.warn(`[LinkGuard] Đã loại ${strippedLinks} link không có trong dữ liệu (chống bịa).`);
+      }
+    } catch (e: any) {
+      console.warn('[LinkGuard] lỗi khi hậu kiểm link:', e?.message || e);
     }
 
     // Detect if agent asked a clarifying question

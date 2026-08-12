@@ -50,7 +50,7 @@ export const AgentPersonaConfig: React.FC<AgentPersonaConfigProps> = ({
     selectedModel: 'gemini-2.5-flash',
     customApiKey: '',
     customApiEndpoint: '',
-    temperature: 0.7,
+    temperature: 0.3,
     supabaseConfig: {
       url: '',
       anonKey: '',
@@ -66,7 +66,7 @@ export const AgentPersonaConfig: React.FC<AgentPersonaConfigProps> = ({
     selectedModel: 'gemini-2.5-flash',
     customApiKey: '',
     customApiEndpoint: '',
-    temperature: 0.7,
+    temperature: 0.3,
     supabaseConfig: {
       url: '',
       anonKey: '',
@@ -83,7 +83,7 @@ export const AgentPersonaConfig: React.FC<AgentPersonaConfigProps> = ({
       selectedModel: 'gemini-2.5-flash',
       customApiKey: '',
       customApiEndpoint: '',
-      temperature: 0.7,
+      temperature: 0.3,
       supabaseConfig: {
         url: '',
         anonKey: '',
@@ -559,10 +559,10 @@ export const AgentPersonaConfig: React.FC<AgentPersonaConfigProps> = ({
             <div className="flex items-center justify-between mb-1.5 text-xs">
               <label className="font-semibold text-slate-700 flex items-center gap-1">
                 <Zap className="w-3.5 h-3.5 text-amber-500" />
-                Độ Sáng Tạo Phản Hồi (Temperature): <strong className="text-indigo-600">{formData.temperature ?? 0.7}</strong>
+                Độ Sáng Tạo Phản Hồi (Temperature): <strong className="text-indigo-600">{formData.temperature ?? 0.3}</strong>
               </label>
               <span className="text-[11px] text-slate-500">
-                {(formData.temperature ?? 0.7) <= 0.3 ? 'Rất Chuẩn Xác / Lập Luận' : (formData.temperature ?? 0.7) <= 0.7 ? 'Cân Bằng Tư Vấn' : 'Tự Nhiên & Sáng Tạo'}
+                {(formData.temperature ?? 0.3) <= 0.3 ? 'Rất Chuẩn Xác / Lập Luận' : (formData.temperature ?? 0.3) <= 0.7 ? 'Cân Bằng Tư Vấn' : 'Tự Nhiên & Sáng Tạo'}
               </span>
             </div>
             <input
@@ -570,7 +570,7 @@ export const AgentPersonaConfig: React.FC<AgentPersonaConfigProps> = ({
               min="0"
               max="1"
               step="0.05"
-              value={formData.temperature ?? 0.7}
+              value={formData.temperature ?? 0.3}
               onChange={(e) => setFormData({ ...formData, temperature: parseFloat(e.target.value) })}
               className="w-full h-2 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-indigo-600"
             />

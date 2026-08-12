@@ -434,7 +434,7 @@ export default function App() {
 
       {/* Footer */}
       <footer className="bg-white border-t border-slate-200/80 py-4 text-center text-xs text-slate-400 mt-8">
-        <p>Trợ Lý AI Tư Vấn Khách Hàng • Động cơ Gemini 3.6 Flash Multi-modal • Tích Hợp Website 24/7</p>
+        <p>Trợ Lý AI Tư Vấn Khách Hàng • Mô hình: {agentConfig?.selectedModel || 'Gemini'} • Tích Hợp Website 24/7</p>
       </footer>
 
     </div>

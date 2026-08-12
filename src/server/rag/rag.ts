@@ -311,13 +311,21 @@ export async function retrieveRelevant(
   // Nội dung của cùng một chunk giống hệt ở cả hai nhánh (cùng cột `content`) nên hash nội dung khớp chắc chắn.
   const keyOf = (r: any) => `${r?.source_id || ''}#${(r?.content || '').length}:${hashStr(r?.content || '')}`;
 
+  // [Bước 1 - chống bịa] NGƯỠNG similarity: loại các đoạn có độ tương đồng THẤP (lạc đề) trước khi đưa vào prompt.
+  // Trước đây RPC luôn trả top-k kể cả đoạn rất ít liên quan -> model dễ tin và bịa. Chỉ lọc khi RPC có trả similarity thật.
+  const MIN_SIM = parseFloat(process.env.RAG_MIN_SIMILARITY || '0.45');
+
   // 1) Tìm theo VECTOR (ngữ nghĩa)
   const emb = await embedText(ai, query);
   if (emb) {
     try {
       const { data, error } = await client.rpc('match_kb_chunks', { query_embedding: emb, match_count: matchCount });
       if (error) console.warn('[RAG] match rpc error:', error.message);
-      else if (Array.isArray(data)) for (const d of data) merged.set(keyOf(d), { content: d.content, source_id: d.source_id, similarity: typeof d.similarity === 'number' ? d.similarity : 0.7 });
+      else if (Array.isArray(data)) for (const d of data) {
+        const sim = typeof d.similarity === 'number' ? d.similarity : 0.7;
+        if (typeof d.similarity === 'number' && sim < MIN_SIM) continue; // dưới ngưỡng -> bỏ (lạc đề)
+        merged.set(keyOf(d), { content: d.content, source_id: d.source_id, similarity: sim });
+      }
     } catch (e: any) {
       console.warn('[RAG] vector retrieve error:', e?.message || e);
     }
