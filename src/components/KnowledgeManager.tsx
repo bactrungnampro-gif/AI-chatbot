@@ -80,6 +80,29 @@ function sourceTypeLabel(type: string | undefined): string {
   }
 }
 
+// [UX #5b] Gom LOẠI nguồn về 4 NHÓM lớn (Google gồm 3 loại type khác nhau: google_drive/google_sheets/sheet).
+function sourceGroup(type: string | undefined): 'file' | 'website' | 'google' | 'api' | 'other' {
+  switch (type) {
+    case 'document': return 'file';
+    case 'website': return 'website';
+    case 'google_drive':
+    case 'google_sheets':
+    case 'sheet': return 'google';
+    case 'api_endpoint': return 'api';
+    default: return 'other'; // process_guide / loại tự nhập khác
+  }
+}
+
+// Thứ tự + nhãn hiển thị của các nhóm chip.
+const GROUP_ORDER: Array<{ key: 'all' | 'file' | 'website' | 'google' | 'api' | 'other'; label: string }> = [
+  { key: 'all', label: 'Tất cả' },
+  { key: 'file', label: 'File / Tài liệu' },
+  { key: 'website', label: 'Website' },
+  { key: 'google', label: 'Google Drive/Sheet/Doc' },
+  { key: 'api', label: 'REST API' },
+  { key: 'other', label: 'Khác' },
+];
+
 // [UX #3] Nhãn nút "cập nhật lại" theo đúng loại nguồn (file không phải "cào web").
 function resyncLabel(type: string | undefined): string {
   switch (type) {
@@ -1228,8 +1251,8 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
   const filteredSources = useMemo(() => {
     const q = searchTerm.trim().toLowerCase();
     let list = knowledgeSources.filter((source) => {
-      // Lọc theo LOẠI nguồn.
-      if (typeFilter !== 'all' && (source.type || '') !== typeFilter) return false;
+      // Lọc theo NHÓM nguồn (File / Website / Google / REST API / Khác).
+      if (typeFilter !== 'all' && sourceGroup(source.type) !== typeFilter) return false;
       // Lọc theo TRẠNG THÁI bật/tắt.
       if (statusFilter === 'active' && source.active === false) return false;
       if (statusFilter === 'inactive' && source.active !== false) return false;
@@ -1247,14 +1270,14 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
     return list;
   }, [knowledgeSources, searchTerm, typeFilter, statusFilter, sortBy]);
 
-  // [UX #5] Danh sách LOẠI nguồn thực có (để đổ vào dropdown lọc, kèm số lượng).
-  const availableTypes = useMemo(() => {
+  // [UX #5b] Đếm số nguồn theo từng NHÓM (để hiện trên chip; chỉ hiện chip có nguồn).
+  const groupCounts = useMemo(() => {
     const counts: Record<string, number> = {};
     for (const s of knowledgeSources) {
-      const t = (s && s.type) || 'document';
-      counts[t] = (counts[t] || 0) + 1;
+      const g = sourceGroup(s && s.type);
+      counts[g] = (counts[g] || 0) + 1;
     }
-    return Object.keys(counts).sort().map((t) => ({ type: t, count: counts[t] }));
+    return counts;
   }, [knowledgeSources]);
 
   return (
@@ -2303,23 +2326,32 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
         </div>
       )}
 
-      {/* [UX #5] Thanh LỌC & SẮP XẾP nguồn tri thức */}
-      <div className="flex flex-col sm:flex-row sm:flex-wrap items-stretch sm:items-center gap-2 bg-white px-3 py-2.5 rounded-2xl border border-slate-200/80 shadow-2xs">
-        {/* Lọc theo loại */}
-        <div className="flex items-center gap-1.5">
-          <span className="text-[11px] font-semibold text-slate-500 shrink-0">Loại:</span>
-          <select
-            value={typeFilter}
-            onChange={(e) => setTypeFilter(e.target.value)}
-            className="bg-slate-50 border border-slate-200 rounded-lg px-2 py-1.5 text-xs font-medium text-slate-700 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-          >
-            <option value="all">Tất cả loại ({knowledgeSources.length})</option>
-            {availableTypes.map((t) => (
-              <option key={t.type} value={t.type}>{sourceTypeLabel(t.type)} ({t.count})</option>
-            ))}
-          </select>
-        </div>
+      {/* [UX #5b] Chip lọc theo NHÓM nguồn (tab-like, một chạm) */}
+      <div className="flex flex-wrap items-center gap-2">
+        {GROUP_ORDER.map((g) => {
+          const count = g.key === 'all' ? knowledgeSources.length : (groupCounts[g.key] || 0);
+          if (g.key !== 'all' && count === 0) return null; // ẩn nhóm rỗng
+          const activeChip = typeFilter === g.key;
+          return (
+            <button
+              key={g.key}
+              type="button"
+              onClick={() => setTypeFilter(g.key)}
+              className={`px-3 py-1.5 rounded-full text-xs font-semibold border transition-colors flex items-center gap-1.5 ${
+                activeChip
+                  ? 'bg-indigo-600 text-white border-indigo-500 shadow-sm'
+                  : 'bg-white text-slate-600 border-slate-200 hover:border-indigo-300 hover:text-indigo-700'
+              }`}
+            >
+              <span>{g.label}</span>
+              <span className={`px-1.5 rounded-full text-[10px] font-bold ${activeChip ? 'bg-white/25 text-white' : 'bg-slate-100 text-slate-500'}`}>{count}</span>
+            </button>
+          );
+        })}
+      </div>
 
+      {/* [UX #5] Thanh LỌC (trạng thái) & SẮP XẾP nguồn tri thức */}
+      <div className="flex flex-col sm:flex-row sm:flex-wrap items-stretch sm:items-center gap-2 bg-white px-3 py-2.5 rounded-2xl border border-slate-200/80 shadow-2xs">
         {/* Lọc theo trạng thái */}
         <div className="flex items-center gap-1.5">
           <span className="text-[11px] font-semibold text-slate-500 shrink-0">Trạng thái:</span>
