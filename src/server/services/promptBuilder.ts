@@ -39,6 +39,9 @@ NGÂN HÀNG HỎI–ĐÁP ĐÃ DUYỆT (FAQ) — NGUỒN ƯU TIÊN SỐ 1, BẮT
 - Đây là các câu trả lời ĐÃ ĐƯỢC DUYỆT. Khi câu hỏi của khách KHỚP hoặc GẦN KHỚP một mục dưới đây,
   BẮT BUỘC trả lời DỰA ĐÚNG trên đáp án đã duyệt của mục đó. Cụ thể:
   + Nếu đáp án liệt kê NHIỀU sản phẩm/mục -> PHẢI nêu ĐẦY ĐỦ và ĐÚNG TÊN tất cả các mục đó, TUYỆT ĐỐI KHÔNG bỏ sót.
+  + KHI chủ đề khách hỏi ĐÃ CÓ trong FAQ: CHỈ được nêu đúng các sản phẩm/mục có trong đáp án FAQ khớp đó. BỎ QUA trang sản phẩm khác,
+    tài liệu khác và KIẾN THỨC NỀN CỦA BẠN cho phần trả lời này. KHÔNG tự thêm sản phẩm khác (vd "MF Premium"...), KHÔNG tự thêm
+    quy trình kỹ thuật/công thức hóa học/thông số máy móc nếu đáp án FAQ không có.
   + TUYỆT ĐỐI KHÔNG thêm sản phẩm/thương hiệu/thông số kỹ thuật/đường link/tài liệu (SDS, HDSD...) mà đáp án đã duyệt KHÔNG nhắc tới.
   + CHỈ được diễn đạt lại cho tự nhiên, đúng tone; KHÔNG đổi ý nghĩa, KHÔNG bịa thêm chi tiết.
   + Về link/tài liệu: CHỈ dùng đúng đường link XUẤT HIỆN trong đáp án đã duyệt (hoặc trong Cơ sở tri thức bên dưới).
@@ -69,6 +72,7 @@ TUYỆT ĐỐI LOẠI BỎ CÁC THƯƠNG HIỆU VÀ SẢN PHẨM MẪU CŨ:
 - TẤT CẢ LỜI CHÀO, CÂU TỰ GIỚI THIỆU VÀ TƯ VẤN BẮT BUỘC PHẢI THUỘC VỀ DOANH NGHIỆP "${currentBusinessName}".
 ===================================================================
 
+${faqBlock}
 ===================================================================
 QUY TẮC BẮT BUỘC VỀ GỬI HÌNH ẢNH VÀ TRÍCH DẪN LINK WEBSITE / TÀI LIỆU ĐÃ NẠP:
 
@@ -130,7 +134,7 @@ DANH SÁCH ĐƯỜNG DẪN/LINK CHÍNH XÁC ĐÃ NẠP (RẤT QUAN TRỌNG):
 ${linkDirectory || "Chưa có đường dẫn nào được nạp."}
 ===================================================================
 
-${faqBlock}DỮ LIỆU CƠ SỞ TRI THỨC (KNOWLEDGE BASE) CỦA CỬA HÀNG/DOANH NGHIỆP (ƯU TIÊN 1):
+DỮ LIỆU CƠ SỞ TRI THỨC (KNOWLEDGE BASE) CỦA CỬA HÀNG/DOANH NGHIỆP (ƯU TIÊN 1):
 ${knowledgeContextText || "Chưa có dữ liệu tri thức nào."}
 
 DANH MỤC SẢN PHẨM ĐANG KINH DOANH (ƯU TIÊN 1):

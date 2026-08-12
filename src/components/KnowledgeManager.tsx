@@ -577,6 +577,30 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
   const [newContent, setNewContent] = useState('');
   const [newUrl, setNewUrl] = useState('');
 
+  // [Sửa nội dung] State cho việc chỉnh sửa TRỰC TIẾP nội dung một nguồn đã nạp.
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editTitle, setEditTitle] = useState('');
+  const [editContent, setEditContent] = useState('');
+
+  const openEditSource = (source: KnowledgeSource) => {
+    setEditingId(source.id);
+    setEditTitle(source.title || '');
+    setEditContent(source.content || '');
+  };
+  const saveEditSource = () => {
+    if (!editingId) return;
+    const wc = editContent.trim().split(/\s+/).filter(Boolean).length;
+    setKnowledgeSources((prev) =>
+      prev.map((item) =>
+        item.id === editingId
+          ? { ...item, title: editTitle.trim() || item.title, content: editContent, wordCount: wc, updatedAt: new Date().toISOString() }
+          : item
+      )
+    );
+    setEditingId(null);
+    setScrapeSuccess('✅ Đã cập nhật nội dung nguồn tri thức. Bấm "Lập chỉ mục RAG" để agent dùng bản mới.');
+  };
+
   const [searchTerm, setSearchTerm] = useState('');
   // [UX #5] Lọc & sắp xếp danh sách nguồn tri thức.
   const [typeFilter, setTypeFilter] = useState<string>('all');
@@ -2658,17 +2682,66 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
               <span className={source.active ? 'text-emerald-600 font-medium' : 'text-slate-400'}>
                 {source.active ? '● Đang dùng' : '○ Đang tắt'}
               </span>
-              <button
-                onClick={() => handleDeleteSource(source.id)}
-                className="text-slate-400 hover:text-red-600 transition-colors"
-                title="Xoá mục này"
-              >
-                <Trash2 className="w-4 h-4" />
-              </button>
+              <div className="flex items-center gap-3">
+                {/* [Sửa nội dung] Chỉnh sửa trực tiếp nội dung nguồn đã nạp */}
+                <button
+                  onClick={() => openEditSource(source)}
+                  className="text-slate-400 hover:text-indigo-600 transition-colors font-semibold"
+                  title="Sửa nội dung nguồn này"
+                >
+                  ✏️ Sửa nội dung
+                </button>
+                <button
+                  onClick={() => handleDeleteSource(source.id)}
+                  className="text-slate-400 hover:text-red-600 transition-colors"
+                  title="Xoá mục này"
+                >
+                  <Trash2 className="w-4 h-4" />
+                </button>
+              </div>
             </div>
           </div>
         ))}
       </div>
+      )}
+
+      {/* [Sửa nội dung] Modal chỉnh sửa nội dung nguồn đã nạp */}
+      {editingId && (
+        <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-2xl w-full p-6 shadow-xl border border-slate-200 max-h-[90vh] flex flex-col">
+            <h3 className="text-base font-bold text-slate-900 mb-1">Sửa nội dung nguồn tri thức</h3>
+            <p className="text-xs text-slate-500 mb-4">Chỉnh trực tiếp tại đây rồi bấm Lưu. Sau khi lưu, nhớ bấm “Lập chỉ mục RAG” để agent dùng bản mới.</p>
+            <label className="text-xs font-semibold text-slate-700 mb-1 block">Tiêu đề</label>
+            <input
+              type="text"
+              value={editTitle}
+              onChange={(e) => setEditTitle(e.target.value)}
+              className="w-full border border-slate-200 rounded-xl px-3 py-2 text-sm mb-3 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
+            />
+            <label className="text-xs font-semibold text-slate-700 mb-1 block">Nội dung</label>
+            <textarea
+              value={editContent}
+              onChange={(e) => setEditContent(e.target.value)}
+              className="w-full flex-1 min-h-[300px] border border-slate-200 rounded-xl px-3 py-2 text-xs font-mono leading-relaxed resize-y focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
+            />
+            <div className="text-[11px] text-slate-400 mt-1">{editContent.trim().split(/\s+/).filter(Boolean).length} từ</div>
+            <div className="flex justify-end gap-2 mt-4">
+              <button
+                onClick={() => setEditingId(null)}
+                className="px-4 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-sm font-semibold transition-colors"
+              >
+                Huỷ
+              </button>
+              <button
+                onClick={saveEditSource}
+                disabled={!editContent.trim()}
+                className="px-5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-sm font-bold transition-colors"
+              >
+                Lưu nội dung
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Add Manual Modal */}

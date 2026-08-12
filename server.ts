@@ -2256,22 +2256,54 @@ app.post("/api/chat", async (req, res) => {
 
     // [#1] Ngân hàng HỎI–ĐÁP: gom nội dung các nguồn loại 'faq' đang bật -> LUÔN đưa vào prompt (không phụ thuộc RAG),
     // để agent ưu tiên đáp án đã duyệt. Giới hạn tổng ký tự tránh phình prompt.
-    const FAQ_MAX_CHARS = parseInt(process.env.FAQ_MAX_CONTEXT_CHARS || '12000', 10);
+    // [Fix mở rộng] Ngân hàng FAQ có thể RẤT lớn -> KHÔNG nhồi cả bộ vào prompt. Thay vào đó:
+    //  - Nếu tổng FAQ còn nhỏ (<= FAQ_MAX_CHARS) -> đưa hết (đảm bảo đầy đủ cho bộ nhỏ).
+    //  - Nếu lớn hơn -> TÁCH từng cặp Hỏi–Đáp rồi CHỌN LỌC theo câu hỏi hiện tại (khớp từ khóa, khử dấu),
+    //    chỉ đưa các cặp LIÊN QUAN NHẤT vào khối ưu tiên. Nhờ vậy khối FAQ luôn nhỏ gọn dù bộ có hàng nghìn câu.
+    const FAQ_MAX_CHARS = parseInt(process.env.FAQ_MAX_CONTEXT_CHARS || '40000', 10);
+    // Khi phải chọn lọc: giới hạn số ký tự và số cặp đưa vào (đủ để trùm câu hỏi mà không phình prompt).
+    const FAQ_SELECT_CHARS = parseInt(process.env.FAQ_SELECT_MAX_CHARS || '12000', 10);
+    const FAQ_SELECT_MAX_ENTRIES = parseInt(process.env.FAQ_SELECT_MAX_ENTRIES || '12', 10);
     let faqContext = '';
     try {
       // [#1] Gồm cả nguồn loại 'faq' LẪN nguồn được đánh dấu "Ưu tiên như FAQ" (faqPriority) — vd CSV/Google Sheet.
       const faqSources = (Array.isArray(filteredKnowledgeSources) ? filteredKnowledgeSources : [])
         .filter((k: any) => k && k.active !== false && k.content && (k.type === 'faq' || k.faqPriority === true));
-      const parts: string[] = [];
-      let total = 0;
-      for (const k of faqSources) {
-        const body = String(k.content || '').trim();
-        if (!body) continue;
-        const block = `[${k.title || 'FAQ'}]\n${body}`;
-        if (total + block.length > FAQ_MAX_CHARS) { parts.push(block.slice(0, Math.max(0, FAQ_MAX_CHARS - total))); break; }
-        parts.push(block); total += block.length;
+      const allText = faqSources.map((k: any) => String(k.content || '').trim()).filter(Boolean).join('\n\n');
+
+      if (!allText) {
+        faqContext = '';
+      } else if (allText.length <= FAQ_MAX_CHARS) {
+        // Bộ nhỏ -> đưa hết, đảm bảo đầy đủ.
+        faqContext = allText;
+      } else {
+        // Bộ lớn -> tách từng cặp "Câu hỏi: ... Trả lời: ..." (chấp nhận cả tiền tố "• " của Google Sheet).
+        const entries = allText
+          .split(/\n(?=\s*[•\-]?\s*Câu hỏi\s*:)/i)
+          .map((s) => s.trim())
+          .filter((s) => s.length > 0);
+        // Chấm điểm theo số từ khóa (khử dấu) của câu hỏi xuất hiện trong từng cặp.
+        const qk = extractKeywords(message || '').map(foldVN).filter((x: string) => x && x.length >= 2);
+        const scored = entries.map((e) => {
+          const fe = foldVN(e);
+          let score = 0;
+          for (const k of qk) if (fe.includes(k)) score++;
+          return { e, score };
+        });
+        scored.sort((a, b) => b.score - a.score);
+        const parts: string[] = [];
+        let total = 0;
+        for (const s of scored) {
+          // Đủ số cặp cần thiết rồi thì dừng nhận thêm cặp KHÔNG liên quan (score 0).
+          if (s.score === 0 && parts.length >= Math.min(3, FAQ_SELECT_MAX_ENTRIES)) break;
+          if (parts.length >= FAQ_SELECT_MAX_ENTRIES) break;
+          if (total + s.e.length + 2 > FAQ_SELECT_CHARS) continue;
+          parts.push(s.e);
+          total += s.e.length + 2;
+        }
+        faqContext = parts.join('\n\n');
+        console.log(`[FAQ] Bộ FAQ lớn (${allText.length} ký tự) -> chọn ${parts.length} cặp liên quan nhất cho câu hỏi.`);
       }
-      faqContext = parts.join('\n\n');
     } catch { /* bỏ qua */ }
 
     // [Giai đoạn 2] Dựng systemInstruction qua PromptBuilder (src/server/services/promptBuilder.ts).
@@ -2337,7 +2369,7 @@ app.post("/api/chat", async (req, res) => {
     const customApiEndpoint = (process.env.CUSTOM_OPENAI_ENDPOINT || '').trim();
     // [Chính xác hơn] Hạ temperature mặc định 0.7 -> 0.3 để agent bám sát dữ liệu/FAQ, đỡ "sáng tạo"/bịa và nhất quán hơn.
     // Vẫn cho phép ghi đè qua Persona (agentConfig.temperature) nếu muốn sáng tạo hơn.
-    const temperature = typeof agentConfig?.temperature === 'number' ? agentConfig.temperature : 0.3;
+    const temperature = typeof agentConfig?.temperature === 'number' ? agentConfig.temperature : 0.2;
     console.log(`[AI Engine] Provider: ${provider}, Model: ${selectedModel}, Temp: ${temperature} (keys: server-side env only)`);
 
     let responseText = "";
