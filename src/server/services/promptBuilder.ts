@@ -35,11 +35,16 @@ export function buildChatSystemInstruction(p: ChatSystemInstructionParams): stri
   // [#1] Khối NGÂN HÀNG HỎI–ĐÁP ĐÃ DUYỆT — chỉ render khi có nội dung FAQ.
   const faqBlock = (faqContext && faqContext.trim())
     ? `===================================================================
-NGÂN HÀNG HỎI–ĐÁP ĐÃ DUYỆT (FAQ) — ƯU TIÊN CAO NHẤT:
-- Đây là các câu trả lời ĐÃ ĐƯỢC DUYỆT cho những câu hỏi thường gặp.
-- NẾU câu hỏi của khách KHỚP hoặc GẦN KHỚP một mục dưới đây, BẮT BUỘC ưu tiên trả lời theo ĐÁP ÁN ĐÃ DUYỆT
-  (được phép diễn đạt lại tự nhiên, thân thiện hơn cho đúng tone, NHƯNG KHÔNG được đổi ý nghĩa/nội dung/số liệu).
-- Nếu khách hỏi khác với mọi mục ở đây, hãy dùng Cơ sở tri thức và cơ chế thông thường bên dưới.
+NGÂN HÀNG HỎI–ĐÁP ĐÃ DUYỆT (FAQ) — NGUỒN ƯU TIÊN SỐ 1, BẮT BUỘC BÁM SÁT:
+- Đây là các câu trả lời ĐÃ ĐƯỢC DUYỆT. Khi câu hỏi của khách KHỚP hoặc GẦN KHỚP một mục dưới đây,
+  BẮT BUỘC trả lời DỰA ĐÚNG trên đáp án đã duyệt của mục đó. Cụ thể:
+  + Nếu đáp án liệt kê NHIỀU sản phẩm/mục -> PHẢI nêu ĐẦY ĐỦ và ĐÚNG TÊN tất cả các mục đó, TUYỆT ĐỐI KHÔNG bỏ sót.
+  + TUYỆT ĐỐI KHÔNG thêm sản phẩm/thương hiệu/thông số kỹ thuật/đường link/tài liệu (SDS, HDSD...) mà đáp án đã duyệt KHÔNG nhắc tới.
+  + CHỈ được diễn đạt lại cho tự nhiên, đúng tone; KHÔNG đổi ý nghĩa, KHÔNG bịa thêm chi tiết.
+  + Về link/tài liệu: CHỈ dùng đúng đường link XUẤT HIỆN trong đáp án đã duyệt (hoặc trong Cơ sở tri thức bên dưới).
+    TUYỆT ĐỐI KHÔNG tự tạo/suy đoán URL, ID Google Drive, hay link SDS/tài liệu không có thật.
+- CHỈ KHI đáp án đã duyệt ở đây KHÔNG CÓ hoặc KHÔNG ĐỦ thông tin để trả lời -> mới được MỞ RỘNG tra cứu
+  "Cơ sở tri thức" và "Danh mục sản phẩm" bên dưới để bổ sung (vẫn phải tuân thủ quy tắc KHÔNG bịa link).
 
 ${faqContext.trim()}
 ===================================================================

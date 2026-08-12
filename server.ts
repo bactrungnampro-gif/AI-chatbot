@@ -2335,7 +2335,9 @@ app.post("/api/chat", async (req, res) => {
     }
     // [Giai đoạn 2] Cấu hình chung; key/endpoint chỉ lấy từ env server. Logic từng provider đã tách sang src/server/providers/ai/*.
     const customApiEndpoint = (process.env.CUSTOM_OPENAI_ENDPOINT || '').trim();
-    const temperature = typeof agentConfig?.temperature === 'number' ? agentConfig.temperature : 0.7;
+    // [Chính xác hơn] Hạ temperature mặc định 0.7 -> 0.3 để agent bám sát dữ liệu/FAQ, đỡ "sáng tạo"/bịa và nhất quán hơn.
+    // Vẫn cho phép ghi đè qua Persona (agentConfig.temperature) nếu muốn sáng tạo hơn.
+    const temperature = typeof agentConfig?.temperature === 'number' ? agentConfig.temperature : 0.3;
     console.log(`[AI Engine] Provider: ${provider}, Model: ${selectedModel}, Temp: ${temperature} (keys: server-side env only)`);
 
     let responseText = "";
