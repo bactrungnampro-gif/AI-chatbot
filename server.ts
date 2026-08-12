@@ -2254,7 +2254,26 @@ app.post("/api/chat", async (req, res) => {
     const currentBusinessIndustry = agentConfig?.businessIndustry || 'Dịch vụ & Sản phẩm';
     const currentBusinessDescription = agentConfig?.businessDescription || '';
 
-    // [Giai đoạn 2] Dựng systemInstruction qua PromptBuilder (src/server/services/promptBuilder.ts) — hành vi không đổi.
+    // [#1] Ngân hàng HỎI–ĐÁP: gom nội dung các nguồn loại 'faq' đang bật -> LUÔN đưa vào prompt (không phụ thuộc RAG),
+    // để agent ưu tiên đáp án đã duyệt. Giới hạn tổng ký tự tránh phình prompt.
+    const FAQ_MAX_CHARS = parseInt(process.env.FAQ_MAX_CONTEXT_CHARS || '12000', 10);
+    let faqContext = '';
+    try {
+      const faqSources = (Array.isArray(filteredKnowledgeSources) ? filteredKnowledgeSources : [])
+        .filter((k: any) => k && k.active !== false && k.type === 'faq' && k.content);
+      const parts: string[] = [];
+      let total = 0;
+      for (const k of faqSources) {
+        const body = String(k.content || '').trim();
+        if (!body) continue;
+        const block = `[${k.title || 'FAQ'}]\n${body}`;
+        if (total + block.length > FAQ_MAX_CHARS) { parts.push(block.slice(0, Math.max(0, FAQ_MAX_CHARS - total))); break; }
+        parts.push(block); total += block.length;
+      }
+      faqContext = parts.join('\n\n');
+    } catch { /* bỏ qua */ }
+
+    // [Giai đoạn 2] Dựng systemInstruction qua PromptBuilder (src/server/services/promptBuilder.ts).
     const systemInstruction = buildChatSystemInstruction({
       agentConfig,
       currentAgentName,
@@ -2266,6 +2285,7 @@ app.post("/api/chat", async (req, res) => {
       linkDirectory,
       knowledgeContextText,
       activeProducts,
+      faqContext,
     });
 
     // Extract Model & Provider Configuration

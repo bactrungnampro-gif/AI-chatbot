@@ -10,18 +10,48 @@ export const CHUNK_TABLE = 'kb_chunks';
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 // Chia nhỏ văn bản thành các đoạn ~2200 ký tự, chồng lấn 200 (chunk to hơn -> ít lần embedding hơn -> đỡ đụng rate limit).
+// [Fix #2 - FAQ/đoạn-aware] Chia đoạn theo RANH GIỚI TỰ NHIÊN:
+// - Nếu nội dung là NGÂN HÀNG HỎI–ĐÁP (có marker "Câu hỏi:/Hỏi:/Q:") -> tách theo TỪNG mục Hỏi–Đáp,
+//   không bao giờ cắt rời câu hỏi khỏi câu trả lời.
+// - Ngược lại -> tách theo ĐOẠN (dòng trống) để không cắt giữa đoạn.
+// Sau đó GOM các đơn vị vào chunk tới ~size (đơn vị quá dài mới cắt cứng). Giữ xuống dòng (không còn ép \s+ -> ' ').
 export function chunkText(text: string, size = 2200, overlap = 200): string[] {
-  const clean = (text || '').replace(/\s+/g, ' ').trim();
+  const clean = (text || '')
+    .replace(/\r\n/g, '\n')
+    .replace(/[ \t]+/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
   if (!clean) return [];
   if (clean.length <= size) return [clean];
-  const chunks: string[] = [];
-  let start = 0;
-  while (start < clean.length) {
-    const end = Math.min(start + size, clean.length);
-    chunks.push(clean.slice(start, end));
-    if (end >= clean.length) break;
-    start = end - overlap;
+
+  const faqMarker = /(?:^|\n)\s*(?:Câu hỏi|Hỏi|Q|Question)\s*[:.\-)]/i;
+  let units: string[];
+  if (faqMarker.test(clean)) {
+    // Tách TRƯỚC mỗi "Câu hỏi:" -> mỗi đơn vị = 1 cặp Hỏi–Đáp trọn vẹn.
+    units = clean
+      .split(/\n(?=\s*(?:Câu hỏi|Hỏi|Q|Question)\s*[:.\-)])/i)
+      .map((u) => u.trim())
+      .filter(Boolean);
+  } else {
+    // Tách theo đoạn (dòng trống).
+    units = clean.split(/\n{2,}/).map((u) => u.trim()).filter(Boolean);
   }
+
+  const chunks: string[] = [];
+  let cur = '';
+  for (const u of units) {
+    if (u.length > size) {
+      // Đơn vị đơn lẻ quá dài -> đẩy phần đang gom, rồi cắt cứng đơn vị này theo cửa sổ (có overlap).
+      if (cur) { chunks.push(cur); cur = ''; }
+      const step = Math.max(1, size - overlap);
+      for (let s = 0; s < u.length; s += step) chunks.push(u.slice(s, s + size));
+      continue;
+    }
+    if (!cur) cur = u;
+    else if (cur.length + 2 + u.length <= size) cur += '\n\n' + u; // còn chỗ -> gom chung
+    else { chunks.push(cur); cur = u; }                            // đầy -> chốt chunk, mở chunk mới
+  }
+  if (cur) chunks.push(cur);
   return chunks;
 }
 

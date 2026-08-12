@@ -13,6 +13,7 @@ export interface ChatSystemInstructionParams {
   linkDirectory: string;
   knowledgeContextText: string;
   activeProducts: string;
+  faqContext?: string; // [#1] Ngân hàng Hỏi–Đáp đã duyệt (luôn đưa vào prompt, ưu tiên cao nhất khi khớp)
 }
 
 export function buildChatSystemInstruction(p: ChatSystemInstructionParams): string {
@@ -28,7 +29,23 @@ export function buildChatSystemInstruction(p: ChatSystemInstructionParams): stri
     linkDirectory,
     knowledgeContextText,
     activeProducts,
+    faqContext,
   } = p;
+
+  // [#1] Khối NGÂN HÀNG HỎI–ĐÁP ĐÃ DUYỆT — chỉ render khi có nội dung FAQ.
+  const faqBlock = (faqContext && faqContext.trim())
+    ? `===================================================================
+NGÂN HÀNG HỎI–ĐÁP ĐÃ DUYỆT (FAQ) — ƯU TIÊN CAO NHẤT:
+- Đây là các câu trả lời ĐÃ ĐƯỢC DUYỆT cho những câu hỏi thường gặp.
+- NẾU câu hỏi của khách KHỚP hoặc GẦN KHỚP một mục dưới đây, BẮT BUỘC ưu tiên trả lời theo ĐÁP ÁN ĐÃ DUYỆT
+  (được phép diễn đạt lại tự nhiên, thân thiện hơn cho đúng tone, NHƯNG KHÔNG được đổi ý nghĩa/nội dung/số liệu).
+- Nếu khách hỏi khác với mọi mục ở đây, hãy dùng Cơ sở tri thức và cơ chế thông thường bên dưới.
+
+${faqContext.trim()}
+===================================================================
+
+`
+    : '';
 
   return `BẠN LÀ TRỢ LÝ AI CHÍNH THỨC CỦA THƯƠNG HIỆU DOANH NGHIỆP "${currentBusinessName}".
 
@@ -108,7 +125,7 @@ DANH SÁCH ĐƯỜNG DẪN/LINK CHÍNH XÁC ĐÃ NẠP (RẤT QUAN TRỌNG):
 ${linkDirectory || "Chưa có đường dẫn nào được nạp."}
 ===================================================================
 
-DỮ LIỆU CƠ SỞ TRI THỨC (KNOWLEDGE BASE) CỦA CỬA HÀNG/DOANH NGHIỆP (ƯU TIÊN 1):
+${faqBlock}DỮ LIỆU CƠ SỞ TRI THỨC (KNOWLEDGE BASE) CỦA CỬA HÀNG/DOANH NGHIỆP (ƯU TIÊN 1):
 ${knowledgeContextText || "Chưa có dữ liệu tri thức nào."}
 
 DANH MỤC SẢN PHẨM ĐANG KINH DOANH (ƯU TIÊN 1):
