@@ -24,7 +24,9 @@ export async function chatGemini(ai: any, p: ChatParams): Promise<string> {
   currentParts.push({ text: p.message || 'Hãy phân tích tệp/hình ảnh/video tôi vừa gửi và hỗ trợ cho tôi.' });
   contents.push({ role: 'user', parts: currentParts });
 
-  const modelsToTry = Array.from(new Set([p.model, 'gemini-3.6-flash', 'gemini-2.5-flash', 'gemini-flash-latest', 'gemini-3.1-flash-lite']));
+  // Bỏ 'gemini-2.5-flash' (đã bị Google khai tử -> 404). 'gemini-flash-latest' là alias của model chính (cùng bucket quota),
+  // 'gemini-3.1-flash-lite' là model khác nên có thể có hạn ngạch free-tier RIÊNG -> để cuối làm phao cứu sinh.
+  const modelsToTry = Array.from(new Set([p.model, 'gemini-3.6-flash', 'gemini-flash-latest', 'gemini-3.1-flash-lite']));
   let lastErr: any = null;
   for (const m of modelsToTry) {
     try {
