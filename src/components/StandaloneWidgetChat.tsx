@@ -99,6 +99,8 @@ export const StandaloneWidgetChat: React.FC<StandaloneWidgetChatProps> = ({
   }
   const fileInputRef = useRef<HTMLInputElement>(null);
   const chatContainerRef = useRef<HTMLDivElement>(null);
+  // [Bước 4 - streaming] Bộ đếm giờ cho hiệu ứng "gõ chữ dần" của câu trả lời agent.
+  const typingTimerRef = useRef<any>(null);
   const [showScrollBtn, setShowScrollBtn] = useState(false);
 
   // Hiện nút "xuống cuối" khi khách cuộn LÊN xem lịch sử; ẩn khi đã ở gần cuối.
@@ -130,14 +132,18 @@ export const StandaloneWidgetChat: React.FC<StandaloneWidgetChatProps> = ({
   });
 
   useEffect(() => {
+    // [Bước 4 - streaming] Khi có tin đang "gõ dần" -> BỎ QUA việc lưu (tránh ghi localStorage ~55 lần/câu).
+    // Lần cập nhật cuối (khi gõ xong) không còn cờ _typing nên sẽ lưu bản đầy đủ như bình thường.
+    if (messages.some((m) => (m as any)._typing)) return;
     // [Fix M15] Chỉ lưu ~60 tin gần nhất và LOẠI base64 (dataUrl) đính kèm khỏi localStorage
     // (tránh vượt hạn ngạch localStorage khiến không lưu được gì; ảnh phiên hiện tại vẫn hiện trong RAM).
     const persistMessages = (msgs: ChatMessage[]) =>
-      msgs.slice(-60).map((m) =>
-        m.attachments && m.attachments.length > 0
-          ? { ...m, attachments: m.attachments.map((a) => ({ ...a, dataUrl: undefined })) }
-          : m
-      );
+      msgs.slice(-60).map((m) => {
+        const { _full, _typing, ...clean } = m as any; // không lưu trường nội bộ của hiệu ứng gõ
+        return clean.attachments && clean.attachments.length > 0
+          ? { ...clean, attachments: clean.attachments.map((a: any) => ({ ...a, dataUrl: undefined })) }
+          : clean;
+      });
     try {
       localStorage.setItem('aistudio_widget_standalone_messages', JSON.stringify(persistMessages(messages)));
     } catch (e) {
@@ -170,6 +176,50 @@ export const StandaloneWidgetChat: React.FC<StandaloneWidgetChatProps> = ({
       });
     }
   };
+
+  // [Bước 4 - streaming] Dừng hiệu ứng gõ chữ đang chạy (nếu có) và ép tin nhắn về NỘI DUNG ĐẦY ĐỦ ngay.
+  // Gọi khi: khách gửi tin mới, reset chat, hoặc component unmount -> không để tin bị kẹt nửa chừng.
+  const finishTyping = () => {
+    if (typingTimerRef.current) {
+      clearInterval(typingTimerRef.current);
+      typingTimerRef.current = null;
+    }
+    setMessages((prev) => prev.map((m) => (m as any)._full ? { ...m, text: (m as any)._full, _full: undefined, _typing: undefined } as any : m));
+  };
+
+  // [Bước 4 - streaming] Thêm câu trả lời agent nhưng HIỆN DẦN từng cụm chữ như đang gõ.
+  // Máy chủ đã trả về văn bản HOÀN CHỈNH (đã lọc link/kiểm duyệt) -> ở đây chỉ là hiệu ứng hiển thị, an toàn tuyệt đối.
+  const revealAgentMessage = (msg: ChatMessage) => {
+    const full = msg.text || '';
+    // Nếu tắt hiệu ứng hoặc câu ngắn -> hiện luôn.
+    const enabled = (currentAgent as any)?.typingEffect !== false;
+    if (!enabled || full.length < 12) {
+      setMessages((prev) => [...prev, msg]);
+      return;
+    }
+    // Đưa vào với text rỗng, giữ nội dung đầy đủ ở _full để có thể "nhảy cóc" khi cần.
+    const seed: any = { ...msg, text: '', _full: full, _typing: true };
+    setMessages((prev) => [...prev, seed]);
+
+    if (typingTimerRef.current) { clearInterval(typingTimerRef.current); typingTimerRef.current = null; }
+    let shown = 0;
+    // Tổng thời lượng ~1.1s bất kể độ dài (bước nhảy theo độ dài) -> câu dài không gõ lê thê.
+    const step = Math.max(2, Math.ceil(full.length / 55));
+    typingTimerRef.current = setInterval(() => {
+      shown = Math.min(full.length, shown + step);
+      const slice = full.slice(0, shown);
+      setMessages((prev) => prev.map((m) => (m.id === msg.id ? { ...m, text: slice } as any : m)));
+      if (shown % (step * 6) === 0) scrollToBottom('auto');
+      if (shown >= full.length) {
+        clearInterval(typingTimerRef.current);
+        typingTimerRef.current = null;
+        setMessages((prev) => prev.map((m) => (m.id === msg.id ? { ...m, text: full, _full: undefined, _typing: undefined } as any : m)));
+      }
+    }, 20);
+  };
+
+  // Dọn bộ đếm giờ khi rời màn hình.
+  useEffect(() => () => { if (typingTimerRef.current) clearInterval(typingTimerRef.current); }, []);
 
   useEffect(() => {
     scrollToBottom();
@@ -241,6 +291,8 @@ export const StandaloneWidgetChat: React.FC<StandaloneWidgetChatProps> = ({
     const messageContent = textToSend !== undefined ? textToSend : inputText;
     if (!messageContent.trim() && attachments.length === 0) return;
 
+    finishTyping(); // nếu câu trả lời trước còn đang gõ dở -> hiện đủ ngay trước khi gửi tin mới
+
     const userMessage: ChatMessage = {
       id: `msg_${Date.now()}_${Math.random().toString(36).slice(2,6)}`,
       sender: 'user',
@@ -257,7 +309,7 @@ export const StandaloneWidgetChat: React.FC<StandaloneWidgetChatProps> = ({
 
     // [Fix H2] Lịch sử gửi lên NHẸ: chỉ 12 lượt gần nhất, CHỈ text (bỏ ảnh base64 của các lượt cũ)
     // -> payload không phình theo thời gian (tránh chậm/tốn/lỗi 413 sau khi khách gửi nhiều ảnh).
-    const lightHistory = messages.slice(-12).map((m) => ({ id: m.id, sender: m.sender, text: m.text, timestamp: m.timestamp }));
+    const lightHistory = messages.slice(-12).map((m) => ({ id: m.id, sender: m.sender, text: (m as any)._full || m.text, timestamp: m.timestamp }));
 
     try {
       const response = await fetchWithTimeout('/api/chat', {
@@ -290,7 +342,7 @@ export const StandaloneWidgetChat: React.FC<StandaloneWidgetChatProps> = ({
         clarificationAsked: data.clarificationAsked,
       };
 
-      setMessages((prev) => [...prev, agentMessage]);
+      revealAgentMessage(agentMessage);
     } catch (err: any) {
       console.error('Widget Chat error:', err);
       // KHONG pho bay loi ky thuat cho khach -> thong bao than thien; chi tiet log o console.
@@ -341,6 +393,7 @@ export const StandaloneWidgetChat: React.FC<StandaloneWidgetChatProps> = ({
   };
 
   const handleResetChat = () => {
+    if (typingTimerRef.current) { clearInterval(typingTimerRef.current); typingTimerRef.current = null; }
     setMessages([
       {
         id: 'w_welcome_1',
