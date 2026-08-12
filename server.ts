@@ -1995,6 +1995,72 @@ function logChatTurn(sessionId: string, userText: string, agentText: string) {
   } catch { /* bỏ qua */ }
 }
 
+// [Bước 4] Thông báo lead mới cho chủ shop qua các kênh đã cấu hình (Telegram / Webhook / Email-Resend).
+// Bắn-và-quên: KHÔNG chặn phản hồi, mọi lỗi chỉ ghi log. Chỉ gửi kênh nào có đủ biến môi trường.
+function notifyNewLead(lead: { sessionId?: string; name?: string; phone?: string; note?: string; source?: string }) {
+  try {
+    const phone = (lead.phone || '').trim();
+    const name = (lead.name || '').trim();
+    const src = lead.source === 'form' ? 'Form để lại SĐT' : (lead.source === 'chat_auto' ? 'Tự bắt trong chat' : (lead.source || 'chat'));
+    const note = (lead.note || '').trim();
+
+    // Nội dung dạng text thuần (dùng cho Telegram & Email).
+    const lines = [
+      '🔔 LEAD MỚI từ Trợ lý AI',
+      phone ? `📞 SĐT: ${phone}` : '',
+      name ? `👤 Tên: ${name}` : '',
+      `🔗 Nguồn: ${src}`,
+      note ? `📝 Ghi chú: ${note}` : '',
+      lead.sessionId ? `🆔 Phiên: ${lead.sessionId}` : '',
+    ].filter(Boolean);
+    const text = lines.join('\n');
+
+    // 1) Telegram
+    const tgToken = (process.env.TELEGRAM_BOT_TOKEN || '').trim();
+    const tgChat = (process.env.TELEGRAM_CHAT_ID || '').trim();
+    if (tgToken && tgChat) {
+      fetch(`https://api.telegram.org/bot${tgToken}/sendMessage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chat_id: tgChat, text, disable_web_page_preview: true }),
+      }).then((r: any) => { if (!r.ok) console.warn('[LeadNotify] Telegram HTTP', r.status); })
+        .catch((e: any) => console.warn('[LeadNotify] Telegram lỗi:', e?.message || e));
+    }
+
+    // 2) Webhook chung (Zalo OA / n8n / Make / Slack ...): POST JSON lead + text.
+    const hook = (process.env.LEAD_WEBHOOK_URL || '').trim();
+    if (hook) {
+      fetch(hook, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'new_lead', text, lead: { phone, name, source: lead.source || 'chat', note, sessionId: lead.sessionId || null } }),
+      }).then((r: any) => { if (!r.ok) console.warn('[LeadNotify] Webhook HTTP', r.status); })
+        .catch((e: any) => console.warn('[LeadNotify] Webhook lỗi:', e?.message || e));
+    }
+
+    // 3) Email qua Resend (đơn giản, chỉ cần API key). Cần: RESEND_API_KEY, LEAD_NOTIFY_EMAIL_TO, LEAD_NOTIFY_EMAIL_FROM.
+    const resendKey = (process.env.RESEND_API_KEY || '').trim();
+    const mailTo = (process.env.LEAD_NOTIFY_EMAIL_TO || '').trim();
+    const mailFrom = (process.env.LEAD_NOTIFY_EMAIL_FROM || '').trim();
+    if (resendKey && mailTo && mailFrom) {
+      const html = text.replace(/\n/g, '<br>');
+      fetch('https://api.resend.com/emails', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${resendKey}` },
+        body: JSON.stringify({
+          from: mailFrom,
+          to: mailTo.split(',').map((s) => s.trim()).filter(Boolean),
+          subject: `🔔 Lead mới${phone ? ' - ' + phone : ''}`,
+          html,
+        }),
+      }).then((r: any) => { if (!r.ok) console.warn('[LeadNotify] Email HTTP', r.status); })
+        .catch((e: any) => console.warn('[LeadNotify] Email lỗi:', e?.message || e));
+    }
+  } catch (e: any) {
+    console.warn('[LeadNotify] Lỗi chung:', e?.message || e);
+  }
+}
+
 // Lưu/gộp lead. dedupe theo (phone). Bắn-và-quên; no-op nếu chưa cấu hình.
 async function saveLead(lead: { sessionId?: string; name?: string; phone?: string; note?: string; source?: string }): Promise<{ ok: boolean; dedup?: boolean; reason?: string }> {
   try {
@@ -2015,6 +2081,8 @@ async function saveLead(lead: { sessionId?: string; name?: string; phone?: strin
       status: 'new',
     }]);
     if (error) { console.warn('[Lead] insert error:', error.message); return { ok: false, reason: error.message }; }
+    // Lead mới thật sự (không trùng) -> gửi thông báo cho chủ shop.
+    notifyNewLead(lead);
     return { ok: true };
   } catch (e: any) {
     return { ok: false, reason: e?.message || String(e) };
