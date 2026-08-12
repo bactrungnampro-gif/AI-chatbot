@@ -818,6 +818,7 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
 
     let successCount = 0;
     const newSources: KnowledgeSource[] = [];
+    const fileErrors: string[] = []; // [Fix] Gom lỗi THẬT của từng tệp để hiển thị (trước đây bị nuốt)
 
     try {
       for (let i = 0; i < files.length; i++) {
@@ -864,18 +865,29 @@ export const KnowledgeManager: React.FC<KnowledgeManagerProps> = ({
             if (setProducts) {
               handleExtractProducts(newSource);
             }
+          } else {
+            // Backend trả success:false -> giữ lại lý do THẬT để báo cho người dùng.
+            fileErrors.push(`${file.name}: ${data?.error || 'không trích xuất được nội dung'}`);
           }
         } catch (fileErr: any) {
           console.error(`Lỗi trích xuất tệp ${file.name}:`, fileErr);
+          fileErrors.push(`${file.name}: ${fileErr?.message || String(fileErr)}`);
         }
       }
 
       if (newSources.length > 0) {
         saveKnowledgeSources(newSources, mode);
         const modeLabel = mode === 'overwrite' ? ' (đã cập nhật ghi đè)' : '';
-        setScrapeSuccess(`🎉 Đã nạp thành công ${successCount}/${files.length} tệp tin${modeLabel} vào Tri thức Agent AI!`);
+        let msg = `🎉 Đã nạp thành công ${successCount}/${files.length} tệp tin${modeLabel} vào Tri thức Agent AI!`;
+        if (fileErrors.length > 0) msg += ` — ${fileErrors.length} tệp lỗi: ${fileErrors.join(' | ')}`;
+        setScrapeSuccess(msg);
       } else {
-        setScrapeError('Không thể trích xuất nội dung từ các tệp đã chọn.');
+        // Hiển thị lý do CỤ THỂ thay vì thông báo chung chung.
+        setScrapeError(
+          fileErrors.length > 0
+            ? 'Không thể trích xuất nội dung: ' + fileErrors.join(' | ')
+            : 'Không thể trích xuất nội dung từ các tệp đã chọn.'
+        );
       }
     } catch (err: any) {
       setScrapeError('Lỗi tải tệp tin: ' + (err.message || String(err)));

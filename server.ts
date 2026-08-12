@@ -1244,25 +1244,40 @@ app.post("/api/knowledge/upload-file", async (req, res) => {
           : (lower.endsWith('.heic') || lower.endsWith('.heif')) ? 'image/heic'
           : 'image/png';
       }
-      try {
-        console.log(`[File Upload] Invoking Gemini Vision to analyze image ${cleanName} (${imgMime})...`);
-        const ai = getGeminiAI();
-        const response = await ai.models.generateContent({
-          model: 'gemini-3.6-flash',
-          contents: [
-            { inlineData: { mimeType: imgMime, data: fileBase64 } },
-            {
-              text: "Đây là một hình ảnh được nạp vào cơ sở tri thức của doanh nghiệp. Hãy:\n"
-                + "1) Trích xuất CHÍNH XÁC và ĐẦY ĐỦ toàn bộ chữ, số liệu, bảng biểu, thông số, giá cả, mã sản phẩm, số điện thoại, đường link (URL) xuất hiện trong ảnh (OCR).\n"
-                + "2) Mô tả ngắn gọn nội dung/ngữ cảnh của ảnh (ảnh chụp sản phẩm gì, biểu đồ gì, tài liệu gì...).\n"
-                + "Trình bày bằng tiếng Việt, rõ ràng. Nếu ảnh không chứa chữ, chỉ cần mô tả nội dung nhìn thấy. Giữ nguyên các URL/giá/số liệu đúng như trong ảnh, KHÔNG bịa thêm."
-            }
-          ]
+      const ai = getGeminiAI();
+      const visionPrompt = "Đây là một hình ảnh được nạp vào cơ sở tri thức của doanh nghiệp. Hãy:\n"
+        + "1) Trích xuất CHÍNH XÁC và ĐẦY ĐỦ toàn bộ chữ, số liệu, bảng biểu, thông số, giá cả, mã sản phẩm, số điện thoại, đường link (URL) xuất hiện trong ảnh (OCR).\n"
+        + "2) Mô tả ngắn gọn nội dung/ngữ cảnh của ảnh (ảnh chụp sản phẩm gì, biểu đồ gì, tài liệu gì...).\n"
+        + "Trình bày bằng tiếng Việt, rõ ràng. Nếu ảnh không chứa chữ, chỉ cần mô tả nội dung nhìn thấy. Giữ nguyên các URL/giá/số liệu đúng như trong ảnh, KHÔNG bịa thêm.";
+      // [Fix upload ảnh] Thử LẦN LƯỢT nhiều model (nếu 1 model lỗi/không hỗ trợ ảnh vẫn còn model khác) + giữ lỗi THẬT để báo.
+      const visionModels = Array.from(new Set([
+        process.env.GEMINI_VISION_MODEL || 'gemini-3.6-flash',
+        'gemini-2.5-flash',
+        'gemini-flash-latest',
+      ]));
+      let visionErrMsg = '';
+      for (const m of visionModels) {
+        try {
+          console.log(`[File Upload] Vision thử model ${m} cho ảnh ${cleanName} (${imgMime})...`);
+          const response = await ai.models.generateContent({
+            model: m,
+            contents: [
+              { inlineData: { mimeType: imgMime, data: fileBase64 } },
+              { text: visionPrompt },
+            ]
+          });
+          extractedText = (response.text || '').trim();
+          if (extractedText) break; // đọc được -> dừng
+        } catch (visionErr: any) {
+          visionErrMsg = visionErr?.message || String(visionErr);
+          console.warn(`[File Upload] Vision model ${m} lỗi:`, visionErrMsg);
+        }
+      }
+      if (!extractedText) {
+        res.json({
+          success: false,
+          error: `Không thể phân tích ảnh bằng AI Vision (đã thử: ${visionModels.join(', ')}). ${visionErrMsg ? 'Lỗi: ' + visionErrMsg : 'Model không trả về nội dung — kiểm tra GEMINI_API_KEY và quyền truy cập model.'}`
         });
-        extractedText = (response.text || '').trim();
-      } catch (visionErr: any) {
-        console.error("[File Upload] Gemini Vision error:", visionErr?.message || visionErr);
-        res.json({ success: false, error: "Không thể phân tích ảnh bằng AI Vision: " + (visionErr?.message || String(visionErr)) });
         return;
       }
     } else if (isPdf) {
