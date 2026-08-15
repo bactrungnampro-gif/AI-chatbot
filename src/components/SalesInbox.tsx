@@ -15,6 +15,9 @@ import {
   Trophy,
   XCircle,
   AlertTriangle,
+  HelpCircle,
+  CheckCheck,
+  Lightbulb,
 } from 'lucide-react';
 
 // [Bước 3] Màn quản trị "Hộp thư bán hàng": xem Lead (khách để lại SĐT) + Hội thoại thật của khách.
@@ -68,35 +71,31 @@ function fmtTime(iso?: string | null): string {
 }
 
 export const SalesInbox: React.FC = () => {
-  const [view, setView] = useState<'leads' | 'conversations'>('leads');
+  const [view, setView] = useState<'leads' | 'conversations' | 'gaps'>('leads');
+
+  const tabCls = (active: boolean) =>
+    `inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold transition-all ${
+      active ? 'bg-indigo-600 text-white shadow-xs' : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-50'
+    }`;
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
       {/* Sub-tab switcher */}
-      <div className="flex items-center gap-2">
-        <button
-          onClick={() => setView('leads')}
-          className={`inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold transition-all ${
-            view === 'leads'
-              ? 'bg-indigo-600 text-white shadow-xs'
-              : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-50'
-          }`}
-        >
+      <div className="flex items-center gap-2 flex-wrap">
+        <button onClick={() => setView('leads')} className={tabCls(view === 'leads')}>
           <Users className="w-4 h-4" /> Khách tiềm năng (Lead)
         </button>
-        <button
-          onClick={() => setView('conversations')}
-          className={`inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold transition-all ${
-            view === 'conversations'
-              ? 'bg-indigo-600 text-white shadow-xs'
-              : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-50'
-          }`}
-        >
+        <button onClick={() => setView('conversations')} className={tabCls(view === 'conversations')}>
           <MessageSquare className="w-4 h-4" /> Hội thoại khách hàng
+        </button>
+        <button onClick={() => setView('gaps')} className={tabCls(view === 'gaps')}>
+          <HelpCircle className="w-4 h-4" /> Câu hỏi chưa trả lời được
         </button>
       </div>
 
-      {view === 'leads' ? <LeadsPanel /> : <ConversationsPanel />}
+      {view === 'leads' && <LeadsPanel />}
+      {view === 'conversations' && <ConversationsPanel />}
+      {view === 'gaps' && <GapsPanel />}
     </div>
   );
 };
@@ -461,6 +460,180 @@ const ConversationsPanel: React.FC = () => {
             ))}
           </div>
         )}
+      </div>
+    </div>
+  );
+};
+
+// ------------------------------------------------------------------
+//  PANEL 3 — CÂU HỎI AGENT CHƯA TRẢ LỜI ĐƯỢC (Answer Gaps)
+// ------------------------------------------------------------------
+interface GapItem {
+  question: string;
+  count: number;
+  lastAt?: string | null;
+  lastAnswer?: string | null;
+  status?: string | null;
+  ids: (number | string)[];
+}
+
+const GapsPanel: React.FC = () => {
+  const [gaps, setGaps] = useState<GapItem[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [showAll, setShowAll] = useState(false);
+  const [savingKey, setSavingKey] = useState('');
+  const [expanded, setExpanded] = useState<string>('');
+
+  const load = useCallback(async (all: boolean) => {
+    setLoading(true);
+    setError('');
+    try {
+      const res = await fetch(`/api/admin/gaps${all ? '?all=1' : ''}`);
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        throw new Error(d.error || `Lỗi ${res.status}`);
+      }
+      const data = await res.json();
+      setGaps(Array.isArray(data.gaps) ? data.gaps : []);
+    } catch (e: any) {
+      setError(e?.message || 'Không tải được danh sách.');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    load(showAll);
+  }, [load, showAll]);
+
+  const markResolved = async (g: GapItem) => {
+    setSavingKey(g.question);
+    try {
+      const res = await fetch('/api/admin/gap-status', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids: g.ids, status: 'resolved' }),
+      });
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        throw new Error(d.error || `Lỗi ${res.status}`);
+      }
+      // Bỏ khỏi danh sách hiện tại (nếu đang xem 'mới').
+      if (!showAll) setGaps((prev) => prev.filter((x) => x.question !== g.question));
+      else load(true);
+    } catch (e: any) {
+      setError(e?.message || 'Không cập nhật được.');
+    } finally {
+      setSavingKey('');
+    }
+  };
+
+  const totalOccur = gaps.reduce((s, g) => s + (g.count || 0), 0);
+
+  return (
+    <div className="space-y-5">
+      {/* Gợi ý sử dụng */}
+      <div className="flex items-start gap-2 text-xs text-indigo-800 bg-indigo-50 border border-indigo-100 rounded-2xl p-4">
+        <Lightbulb className="w-4 h-4 shrink-0 mt-0.5 text-indigo-500" />
+        <span>
+          Đây là những câu khách hỏi mà agent trả lời kiểu "chưa có thông tin". Hãy bổ sung câu trả lời cho chúng vào
+          <b> Cơ Sở Tri Thức / Ngân hàng FAQ</b>, sau đó bấm <b>"Đã xử lý"</b> để ẩn khỏi danh sách. Agent sẽ trả lời tốt dần lên theo thời gian.
+        </span>
+      </div>
+
+      {/* Stats + toolbar */}
+      <div className="bg-white rounded-2xl border border-slate-200/80 shadow-2xs">
+        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 p-4 border-b border-slate-100">
+          <div>
+            <h3 className="font-bold text-slate-900 text-base flex items-center gap-2">
+              <HelpCircle className="w-4 h-4 text-indigo-600" /> Câu hỏi agent chưa trả lời được
+            </h3>
+            <p className="text-xs text-slate-500">
+              {gaps.length} câu hỏi{showAll ? '' : ' còn tồn'} • {totalOccur} lượt khách hỏi
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <label className="inline-flex items-center gap-1.5 text-xs text-slate-600 cursor-pointer select-none">
+              <input type="checkbox" checked={showAll} onChange={(e) => setShowAll(e.target.checked)} className="rounded" />
+              Hiện cả câu đã xử lý
+            </label>
+            <button
+              onClick={() => load(showAll)}
+              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold border border-slate-200"
+            >
+              <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} /> Tải lại
+            </button>
+          </div>
+        </div>
+
+        {error && (
+          <div className="m-4 flex items-start gap-2 text-xs text-rose-700 bg-rose-50 border border-rose-200 rounded-xl p-3">
+            <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" /> <span>{error}</span>
+          </div>
+        )}
+
+        <div className="p-4">
+          {loading ? (
+            <div className="text-center text-sm text-slate-400 py-10">Đang tải...</div>
+          ) : gaps.length === 0 ? (
+            <div className="text-center text-sm text-slate-400 py-10">
+              <CheckCheck className="w-8 h-8 mx-auto mb-2 text-emerald-400" />
+              Tuyệt vời! Không có câu hỏi nào agent bị "bí" {showAll ? '' : '(còn tồn)'}.
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {gaps.map((g) => {
+                const isOpen = expanded === g.question;
+                return (
+                  <div key={g.question} className="p-3 rounded-xl border border-slate-100 bg-slate-50/50">
+                    <div className="flex items-start gap-3">
+                      <div className="w-8 h-8 rounded-full bg-amber-100 text-amber-600 flex items-center justify-center shrink-0">
+                        <HelpCircle className="w-4 h-4" />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="font-semibold text-slate-800 text-sm">{g.question}</span>
+                          {g.count > 1 && (
+                            <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-50 text-amber-700 border border-amber-200">
+                              hỏi {g.count} lần
+                            </span>
+                          )}
+                          {g.status === 'resolved' && (
+                            <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                              đã xử lý
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-[10px] text-slate-400 mt-0.5 flex items-center gap-2">
+                          <span className="flex items-center gap-1"><Clock className="w-3 h-3" /> {fmtTime(g.lastAt)}</span>
+                          {g.lastAnswer && (
+                            <button onClick={() => setExpanded(isOpen ? '' : g.question)} className="text-indigo-500 hover:underline">
+                              {isOpen ? 'Ẩn câu trả lời' : 'Xem agent đã trả lời gì'}
+                            </button>
+                          )}
+                        </div>
+                        {isOpen && g.lastAnswer && (
+                          <p className="text-xs text-slate-600 mt-2 bg-white border border-slate-100 rounded-lg p-2 whitespace-pre-wrap">{g.lastAnswer}</p>
+                        )}
+                      </div>
+                      {g.status !== 'resolved' && (
+                        <button
+                          disabled={savingKey === g.question}
+                          onClick={() => markResolved(g)}
+                          className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100 disabled:opacity-50 shrink-0"
+                          title="Đánh dấu đã bổ sung FAQ"
+                        >
+                          <CheckCheck className="w-3.5 h-3.5" /> Đã xử lý
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
