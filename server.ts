@@ -2018,16 +2018,20 @@ function notifyNewLead(lead: { sessionId?: string; name?: string; phone?: string
     ].filter(Boolean);
     const text = lines.join('\n');
 
-    // 1) Telegram
+    // 1) Telegram — hỗ trợ NHIỀU người nhận: TELEGRAM_CHAT_ID có thể là 1 id, id NHÓM (số âm),
+    //    hoặc danh sách nhiều id cách nhau dấu phẩy. Gửi lần lượt tới từng nơi.
     const tgToken = (process.env.TELEGRAM_BOT_TOKEN || '').trim();
-    const tgChat = (process.env.TELEGRAM_CHAT_ID || '').trim();
-    if (tgToken && tgChat) {
-      fetch(`https://api.telegram.org/bot${tgToken}/sendMessage`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ chat_id: tgChat, text, disable_web_page_preview: true }),
-      }).then((r: any) => { if (!r.ok) console.warn('[LeadNotify] Telegram HTTP', r.status); })
-        .catch((e: any) => console.warn('[LeadNotify] Telegram lỗi:', e?.message || e));
+    const tgChatRaw = (process.env.TELEGRAM_CHAT_ID || '').trim();
+    if (tgToken && tgChatRaw) {
+      const chatIds = tgChatRaw.split(',').map((s) => s.trim()).filter(Boolean);
+      for (const chatId of chatIds) {
+        fetch(`https://api.telegram.org/bot${tgToken}/sendMessage`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ chat_id: chatId, text, disable_web_page_preview: true }),
+        }).then((r: any) => { if (!r.ok) console.warn(`[LeadNotify] Telegram HTTP ${r.status} (chat ${chatId})`); })
+          .catch((e: any) => console.warn(`[LeadNotify] Telegram lỗi (chat ${chatId}):`, e?.message || e));
+      }
     }
 
     // 2) Webhook chung (Zalo OA / n8n / Make / Slack ...): POST JSON lead + text.
@@ -2119,10 +2123,9 @@ function handoffAllowed(sessionId: string): boolean {
 }
 
 // Lưu yêu cầu bàn giao như 1 lead source='handoff' (KHÔNG dedupe theo phone) + thông báo ngay.
-async function saveHandoff(req: { sessionId?: string; name?: string; phone?: string; note?: string }) {
+async function saveHandoff(req: { sessionId?: string; phone?: string; note?: string }) {
   const lead = {
     sessionId: req.sessionId,
-    name: (req.name || '').trim(),
     phone: (req.phone || '').trim(),
     note: req.note || 'Khách yêu cầu gặp nhân viên tư vấn',
     source: 'handoff',
@@ -2132,7 +2135,7 @@ async function saveHandoff(req: { sessionId?: string; name?: string; phone?: str
     if (client) {
       const { error } = await client.from('leads').insert([{
         session_id: lead.sessionId || null,
-        name: lead.name || null,
+        name: null,
         phone: lead.phone || null,
         note: (lead.note || '').slice(0, 2000) || null,
         source: 'handoff',
@@ -2144,36 +2147,6 @@ async function saveHandoff(req: { sessionId?: string; name?: string; phone?: str
     console.warn('[Handoff] lỗi lưu:', e?.message || e);
   }
   notifyNewLead(lead); // dùng chung kênh thông báo; tiêu đề tự đổi thành "🙋 KHÁCH CẦN GẶP NHÂN VIÊN"
-}
-
-// [Nâng cấp] PHÁT HIỆN "LỖ HỔNG TRI THỨC": câu trả lời cho thấy agent KHÔNG có thông tin để trả lời.
-// Dùng để gom lại những câu khách hỏi mà agent chưa đáp được -> chủ shop bổ sung FAQ/tri thức.
-function detectAnswerGap(responseText: string): boolean {
-  if (!responseText) return false;
-  const t = responseText.toLowerCase();
-  const signals = [
-    'chưa có thông tin', 'không có thông tin', 'chưa được cung cấp', 'chưa có dữ liệu', 'không có trong dữ liệu',
-    'em chưa rõ', 'em không rõ', 'em chưa nắm', 'em không chắc', 'em chưa chắc',
-    'không tìm thấy thông tin', 'chưa tìm thấy', 'ngoài phạm vi', 'em chưa hỗ trợ', 'chưa thể hỗ trợ',
-    'em xin phép chưa', 'em chưa có câu trả lời', 'không thể trả lời', 'chưa thể trả lời',
-    'vui lòng liên hệ', 'anh/chị vui lòng liên hệ', 'liên hệ trực tiếp', 'liên hệ hotline', 'liên hệ nhân viên',
-  ];
-  return signals.some((s) => t.includes(s));
-}
-
-// Ghi 1 "lỗ hổng tri thức" vào bảng answer_gaps. Bắn-và-quên; no-op nếu chưa cấu hình / thiếu câu hỏi.
-function logAnswerGap(args: { sessionId?: string; question?: string; answer?: string }) {
-  try {
-    const client = getSupabaseClient();
-    const question = (args.question || '').trim();
-    if (!client || !question) return;
-    client.from('answer_gaps').insert([{
-      session_id: args.sessionId || null,
-      question: question.slice(0, 1000),
-      answer: (args.answer || '').slice(0, 2000) || null,
-      status: 'new',
-    }]).then((r: any) => { if (r?.error) console.warn('[AnswerGap] insert error:', r.error.message); }).catch(() => {});
-  } catch { /* bỏ qua */ }
 }
 
 // Main AI Support Chat Endpoint
@@ -2698,11 +2671,6 @@ app.post("/api/chat", async (req, res) => {
         saveHandoff({ sessionId: sid, phone: phone || '', note: 'Khách muốn gặp nhân viên. Lời khách: ' + String(message || '').slice(0, 300) });
         console.log(`[Handoff] Phiên ${sid} yêu cầu gặp nhân viên.`);
       }
-      // [Nâng cấp] Agent trả lời kiểu "chưa có thông tin" -> ghi lại câu hỏi để chủ shop bổ sung tri thức/FAQ.
-      if (message && String(message).trim() && detectAnswerGap(responseText)) {
-        logAnswerGap({ sessionId: sid, question: String(message), answer: responseText });
-        console.log(`[AnswerGap] Ghi nhận câu hỏi agent chưa trả lời được (phiên ${sid}).`);
-      }
     }
 
     res.json({
@@ -2743,13 +2711,12 @@ app.post("/api/lead", async (req, res) => {
 // [Bước 4] CÔNG KHAI: khách bấm nút "Gặp nhân viên tư vấn" trên widget.
 app.post("/api/handoff", async (req, res) => {
   try {
-    const { sessionId, name, phone, note } = req.body || {};
+    const { sessionId, phone, note } = req.body || {};
     const sid = (typeof sessionId === 'string' ? sessionId.trim() : '').slice(0, 80);
     // Chống spam khi bấm nút liên tục.
     if (sid && !handoffAllowed(sid)) return res.json({ success: true, throttled: true });
     const cleanPhone = detectPhone(String(phone || '')) || String(phone || '').replace(/[^\d+]/g, '');
-    const cleanName = String(name || '').trim().slice(0, 200);
-    await saveHandoff({ sessionId: sid, name: cleanName, phone: cleanPhone, note: note || 'Khách bấm nút "Gặp nhân viên tư vấn"' });
+    await saveHandoff({ sessionId: sid, phone: cleanPhone, note: note || 'Khách bấm nút "Gặp nhân viên tư vấn"' });
     res.json({ success: true });
   } catch (e: any) {
     res.status(500).json({ success: false, error: e?.message || String(e) });
@@ -2818,53 +2785,6 @@ app.get("/api/admin/conversation", async (req, res) => {
     const { data, error } = await client.from('chat_logs').select('*').eq('session_id', session).order('created_at', { ascending: true }).limit(2000);
     if (error) return res.status(500).json({ error: error.message });
     res.json({ messages: data || [] });
-  } catch (e: any) {
-    res.status(500).json({ error: e?.message || String(e) });
-  }
-});
-
-// [Nâng cấp] QUẢN TRỊ: danh sách "câu hỏi agent chưa trả lời được" (gom nhóm câu giống nhau + đếm số lần).
-app.get("/api/admin/gaps", async (req, res) => {
-  try {
-    const client = getSupabaseClient();
-    if (!client) return res.json({ gaps: [] });
-    const includeResolved = String(req.query.all || '') === '1';
-    let q = client.from('answer_gaps').select('*').order('created_at', { ascending: false }).limit(1000);
-    if (!includeResolved) q = q.eq('status', 'new');
-    const { data, error } = await q;
-    if (error) return res.status(500).json({ error: error.message });
-    // Gom nhóm theo câu hỏi (chuẩn hoá thường/space) -> đếm số lần hỏi, giữ lần gần nhất + vài id để đánh dấu đã xử lý.
-    const map = new Map<string, any>();
-    for (const row of (data || [])) {
-      const key = String(row.question || '').toLowerCase().replace(/\s+/g, ' ').trim();
-      if (!key) continue;
-      if (!map.has(key)) {
-        map.set(key, { question: row.question, count: 0, lastAt: row.created_at, lastAnswer: row.answer, status: row.status, ids: [] });
-      }
-      const g = map.get(key);
-      g.count++;
-      g.ids.push(row.id);
-    }
-    const gaps = Array.from(map.values()).sort((a, b) => b.count - a.count).slice(0, 300);
-    res.json({ gaps });
-  } catch (e: any) {
-    res.status(500).json({ error: e?.message || String(e) });
-  }
-});
-
-// [Nâng cấp] QUẢN TRỊ: đánh dấu (các) bản ghi lỗ hổng là ĐÃ XỬ LÝ (sau khi đã bổ sung FAQ).
-app.post("/api/admin/gap-status", async (req, res) => {
-  try {
-    const { ids, status } = req.body || {};
-    const allowed = ['new', 'resolved'];
-    if (!Array.isArray(ids) || ids.length === 0 || !allowed.includes(String(status))) {
-      return res.status(400).json({ error: 'Tham số không hợp lệ.' });
-    }
-    const client = getSupabaseClient();
-    if (!client) return res.status(400).json({ error: 'Chưa cấu hình Supabase.' });
-    const { error } = await client.from('answer_gaps').update({ status }).in('id', ids.slice(0, 500));
-    if (error) return res.status(500).json({ error: error.message });
-    res.json({ success: true });
   } catch (e: any) {
     res.status(500).json({ error: e?.message || String(e) });
   }
