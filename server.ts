@@ -2119,9 +2119,10 @@ function handoffAllowed(sessionId: string): boolean {
 }
 
 // Lưu yêu cầu bàn giao như 1 lead source='handoff' (KHÔNG dedupe theo phone) + thông báo ngay.
-async function saveHandoff(req: { sessionId?: string; phone?: string; note?: string }) {
+async function saveHandoff(req: { sessionId?: string; name?: string; phone?: string; note?: string }) {
   const lead = {
     sessionId: req.sessionId,
+    name: (req.name || '').trim(),
     phone: (req.phone || '').trim(),
     note: req.note || 'Khách yêu cầu gặp nhân viên tư vấn',
     source: 'handoff',
@@ -2131,7 +2132,7 @@ async function saveHandoff(req: { sessionId?: string; phone?: string; note?: str
     if (client) {
       const { error } = await client.from('leads').insert([{
         session_id: lead.sessionId || null,
-        name: null,
+        name: lead.name || null,
         phone: lead.phone || null,
         note: (lead.note || '').slice(0, 2000) || null,
         source: 'handoff',
@@ -2742,12 +2743,13 @@ app.post("/api/lead", async (req, res) => {
 // [Bước 4] CÔNG KHAI: khách bấm nút "Gặp nhân viên tư vấn" trên widget.
 app.post("/api/handoff", async (req, res) => {
   try {
-    const { sessionId, phone, note } = req.body || {};
+    const { sessionId, name, phone, note } = req.body || {};
     const sid = (typeof sessionId === 'string' ? sessionId.trim() : '').slice(0, 80);
     // Chống spam khi bấm nút liên tục.
     if (sid && !handoffAllowed(sid)) return res.json({ success: true, throttled: true });
     const cleanPhone = detectPhone(String(phone || '')) || String(phone || '').replace(/[^\d+]/g, '');
-    await saveHandoff({ sessionId: sid, phone: cleanPhone, note: note || 'Khách bấm nút "Gặp nhân viên tư vấn"' });
+    const cleanName = String(name || '').trim().slice(0, 200);
+    await saveHandoff({ sessionId: sid, name: cleanName, phone: cleanPhone, note: note || 'Khách bấm nút "Gặp nhân viên tư vấn"' });
     res.json({ success: true });
   } catch (e: any) {
     res.status(500).json({ success: false, error: e?.message || String(e) });

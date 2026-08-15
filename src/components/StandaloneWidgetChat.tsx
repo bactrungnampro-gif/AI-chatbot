@@ -407,30 +407,57 @@ export const StandaloneWidgetChat: React.FC<StandaloneWidgetChatProps> = ({
     }
   };
 
-  // [Bước 4] Khách bấm "Gặp nhân viên tư vấn" -> báo máy chủ + hiện xác nhận, khuyến khích để lại SĐT.
+  // [Bước 4 + nâng cấp] Khách bấm "Gặp tư vấn viên" -> MỞ FORM thu liên hệ (Tên + SĐT/Zalo + lời nhắn)
+  // để nhân viên chắc chắn có cách liên hệ lại, thay vì rơi vào ngõ cụt khi khách không để số.
   const [handoffSent, setHandoffSent] = useState(false);
-  const requestHandoff = async () => {
+  const [showHandoffForm, setShowHandoffForm] = useState(false);
+  const [handoffName, setHandoffName] = useState('');
+  const [handoffPhone, setHandoffPhone] = useState('');
+  const [handoffNote, setHandoffNote] = useState('');
+  const [handoffSubmitting, setHandoffSubmitting] = useState(false);
+
+  const openHandoffForm = () => {
     if (handoffSent || isLoading) return;
-    setHandoffSent(true);
-    // Nếu khách đã nhập gì đó có thể là SĐT thì gửi kèm.
-    const maybePhone = inputText.trim();
+    // Gợi ý sẵn nếu khách đã gõ gì đó trông giống SĐT trong ô nhập.
+    const maybe = inputText.trim();
+    if (/\d{6,}/.test(maybe)) setHandoffPhone(maybe);
+    setShowHandoffForm(true);
+  };
+
+  // Gửi yêu cầu bàn giao. hasContact=false nghĩa là khách bấm "Bỏ qua" (không để lại liên hệ).
+  const submitHandoff = async (hasContact: boolean) => {
+    if (handoffSubmitting) return;
+    const name = handoffName.trim();
+    const phone = handoffPhone.trim();
+    // Gửi kèm liên hệ nhưng chưa nhập gì -> không làm gì (nút đã bị vô hiệu ở trạng thái này).
+    if (hasContact && !name && !phone) return;
+    setHandoffSubmitting(true);
+    const note = hasContact
+      ? ('Khách để lại liên hệ qua form. ' + (handoffNote.trim() ? 'Lời nhắn: ' + handoffNote.trim() : ''))
+      : 'Khách muốn gặp nhân viên nhưng CHƯA để lại liên hệ.';
     try {
       await fetch('/api/handoff', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sessionId: sessionIdRef.current, phone: maybePhone, note: 'Khách bấm nút "Gặp nhân viên tư vấn"' }),
+        body: JSON.stringify({ sessionId: sessionIdRef.current, name, phone, note }),
       });
     } catch {
       /* bắn-và-quên, không chặn trải nghiệm */
     }
+    setShowHandoffForm(false);
+    setHandoffSent(true);
+    setHandoffName(''); setHandoffPhone(''); setHandoffNote('');
+    const confirmText = hasContact
+      ? 'Dạ em đã gửi thông tin tới nhân viên tư vấn, mình sẽ được liên hệ lại trong thời gian sớm nhất ạ. Trong lúc chờ, Anh/Chị cứ tiếp tục nhắn tin, em vẫn hỗ trợ ạ. 💐'
+      : 'Dạ em đã ghi nhận ạ. Nếu tiện, Anh/Chị để lại số điện thoại/Zalo bất cứ lúc nào để nhân viên liên hệ lại nhé. Em vẫn ở đây hỗ trợ mình ạ. 😊';
     const confirmMsg: ChatMessage = {
       id: `msg_handoff_${Date.now()}`,
       sender: 'agent',
-      text: 'Dạ em đã chuyển yêu cầu tới nhân viên tư vấn ạ. Anh/Chị vui lòng để lại **số điện thoại** để được gọi lại sớm nhất, hoặc cứ tiếp tục nhắn tin, em vẫn ở đây hỗ trợ ạ. 💐',
+      text: confirmText,
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
     };
     setMessages((prev) => [...prev, confirmMsg]);
-    // Cho phép bấm lại sau 60s (phòng khi khách cần nhắc lại).
+    setHandoffSubmitting(false);
     setTimeout(() => setHandoffSent(false), 60000);
   };
 
@@ -637,20 +664,79 @@ export const StandaloneWidgetChat: React.FC<StandaloneWidgetChatProps> = ({
 
       {/* Input Area */}
       <footer className="p-2.5 bg-white border-t border-slate-200 shrink-0">
-        {/* [Bước 4] Nút yêu cầu gặp nhân viên tư vấn */}
-        <div className="flex justify-center mb-1.5">
-          <button
-            type="button"
-            onClick={requestHandoff}
-            disabled={handoffSent || isLoading}
-            className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-semibold border transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-            style={{ color: primaryColor, borderColor: primaryColor + '55', backgroundColor: primaryColor + '10' }}
-            title="Kết nối với nhân viên tư vấn"
-          >
-            <Headset className="w-3 h-3" />
-            {handoffSent ? 'Đã gửi yêu cầu tới nhân viên' : 'Gặp nhân viên tư vấn'}
-          </button>
-        </div>
+        {/* [Nâng cấp] Form thu liên hệ khi khách muốn gặp tư vấn viên */}
+        {showHandoffForm && (
+          <div className="mb-2 p-3 rounded-xl border border-slate-200 bg-slate-50 space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
+                <Headset className="w-3.5 h-3.5" style={{ color: primaryColor }} /> Gặp nhân viên tư vấn
+              </span>
+              <button type="button" onClick={() => setShowHandoffForm(false)} className="text-slate-400 hover:text-slate-600">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <p className="text-[10px] text-slate-500 leading-relaxed">
+              Anh/Chị để lại thông tin để nhân viên liên hệ lại sớm nhất ạ:
+            </p>
+            <input
+              type="text"
+              value={handoffName}
+              onChange={(e) => setHandoffName(e.target.value)}
+              placeholder="Tên của Anh/Chị"
+              className="w-full bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs text-slate-800 placeholder-slate-400 outline-none focus:ring-2 focus:ring-indigo-500/20"
+            />
+            <input
+              type="tel"
+              value={handoffPhone}
+              onChange={(e) => setHandoffPhone(e.target.value)}
+              placeholder="Số điện thoại / Zalo"
+              className="w-full bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs text-slate-800 placeholder-slate-400 outline-none focus:ring-2 focus:ring-indigo-500/20"
+            />
+            <input
+              type="text"
+              value={handoffNote}
+              onChange={(e) => setHandoffNote(e.target.value)}
+              placeholder="Nội dung cần tư vấn (không bắt buộc)"
+              className="w-full bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs text-slate-800 placeholder-slate-400 outline-none focus:ring-2 focus:ring-indigo-500/20"
+            />
+            <div className="flex items-center gap-2 pt-0.5">
+              <button
+                type="button"
+                onClick={() => submitHandoff(true)}
+                disabled={handoffSubmitting || (!handoffName.trim() && !handoffPhone.trim())}
+                className="flex-1 py-1.5 rounded-lg text-white text-xs font-semibold disabled:opacity-40 disabled:cursor-not-allowed shadow-xs"
+                style={{ backgroundColor: primaryColor }}
+              >
+                {handoffSubmitting ? 'Đang gửi...' : 'Gửi yêu cầu'}
+              </button>
+              <button
+                type="button"
+                onClick={() => submitHandoff(false)}
+                disabled={handoffSubmitting}
+                className="px-3 py-1.5 rounded-lg text-xs font-semibold text-slate-500 border border-slate-200 bg-white hover:bg-slate-100 disabled:opacity-50"
+              >
+                Bỏ qua
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Nút yêu cầu gặp nhân viên tư vấn */}
+        {!showHandoffForm && (
+          <div className="flex justify-center mb-1.5">
+            <button
+              type="button"
+              onClick={openHandoffForm}
+              disabled={handoffSent || isLoading}
+              className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-semibold border transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              style={{ color: primaryColor, borderColor: primaryColor + '55', backgroundColor: primaryColor + '10' }}
+              title="Kết nối với nhân viên tư vấn"
+            >
+              <Headset className="w-3 h-3" />
+              {handoffSent ? 'Đã gửi yêu cầu tới nhân viên' : 'Gặp nhân viên tư vấn'}
+            </button>
+          </div>
+        )}
 
         <form
           onSubmit={(e) => {
