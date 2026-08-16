@@ -2009,6 +2009,71 @@ async function logSingleMessage(sessionId: string, sender: string, text: string)
   } catch { return null; }
 }
 
+// ===================== [Bảo mật] GIỚI HẠN TẦN SUẤT (rate limit) =====================
+// Bộ đếm trong RAM, KHÔNG cần thư viện ngoài. Dùng cho các endpoint CÔNG KHAI để chống spam
+// làm phình cơ sở dữ liệu / tốn chi phí. Mỗi khoá có bộ đếm riêng và tự reset theo cửa sổ thời gian.
+const rateBuckets = new Map<string, { count: number; resetAt: number }>();
+
+function rateLimitOk(key: string, max: number, windowMs: number): boolean {
+  if (!key) return true;
+  const now = Date.now();
+  const b = rateBuckets.get(key);
+  if (!b || now >= b.resetAt) {
+    rateBuckets.set(key, { count: 1, resetAt: now + windowMs });
+    // Dọn định kỳ để Map không phình vô hạn (xoá các bộ đếm đã hết hạn).
+    if (rateBuckets.size > 10000) {
+      for (const [k, v] of rateBuckets) if (now >= v.resetAt) rateBuckets.delete(k);
+    }
+    return true;
+  }
+  if (b.count >= max) return false;
+  b.count++;
+  return true;
+}
+
+// Lấy IP thật của khách (khi chạy sau proxy như Render/Railway thì IP nằm ở X-Forwarded-For).
+function clientIp(req: any): string {
+  const xf = String(req.headers?.['x-forwarded-for'] || '').split(',')[0].trim();
+  return xf || req.ip || req.socket?.remoteAddress || 'unknown';
+}
+
+// Trả 429 nếu vượt hạn mức. Trả `true` nghĩa là ĐÃ chặn (endpoint nên dừng lại).
+function tooManyRequests(req: any, res: any, bucket: string, max: number, windowMs: number): boolean {
+  if (rateLimitOk(`${bucket}:${clientIp(req)}`, max, windowMs)) return false;
+  console.warn(`[RateLimit] Chặn ${bucket} từ IP ${clientIp(req)} (vượt ${max}/${Math.round(windowMs / 1000)}s).`);
+  res.status(429).json({ error: 'Bạn thao tác hơi nhanh, vui lòng thử lại sau ít phút ạ.' });
+  return true;
+}
+
+// ===================== [Dữ liệu] DỌN DẸP BẢN GHI CŨ =====================
+// chat_logs ghi 2 dòng mỗi lượt chat và không bao giờ tự xoá -> sau vài tháng sẽ rất nặng, truy vấn chậm.
+// Hàm này xoá bản ghi cũ hơn số ngày cấu hình. Chạy lúc khởi động + mỗi 24 giờ.
+// Đặt CHAT_LOG_RETENTION_DAYS=0 để TẮT hoàn toàn việc tự xoá (giữ lại mọi thứ).
+async function cleanupOldData() {
+  const days = parseInt(process.env.CHAT_LOG_RETENTION_DAYS || '180', 10);
+  if (!Number.isFinite(days) || days <= 0) return; // 0 hoặc không hợp lệ -> không xoá gì
+  const client = getSupabaseClient();
+  if (!client) return;
+  const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+  // LƯU Ý: chỉ dọn nhật ký hội thoại & dữ liệu phụ trợ.
+  // KHÔNG BAO GIỜ xoá bảng `leads` — đó là tài sản khách hàng, phải giữ.
+  const targets: { table: string; label: string }[] = [
+    { table: 'chat_logs', label: 'nhật ký hội thoại' },
+    { table: 'answer_feedback', label: 'lượt đánh giá' },
+    { table: 'chat_sessions', label: 'trạng thái phiên' },
+  ];
+  for (const t of targets) {
+    try {
+      const col = t.table === 'chat_sessions' ? 'updated_at' : 'created_at';
+      const { error } = await client.from(t.table).delete().lt(col, cutoff);
+      if (error) console.warn(`[Cleanup] ${t.table}: ${error.message}`);
+      else console.log(`[Cleanup] Đã dọn ${t.label} cũ hơn ${days} ngày.`);
+    } catch (e: any) {
+      console.warn(`[Cleanup] ${t.table} lỗi:`, e?.message || e);
+    }
+  }
+}
+
 // [Live chat] TRẠNG THÁI PHIÊN: khi nhân viên tiếp nhận (human mode) thì AI TẠM NGỪNG trả lời
 // -> tránh việc AI và người thật cùng trả lời gây loạn. Có cache RAM ngắn để không tra DB mỗi lượt chat.
 const humanModeCache = new Map<string, { on: boolean; at: number }>();
@@ -2894,6 +2959,8 @@ app.post("/api/chat", async (req, res) => {
 
 // [Bước 3] CÔNG KHAI: khách để lại thông tin liên hệ từ widget (form "Để lại SĐT").
 app.post("/api/lead", async (req, res) => {
+  // Chống spam: tối đa 10 lần gửi liên hệ / 10 phút / IP.
+  if (tooManyRequests(req, res, 'lead', 10, 10 * 60 * 1000)) return;
   try {
     const { sessionId, name, phone, note } = req.body || {};
     const cleanPhone = detectPhone(String(phone || '')) || String(phone || '').replace(/[^\d+]/g, '');
@@ -2912,6 +2979,8 @@ app.post("/api/lead", async (req, res) => {
 
 // [Bước 4] CÔNG KHAI: khách bấm nút "Gặp nhân viên tư vấn" trên widget.
 app.post("/api/handoff", async (req, res) => {
+  // Chống spam theo IP (bổ sung cho chống spam theo phiên bên dưới): 10 lần / 10 phút.
+  if (tooManyRequests(req, res, 'handoff', 10, 10 * 60 * 1000)) return;
   try {
     const { sessionId, phone, note } = req.body || {};
     const sid = (typeof sessionId === 'string' ? sessionId.trim() : '').slice(0, 80);
@@ -3018,6 +3087,11 @@ app.get("/api/poll", async (req, res) => {
   try {
     const session = String(req.query.session || '').trim().slice(0, 80);
     if (!session) return res.status(400).json({ error: 'Thiếu session.' });
+    // Giới hạn theo PHIÊN (không theo IP) vì nhiều khách có thể dùng chung 1 IP (văn phòng/4G).
+    // Widget hỏi mỗi 5 giây => ~120 lần/10 phút; đặt trần 200 để vẫn thoải mái nhưng chặn được lạm dụng.
+    if (!rateLimitOk(`poll:${session}`, 200, 10 * 60 * 1000)) {
+      return res.status(429).json({ error: 'Quá nhiều yêu cầu.' });
+    }
     const client = getSupabaseClient();
     if (!client) return res.json({ humanMode: false, lastId: 0, messages: [] });
 
@@ -3134,6 +3208,8 @@ app.post("/api/admin/gap-status", async (req, res) => {
 
 // [Nâng cấp] CÔNG KHAI: khách bấm 👍/👎 dưới câu trả lời của agent.
 app.post("/api/feedback", async (req, res) => {
+  // Chống spam bấm 👍/👎 hàng loạt: tối đa 60 lượt / 10 phút / IP.
+  if (tooManyRequests(req, res, 'feedback', 60, 10 * 60 * 1000)) return;
   try {
     const { sessionId, rating, question, answer } = req.body || {};
     if (rating !== 'up' && rating !== 'down') return res.status(400).json({ error: 'Tham số không hợp lệ.' });
@@ -4657,6 +4733,22 @@ app.get("/api/widget.js", (req, res) => {
 // Vite middleware setup for Development / Static server for Production
 async function startServer() {
   await loadServerStore();
+
+  // [Bảo mật] Báo rõ máy chủ đang dùng khoá Supabase nào.
+  // QUAN TRỌNG: chỉ được bật RLS (STEP8_BAOMAT_RLS.sql) khi đang dùng SERVICE ROLE KEY.
+  // Nếu chạy bằng ANON KEY mà bật RLS thì máy chủ sẽ MẤT quyền đọc/ghi -> hỏng toàn bộ tính năng.
+  if (process.env.SUPABASE_URL) {
+    if (process.env.SUPABASE_SERVICE_ROLE_KEY) {
+      console.log('🔐 [Supabase] Đang dùng SERVICE ROLE KEY — an toàn để bật RLS.');
+    } else if (process.env.SUPABASE_ANON_KEY) {
+      console.warn('⚠️ [Supabase] Đang dùng ANON KEY. KHÔNG bật RLS khi chưa đổi sang SUPABASE_SERVICE_ROLE_KEY (sẽ mất quyền truy cập dữ liệu).');
+    }
+  }
+
+  // [Dữ liệu] Dọn bản ghi cũ: chạy 1 lần sau khi khởi động (chậm 30s để không tranh tài nguyên lúc boot),
+  // rồi lặp lại mỗi 24 giờ. Bắn-và-quên, lỗi chỉ ghi log — không ảnh hưởng việc phục vụ khách.
+  setTimeout(() => { cleanupOldData().catch(() => {}); }, 30000);
+  setInterval(() => { cleanupOldData().catch(() => {}); }, 24 * 60 * 60 * 1000);
 
   const distPath = path.join(process.cwd(), 'dist');
   const hasDist = fs.existsSync(path.join(distPath, 'index.html'));
