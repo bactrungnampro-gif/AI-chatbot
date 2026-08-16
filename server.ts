@@ -3784,10 +3784,22 @@ async function upsertInChunks(client: any, table: string, records: any[], size =
 // Chỉ ghi mục MỚI/THAY ĐỔI và xóa mục ĐÃ GỠ, thay vì ghi lại toàn bộ mỗi lần.
 // Chữ ký nhẹ (không hash toàn bộ content) để phát hiện thay đổi rẻ tiền.
 let lastKnowledgeSyncSig: Record<string, string> = {};
+// Băm chuỗi rẻ tiền (djb2) — giống rag.ts. Phát hiện thay đổi KỂ CẢ khi sửa mà giữ nguyên độ dài.
+function hashStrSrv(str: string): string {
+  let h = 5381;
+  for (let i = 0; i < str.length; i++) h = (((h << 5) + h) + str.charCodeAt(i)) >>> 0;
+  return h.toString(36);
+}
+
+// [Sửa lỗi nghiệm thu 5.1] Chữ ký PHẢI gồm HASH nội dung, không chỉ độ dài.
+// Trước đây sửa "1.200.000đ" -> "1.500.000đ" (độ dài Y HỆT) khiến chữ ký không đổi -> KHÔNG ghi xuống
+// bảng knowledge_sources. Trong khi RAG dùng hash nên kb_chunks CÓ cập nhật -> hai nơi lệch nhau,
+// và sau khi máy chủ khởi động lại, agent quay về báo GIÁ CŨ.
 function ksSignature(s: any): string {
   return [
     s.title || '', s.url || '', s.active !== false ? '1' : '0',
-    String((s.content || '').length), String(s.wordCount || 0), s.type || ''
+    String((s.content || '').length), hashStrSrv(s.content || ''),
+    String(s.wordCount || 0), s.type || ''
   ].join('|');
 }
 // Khởi tạo chữ ký từ dữ liệu đã tải (để lần lưu đầu sau khi load không ghi lại thừa).
@@ -4962,9 +4974,21 @@ app.post("/api/config", async (req, res) => {
     for (const s of req.body.knowledgeSources) if (s && s.id) byId.set(s.id, s); // client mới nhất thắng cho mục nó có
     serverKnowledgeSources = Array.from(byId.values());
   }
+  // [Sửa lỗi nghiệm thu 5.2] Vẫn cho THAY THẾ (để còn xoá được), nhưng thêm CHỐT AN TOÀN: nếu danh sách
+  // gửi lên co lại quá nửa thì nhiều khả năng client đang giữ bản CŨ (vd /api/config/init lỗi mạng nên
+  // state là bản localStorage cũ) -> từ chối, tránh xoá sạch danh mục. Không có soft-delete nên mất là mất luôn.
+  // Muốn xoá nhiều thật sự thì gửi kèm allowProductShrink: true.
+  let productsWarning: string | undefined;
   if (Array.isArray(req.body?.products) && req.body.products.length > 0) {
-    // Sản phẩm nằm gọn trong app_config (không có bảng riêng) -> cho phép thay thế để hỗ trợ xóa sản phẩm.
-    serverProducts = req.body.products;
+    const curCount = (serverProducts || []).length;
+    const nextCount = req.body.products.length;
+    const allowShrink = req.body?.allowProductShrink === true;
+    if (curCount >= 5 && nextCount < Math.ceil(curCount * 0.5) && !allowShrink) {
+      productsWarning = `Đã BỎ QUA cập nhật danh mục: danh sách gửi lên chỉ có ${nextCount} sản phẩm trong khi máy chủ đang có ${curCount} (giảm quá nửa). Nghi ngờ trình duyệt dùng dữ liệu cũ — hãy tải lại trang rồi thử lại.`;
+      console.warn(`[Products] TỪ CHỐI thay thế ${curCount} -> ${nextCount} sản phẩm (giảm quá nửa).`);
+    } else {
+      serverProducts = req.body.products;
+    }
   }
   saveServerStore();
 
@@ -4986,7 +5010,8 @@ app.post("/api/config", async (req, res) => {
     widgetSettings: serverWidgetSettings,
     knowledgeSources: serverKnowledgeSources,
     products: serverProducts,
-    supabaseStatus: sbResult
+    supabaseStatus: sbResult,
+    productsWarning,   // [5.2] báo màn quản trị nếu cập nhật danh mục bị từ chối
   });
 });
 
