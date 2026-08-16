@@ -2161,12 +2161,31 @@ async function cleanupOldData() {
     { table: 'answer_feedback', label: 'lượt đánh giá' },
     { table: 'chat_sessions', label: 'trạng thái phiên' },
   ];
+  // [Sửa lỗi nghiệm thu 4.3] XOÁ THEO LÔ, không dùng một câu DELETE khổng lồ.
+  // Trước đây sau 180 ngày phải xoá hàng trăm nghìn dòng trong 1 lệnh -> LUÔN vượt thời gian cho phép
+  // của Supabase -> chỉ ghi 1 dòng cảnh báo rồi bỏ qua -> bảng KHÔNG BAO GIỜ thực sự được dọn.
+  const BATCH = 500;
+  const MAX_BATCHES = 200; // trần an toàn: tối đa 100.000 dòng mỗi bảng mỗi lần chạy
   for (const t of targets) {
+    const col = t.table === 'chat_sessions' ? 'updated_at' : 'created_at';
+    const key = t.table === 'chat_sessions' ? 'session_id' : 'id';
+    let removed = 0;
     try {
-      const col = t.table === 'chat_sessions' ? 'updated_at' : 'created_at';
-      const { error } = await client.from(t.table).delete().lt(col, cutoff);
-      if (error) console.warn(`[Cleanup] ${t.table}: ${error.message}`);
-      else console.log(`[Cleanup] Đã dọn ${t.label} cũ hơn ${days} ngày.`);
+      for (let round = 0; round < MAX_BATCHES; round++) {
+        const { data: rows, error: selErr } = await client
+          .from(t.table).select(key).lt(col, cutoff).limit(BATCH);
+        if (selErr) { console.warn(`[Cleanup] ${t.table} (đọc): ${selErr.message}`); break; }
+        if (!rows || rows.length === 0) break;
+        const ids = rows.map((r: any) => r[key]).filter((v: any) => v !== null && v !== undefined);
+        if (ids.length === 0) break;
+        const { error: delErr } = await client.from(t.table).delete().in(key, ids);
+        if (delErr) { console.warn(`[Cleanup] ${t.table} (xoá): ${delErr.message}`); break; }
+        removed += ids.length;
+        // Nhường event loop + giảm áp lực CSDL để không làm chậm khách đang chat.
+        await new Promise((r) => setTimeout(r, 150));
+        if (rows.length < BATCH) break; // đã hết dữ liệu cũ
+      }
+      if (removed > 0) console.log(`[Cleanup] Đã dọn ${removed} bản ghi ${t.label} cũ hơn ${days} ngày.`);
     } catch (e: any) {
       console.warn(`[Cleanup] ${t.table} lỗi:`, e?.message || e);
     }
@@ -4070,12 +4089,41 @@ function buildStoreSnapshot() {
   };
 }
 
-function writeStoreFile(data: any) {
+// [Sửa lỗi nghiệm thu 4.4] Ghi file cache KHÔNG chặn máy chủ.
+// Trước đây: `JSON.stringify(data, null, 2)` (thụt lề làm phình ~2 lần) + `writeFileSync` với TOÀN BỘ
+// nội dung kho tri thức -> kho 10MB làm đóng băng ~0,5-0,7 giây, và AutoSync gọi lại mỗi 5 phút.
+// Nay: bỏ thụt lề, ghi bất đồng bộ, ghi ra file tạm rồi đổi tên (tránh file hỏng nếu server tắt giữa chừng),
+// và GỘP các lần ghi liên tiếp trong 1 giây (lúc admin gõ cấu hình có thể gọi liên tục).
+// LƯU Ý: vẫn giữ đầy đủ `content` vì đây là bản dự phòng khi Supabase mất kết nối lúc khởi động.
+let storeWriteTimer: any = null;
+let storeWritePending: any = null;
+let storeWriteInFlight = false;
+
+async function flushStoreFile() {
+  if (storeWriteInFlight || !storeWritePending) return;
+  const data = storeWritePending;
+  storeWritePending = null;
+  storeWriteInFlight = true;
   try {
-    fs.writeFileSync(STORE_FILE, JSON.stringify(data, null, 2), 'utf-8');
+    const tmp = STORE_FILE + '.tmp';
+    await fs.promises.writeFile(tmp, JSON.stringify(data), 'utf-8');
+    await fs.promises.rename(tmp, STORE_FILE);
   } catch (e) {
     console.warn("⚠️ [ServerStore] Failed to save server_store.json:", e);
+  } finally {
+    storeWriteInFlight = false;
+    if (storeWritePending) flushStoreFile(); // có yêu cầu mới trong lúc đang ghi -> ghi tiếp
   }
+}
+
+function writeStoreFile(data: any) {
+  storeWritePending = data;
+  if (storeWriteTimer) return;            // đã hẹn ghi rồi -> gộp chung
+  storeWriteTimer = setTimeout(() => {
+    storeWriteTimer = null;
+    flushStoreFile();
+  }, 1000);
+  storeWriteTimer.unref?.();
 }
 
 function saveServerStore() {
@@ -4876,12 +4924,23 @@ app.get("/api/widget.js", (req, res) => {
   // 2. Create Chat Iframe (Collapsed / Hidden by Default)
   var iframe = document.createElement('iframe');
   iframe.id = 'techlife-ai-agent-iframe';
-  iframe.src = '${baseUrl}/?mode=widget';
+  // [Sửa lỗi nghiệm thu 4.1] KHÔNG gán src ngay lúc tải trang.
+  // Trước đây iframe nạp toàn bộ ứng dụng chat (kèm vòng hỏi thăm máy chủ mỗi 5 giây) cho MỌI khách
+  // xem trang, dù họ không hề mở chat -> 100 khách xem trang = ~1.600 truy vấn CSDL mỗi phút vô ích.
+  // Giờ chỉ nạp khi khách thực sự bấm mở chat lần đầu (xem loadIframeOnce bên dưới).
   iframe.style.cssText = 'position:fixed;bottom:82px;right:20px;width:380px;max-width:calc(100vw - 32px);height:580px;max-height:calc(100vh - 100px);border:none;border-radius:20px;box-shadow:0 20px 30px -10px rgba(0, 0, 0, 0.25), 0 10px 15px -5px rgba(0, 0, 0, 0.1);z-index:999998;transition:all 0.3s cubic-bezier(0.16, 1, 0.3, 1);opacity:0;pointer-events:none;transform:translateY(15px) scale(0.96);display:none;background:#f8fafc;';
   iframe.allow = 'camera; microphone; autoplay';
 
+  var iframeLoaded = false;
+  function loadIframeOnce() {
+    if (iframeLoaded) return;
+    iframeLoaded = true;
+    iframe.src = '${baseUrl}/?mode=widget';
+  }
+
   function toggleWidget(forceState) {
     isOpen = forceState !== undefined ? forceState : !isOpen;
+    if (isOpen) loadIframeOnce();
     var iconContainer = document.getElementById('techlife-ai-btn-icon');
     var textContainer = document.getElementById('techlife-ai-btn-text');
 
