@@ -2339,10 +2339,25 @@ async function saveLead(lead: { sessionId?: string; name?: string; phone?: strin
     const client = getSupabaseClient();
     if (!client) return { ok: false, reason: 'no_client' };
     const phone = (lead.phone || '').trim();
-    // Nếu có phone: kiểm tra đã tồn tại lead cùng phone trong 30 ngày chưa -> tránh trùng.
+    // [Sửa lỗi nghiệm thu 1.2] Chống trùng CHỈ trong 30 ngày. Trước đây thiếu điều kiện thời gian nên
+    // chống trùng VĨNH VIỄN -> khách cũ quay lại mua tiếp bị bỏ qua, không ai được báo.
     if (phone) {
-      const { data: existing } = await client.from('leads').select('id').eq('phone', phone).limit(1);
-      if (Array.isArray(existing) && existing.length > 0) return { ok: true, dedup: true };
+      const dedupSince = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+      const { data: existing } = await client.from('leads')
+        .select('id').eq('phone', phone).gte('created_at', dedupSince)
+        .order('created_at', { ascending: false }).limit(1);
+      if (Array.isArray(existing) && existing.length > 0) {
+        // Trùng trong 30 ngày -> cập nhật phiên/ghi chú mới và đưa lại về "Mới" để nhân viên thấy.
+        try {
+          await client.from('leads').update({
+            session_id: lead.sessionId || null,
+            note: (lead.note || '').slice(0, 2000) || null,
+            status: 'new',
+            reminded_at: null,
+          }).eq('id', existing[0].id);
+        } catch { /* không chặn luồng chính */ }
+        return { ok: true, dedup: true };
+      }
     }
     const { error } = await client.from('leads').insert([{
       session_id: lead.sessionId || null,
@@ -2387,9 +2402,11 @@ function handoffAllowed(sessionId: string): boolean {
 }
 
 // Lưu yêu cầu bàn giao như 1 lead source='handoff' (KHÔNG dedupe theo phone) + thông báo ngay.
-async function saveHandoff(req: { sessionId?: string; phone?: string; note?: string }) {
+// [Sửa lỗi nghiệm thu 1.4] Nhận và LƯU cả `name` — widget có gửi tên khách nhưng server từng bỏ qua.
+async function saveHandoff(req: { sessionId?: string; name?: string; phone?: string; note?: string }) {
   const lead = {
     sessionId: req.sessionId,
+    name: (req.name || '').trim(),
     phone: (req.phone || '').trim(),
     note: req.note || 'Khách yêu cầu gặp nhân viên tư vấn',
     source: 'handoff',
@@ -2399,7 +2416,7 @@ async function saveHandoff(req: { sessionId?: string; phone?: string; note?: str
     if (client) {
       const { error } = await client.from('leads').insert([{
         session_id: lead.sessionId || null,
-        name: null,
+        name: lead.name.slice(0, 200) || null,
         phone: lead.phone || null,
         note: (lead.note || '').slice(0, 2000) || null,
         source: 'handoff',
@@ -2619,8 +2636,18 @@ app.post("/api/chat", async (req, res) => {
       }
     };
 
+    // [Sửa lỗi nghiệm thu 1.1] PHẢI đăng ký MỌI URL sẽ đưa vào prompt, nếu không link guardrail
+    // sẽ xoá chính link do hệ thống cung cấp — nặng nhất là ẢNH SẢN PHẨM (promptBuilder bắt AI chèn ![...](...)).
+    const driveDownloadUrl = (u: string) => {
+      const m = (u || '').match(/drive\.google\.com\/file\/d\/([a-zA-Z0-9_-]+)/);
+      return m ? `https://drive.google.com/uc?export=download&id=${m[1]}` : '';
+    };
+
     filteredKnowledgeSources.forEach((k: any) => {
       if (k.url) parseAndRegisterUrl(k.url);
+      if (k.sheetUrl) parseAndRegisterUrl(k.sheetUrl);
+      const _dl = driveDownloadUrl(k.url || k.sheetUrl || '');
+      if (_dl) parseAndRegisterUrl(_dl);
       if (Array.isArray(k.subPages)) {
         k.subPages.forEach((sp: any) => {
           if (sp.url) parseAndRegisterUrl(sp.url);
@@ -2634,6 +2661,8 @@ app.post("/api/chat", async (req, res) => {
 
     filteredProducts.forEach((p: any) => {
       if (p.sourceUrl) parseAndRegisterUrl(p.sourceUrl);
+      if (p.productUrl) parseAndRegisterUrl(p.productUrl);
+      if (p.imageUrl) parseAndRegisterUrl(p.imageUrl);
       if (p.description) {
         const foundUrls = p.description.match(/https?:\/\/[^\s"'<>]+/g) || [];
         foundUrls.forEach((u: string) => parseAndRegisterUrl(u));
@@ -3034,10 +3063,11 @@ app.post("/api/chat", async (req, res) => {
       };
       let strippedLinks = 0;
       // 1) Link Markdown [nhãn](url) không hợp lệ -> giữ nhãn, bỏ link.
-      responseText = responseText.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, (m, label: string, url: string) => {
+      // [Sửa lỗi nghiệm thu 1.1] Bắt luôn dấu "!" của cú pháp ảnh, tránh để lại rác "!Tên sản phẩm".
+      responseText = responseText.replace(/(!?)\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, (m, bang: string, label: string, url: string) => {
         if (urlAllowed(url.replace(/[.,;:!?]+$/, ''))) return m;
         strippedLinks++;
-        return label;
+        return bang ? '' : label;
       });
       // 2) URL trần còn lại (không nằm trong markdown link) -> bỏ nếu không hợp lệ (tách dấu câu ở đuôi để không cắt nhầm).
       responseText = responseText.replace(/(?<!\]\()https?:\/\/[^\s"'<>)\]]+/g, (raw: string) => {
@@ -3123,6 +3153,16 @@ app.post("/api/lead", async (req, res) => {
     if (!r.ok && r.reason === 'no_client') {
       return res.status(200).json({ success: true, saved: false, message: 'Đã ghi nhận (chưa bật lưu trữ máy chủ).' });
     }
+    // [Sửa lỗi nghiệm thu 1.3] TRƯỚC ĐÂY luôn trả saved:true kể cả khi insert thất bại -> khách thấy
+    // "đã ghi nhận" nhưng SĐT biến mất, không ai biết. Giờ báo đúng + có lưới an toàn qua Telegram.
+    if (!r.ok) {
+      console.error('[Lead] LƯU THẤT BẠI:', r.reason);
+      sendTelegram(
+        `⚠️ LƯU LEAD THẤT BẠI (cần nhập tay gấp!)\n\n📞 SĐT: ${cleanPhone || '(không có)'}\n👤 Tên: ${String(name || '(không có)')}\n📝 ${String(note || '')}\n\nLý do: ${r.reason || 'không rõ'}`,
+        'LeadFallback'
+      );
+      return res.status(503).json({ success: false, saved: false, error: 'Hệ thống đang bận, vui lòng thử lại sau ít phút ạ.' });
+    }
     res.json({ success: true, saved: true, dedup: !!r.dedup });
   } catch (e: any) {
     res.status(500).json({ success: false, error: 'Lỗi lưu thông tin: ' + (e?.message || String(e)) });
@@ -3134,12 +3174,19 @@ app.post("/api/handoff", async (req, res) => {
   // Chống spam theo IP (bổ sung cho chống spam theo phiên bên dưới): 10 lần / 10 phút.
   if (tooManyRequests(req, res, 'handoff', 10, 10 * 60 * 1000)) return;
   try {
-    const { sessionId, phone, note } = req.body || {};
+    const { sessionId, name, phone, note } = req.body || {};
     const sid = (typeof sessionId === 'string' ? sessionId.trim() : '').slice(0, 80);
-    // Chống spam khi bấm nút liên tục.
-    if (sid && !handoffAllowed(sid)) return res.json({ success: true, throttled: true });
     const cleanPhone = detectPhone(String(phone || '')) || String(phone || '').replace(/[^\d+]/g, '');
-    await saveHandoff({ sessionId: sid, phone: cleanPhone, note: note || 'Khách bấm nút "Gặp nhân viên tư vấn"' });
+    const cleanName = String(name || '').trim().slice(0, 200);
+    // [Sửa lỗi nghiệm thu 1.4] Chống spam CHỈ khi lần này khách KHÔNG cung cấp thêm liên hệ.
+    // Trước đây: khách gõ "cho gặp nhân viên" (tiêu thụ hạn mức) rồi mới điền SĐT vào form
+    // -> request có SĐT bị chặn, SỐ ĐIỆN THOẠI BỊ VỨT mà widget vẫn báo "đã gửi".
+    const hasNewContact = !!(cleanPhone || cleanName);
+    if (sid && !hasNewContact && !handoffAllowed(sid)) {
+      return res.json({ success: true, throttled: true });
+    }
+    if (sid && hasNewContact) handoffAllowed(sid);
+    await saveHandoff({ sessionId: sid, name: cleanName, phone: cleanPhone, note: note || 'Khách bấm nút "Gặp nhân viên tư vấn"' });
     res.json({ success: true });
   } catch (e: any) {
     res.status(500).json({ success: false, error: e?.message || String(e) });
