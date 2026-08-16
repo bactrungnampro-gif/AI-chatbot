@@ -108,12 +108,21 @@ export const StandaloneWidgetChat: React.FC<StandaloneWidgetChatProps> = ({
       try {
         const sid = sessionIdRef.current;
         if (!sid) return;
+        // [Sửa lỗi nghiệm thu 3.3] Bỏ qua khi tab đang ẩn: khách mở nhiều tab / để tab nền không còn
+        // đốt hạn mức của phiên (nguyên nhân khiến live chat bị 429 rồi chết im lặng), đồng thời
+        // giảm mạnh tải cho máy chủ vì phần lớn tab luôn ở trạng thái nền.
+        if (typeof document !== 'undefined' && document.hidden) return;
         // Lần đầu: chỉ lấy mốc id hiện tại (không tải lại lịch sử cũ).
         const url = lastPollIdRef.current < 0
           ? `/api/poll?session=${encodeURIComponent(sid)}`
           : `/api/poll?session=${encodeURIComponent(sid)}&after=${lastPollIdRef.current}`;
         const res = await fetch(url);
-        if (!res.ok || stopped) return;
+        if (stopped) return;
+        if (!res.ok) {
+          // Trước đây nuốt lỗi hoàn toàn -> bị 429 là live chat chết âm thầm, không ai biết.
+          if (res.status === 429) console.warn('[Poll] Bị giới hạn tần suất (429) — sẽ thử lại ở nhịp sau.');
+          return;
+        }
         const data = await res.json();
         setHumanMode(!!data.humanMode);
         if (typeof data.lastId === 'number' && data.lastId > lastPollIdRef.current) {

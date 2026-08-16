@@ -2203,7 +2203,6 @@ async function isHumanMode(sessionId: string): Promise<boolean> {
       }
     }
     humanModeCache.set(sessionId, { on, at: Date.now() });
-    if (humanModeCache.size > 5000) humanModeCache.clear();
     return on;
   } catch {
     return false;
@@ -2218,7 +2217,6 @@ function liveChatNotifyAllowed(sessionId: string): boolean {
   const last = liveChatNotifyAt.get(sessionId) || 0;
   if (now - last < 20000) return false;
   liveChatNotifyAt.set(sessionId, now);
-  if (liveChatNotifyAt.size > 5000) liveChatNotifyAt.clear();
   return true;
 }
 
@@ -2366,7 +2364,6 @@ function handoffAllowed(sessionId: string): boolean {
   const last = handoffThrottle.get(sessionId) || 0;
   if (now - last < 10 * 60 * 1000) return false;
   handoffThrottle.set(sessionId, now);
-  if (handoffThrottle.size > 5000) handoffThrottle.clear(); // dọn map định kỳ, tránh phình bộ nhớ
   return true;
 }
 
@@ -2867,8 +2864,11 @@ app.post("/api/chat", async (req, res) => {
         faqContext = allText;
       } else {
         // Bộ lớn -> tách từng cặp "Câu hỏi: ... Trả lời: ..." (chấp nhận cả tiền tố "• " của Google Sheet).
+        // [Sửa lỗi nghiệm thu 3.5] Nhận NHIỀU tiền tố giống hệt rag.ts (Câu hỏi|Hỏi|Q|Question).
+        // Trước đây chỉ nhận "Câu hỏi:" -> file FAQ dùng "Hỏi:" sẽ KHÔNG tách được, thành 1 khối khổng lồ
+        // vượt ngưỡng ký tự rồi bị bỏ qua sạch -> agent mất TOÀN BỘ ngân hàng FAQ mà không báo lỗi.
         const entries = allText
-          .split(/\n(?=\s*[•\-]?\s*Câu hỏi\s*:)/i)
+          .split(/\n(?=\s*[•\-]?\s*(?:Câu hỏi|Hỏi|Q|Question)\s*[:.\-)])/i)
           .map((s) => s.trim())
           .filter((s) => s.length > 0);
         // Chấm điểm theo số từ khóa (khử dấu) của câu hỏi xuất hiện trong từng cặp.
@@ -2886,11 +2886,23 @@ app.post("/api/chat", async (req, res) => {
           // Đủ số cặp cần thiết rồi thì dừng nhận thêm cặp KHÔNG liên quan (score 0).
           if (s.score === 0 && parts.length >= Math.min(3, FAQ_SELECT_MAX_ENTRIES)) break;
           if (parts.length >= FAQ_SELECT_MAX_ENTRIES) break;
-          if (total + s.e.length + 2 > FAQ_SELECT_CHARS) continue;
+          if (total + s.e.length + 2 > FAQ_SELECT_CHARS) {
+            // [Sửa lỗi nghiệm thu 3.5] Một cặp quá dài thì CẮT BỚT thay vì bỏ qua hoàn toàn —
+            // trước đây nếu cặp đầu tiên đã vượt ngưỡng thì faqContext rỗng và agent trả lời "chưa có thông tin".
+            const room = FAQ_SELECT_CHARS - total - 2;
+            if (parts.length === 0 && room > 500) {
+              parts.push(s.e.slice(0, room) + '\n...[đã rút gọn]');
+              total = FAQ_SELECT_CHARS;
+            }
+            continue;
+          }
           parts.push(s.e);
           total += s.e.length + 2;
         }
         faqContext = parts.join('\n\n');
+        if (parts.length === 0 && allText.length > 0) {
+          console.warn('[FAQ] CẢNH BÁO: không chọn được cặp Hỏi-Đáp nào. Kiểm tra định dạng file FAQ (cần "Câu hỏi:" hoặc "Hỏi:").');
+        }
         console.log(`[FAQ] Bộ FAQ lớn (${allText.length} ký tự) -> chọn ${parts.length} cặp liên quan nhất cho câu hỏi.`);
       }
     } catch { /* bỏ qua */ }
@@ -3056,7 +3068,9 @@ app.post("/api/chat", async (req, res) => {
     }
 
     // [Nâng cấp] Thẻ sản phẩm: chỉ gồm sản phẩm CÓ THẬT trong danh mục được nhắc trong câu trả lời.
-    const matchedProducts = matchProductsInText(responseText, products);
+    // [Sửa lỗi nghiệm thu 3.1] Dùng `filteredProducts` (đã lọc active !== false) chứ KHÔNG dùng `products` thô
+    // -> trước đây sản phẩm đã TẮT trong danh mục vẫn hiện thẻ có ảnh, giá và nút "Xem" cho khách.
+    const matchedProducts = matchProductsInText(responseText, filteredProducts);
 
     res.json({
       success: true,
@@ -3259,7 +3273,10 @@ app.get("/api/poll", async (req, res) => {
     if (!session) return res.status(400).json({ error: 'Thiếu session.' });
     // Giới hạn theo PHIÊN (không theo IP) vì nhiều khách có thể dùng chung 1 IP (văn phòng/4G).
     // Widget hỏi mỗi 5 giây => ~120 lần/10 phút; đặt trần 200 để vẫn thoải mái nhưng chặn được lạm dụng.
-    if (!rateLimitOk(`poll:${session}`, 200, 10 * 60 * 1000)) {
+    // [Sửa lỗi nghiệm thu 3.3] Trần cũ 200 quá chặt: widget hỏi mỗi 5 giây = ~120 lượt/10 phút cho MỖI TAB,
+    // mà sessionId lưu localStorage nên 2 tab dùng chung 1 phiên = 240 > 200 -> live chat chết im lặng.
+    // Nâng lên 600 (đủ ~5 tab) — vẫn chặn được lạm dụng thực sự.
+    if (!rateLimitOk(`poll:${session}`, 600, 10 * 60 * 1000)) {
       return res.status(429).json({ error: 'Quá nhiều yêu cầu.' });
     }
     const client = getSupabaseClient();
@@ -3421,16 +3438,29 @@ app.get("/api/admin/stats", async (req, res) => {
     const gaps = gapsR?.data || [];
 
     // Gom theo ngày (YYYY-MM-DD) + theo giờ trong ngày.
+    // [Sửa lỗi nghiệm thu 3.2] Phải tính theo GIỜ VIỆT NAM. Trước đây `slice(0,10)` lấy ngày theo UTC còn
+    // `getHours()` lấy giờ theo múi giờ máy chủ (UTC trên Render) -> biểu đồ "khung giờ cao điểm" LỆCH 7 TIẾNG
+    // (khách nhắn 20h VN bị báo là 13h), và các lượt 00:00–07:00 VN bị tính sang ngày hôm trước.
+    const VN_TZ = 'Asia/Ho_Chi_Minh';
+    const vnParts = (iso: any): { date: string; hour: number } | null => {
+      const t = new Date(iso);
+      if (isNaN(t.getTime())) return null;
+      // Cộng 7 giờ rồi đọc theo UTC = giờ Việt Nam (VN không có quy ước giờ mùa hè nên offset cố định).
+      const vn = new Date(t.getTime() + 7 * 60 * 60 * 1000);
+      return { date: vn.toISOString().slice(0, 10), hour: vn.getUTCHours() };
+    };
+
     const byDay: Record<string, { sessions: Set<string>; messages: number }> = {};
     const byHour: number[] = new Array(24).fill(0);
     const sessions = new Set<string>();
     for (const r of logs) {
-      const d = String(r.created_at || '').slice(0, 10);
+      const p = vnParts(r.created_at);
+      if (!p) continue;
+      const d = p.date;
       if (!byDay[d]) byDay[d] = { sessions: new Set(), messages: 0 };
       byDay[d].messages++;
       if (r.session_id) { byDay[d].sessions.add(r.session_id); sessions.add(r.session_id); }
-      const h = new Date(r.created_at).getHours();
-      if (!isNaN(h)) byHour[h]++;
+      byHour[p.hour]++;
     }
     const daily = Object.keys(byDay).sort().map((d) => ({ date: d, sessions: byDay[d].sessions.size, messages: byDay[d].messages }));
 
@@ -3438,8 +3468,9 @@ app.get("/api/admin/stats", async (req, res) => {
     const leadsByDay: Record<string, number> = {};
     const byStatus: Record<string, number> = {};
     for (const l of leads) {
-      const d = String(l.created_at || '').slice(0, 10);
-      leadsByDay[d] = (leadsByDay[d] || 0) + 1;
+      // Cùng quy ước giờ VN như trên, để cột "Lead" khớp đúng cột "Hội thoại" trong biểu đồ.
+      const p = vnParts(l.created_at);
+      if (p) leadsByDay[p.date] = (leadsByDay[p.date] || 0) + 1;
       const s = l.status || 'new';
       byStatus[s] = (byStatus[s] || 0) + 1;
     }
@@ -4918,6 +4949,18 @@ async function startServer() {
       console.warn('⚠️ [Supabase] Đang dùng ANON KEY. KHÔNG bật RLS khi chưa đổi sang SUPABASE_SERVICE_ROLE_KEY (sẽ mất quyền truy cập dữ liệu).');
     }
   }
+
+  // [Sửa lỗi nghiệm thu 3.4] Dọn bộ nhớ đệm theo HẠN dùng, mỗi phút.
+  // Trước đây dùng `map.clear()` khi vượt 5000 phần tử — vừa xoá cả mục CÒN HẠN (gây dồn truy vấn
+  // cùng lúc), vừa xoá luôn mục vừa ghi ở dòng ngay trên đó nên CHỐNG SPAM BỊ RESET
+  // (khách có thể tạo lại yêu cầu gặp nhân viên ngay lập tức thay vì chờ 10 phút).
+  setInterval(() => {
+    const now = Date.now();
+    for (const [k, v] of humanModeCache) if (now - v.at > HUMAN_MODE_TTL) humanModeCache.delete(k);
+    for (const [k, t] of liveChatNotifyAt) if (now - t > 20 * 1000) liveChatNotifyAt.delete(k);
+    for (const [k, t] of handoffThrottle) if (now - t > 10 * 60 * 1000) handoffThrottle.delete(k);
+    for (const [k, b] of rateBuckets) if (now >= b.resetAt) rateBuckets.delete(k);
+  }, 60 * 1000).unref?.();
 
   // [Dữ liệu] Dọn bản ghi cũ: chạy 1 lần sau khi khởi động (chậm 30s để không tranh tài nguyên lúc boot),
   // rồi lặp lại mỗi 24 giờ. Bắn-và-quên, lỗi chỉ ghi log — không ảnh hưởng việc phục vụ khách.
