@@ -2149,6 +2149,36 @@ async function saveHandoff(req: { sessionId?: string; phone?: string; note?: str
   notifyNewLead(lead); // dùng chung kênh thông báo; tiêu đề tự đổi thành "🙋 KHÁCH CẦN GẶP NHÂN VIÊN"
 }
 
+// [Nâng cấp] PHÁT HIỆN "LỖ HỔNG TRI THỨC": câu trả lời cho thấy agent KHÔNG có thông tin để trả lời.
+// Dùng để gom lại những câu khách hỏi mà agent chưa đáp được -> chủ shop bổ sung FAQ/tri thức.
+function detectAnswerGap(responseText: string): boolean {
+  if (!responseText) return false;
+  const t = responseText.toLowerCase();
+  const signals = [
+    'chưa có thông tin', 'không có thông tin', 'chưa được cung cấp', 'chưa có dữ liệu', 'không có trong dữ liệu',
+    'em chưa rõ', 'em không rõ', 'em chưa nắm', 'em không chắc', 'em chưa chắc',
+    'không tìm thấy thông tin', 'chưa tìm thấy', 'ngoài phạm vi', 'em chưa hỗ trợ', 'chưa thể hỗ trợ',
+    'em xin phép chưa', 'em chưa có câu trả lời', 'không thể trả lời', 'chưa thể trả lời',
+    'vui lòng liên hệ', 'liên hệ trực tiếp', 'liên hệ hotline', 'liên hệ nhân viên',
+  ];
+  return signals.some((s) => t.includes(s));
+}
+
+// Ghi 1 "lỗ hổng tri thức" vào bảng answer_gaps. Bắn-và-quên; no-op nếu chưa cấu hình / thiếu câu hỏi.
+function logAnswerGap(args: { sessionId?: string; question?: string; answer?: string }) {
+  try {
+    const client = getSupabaseClient();
+    const question = (args.question || '').trim();
+    if (!client || !question) return;
+    client.from('answer_gaps').insert([{
+      session_id: args.sessionId || null,
+      question: question.slice(0, 1000),
+      answer: (args.answer || '').slice(0, 2000) || null,
+      status: 'new',
+    }]).then((r: any) => { if (r?.error) console.warn('[AnswerGap] insert error:', r.error.message); }).catch(() => {});
+  } catch { /* bỏ qua */ }
+}
+
 // Main AI Support Chat Endpoint
 app.post("/api/chat", async (req, res) => {
   try {
@@ -2671,6 +2701,11 @@ app.post("/api/chat", async (req, res) => {
         saveHandoff({ sessionId: sid, phone: phone || '', note: 'Khách muốn gặp nhân viên. Lời khách: ' + String(message || '').slice(0, 300) });
         console.log(`[Handoff] Phiên ${sid} yêu cầu gặp nhân viên.`);
       }
+      // [Nâng cấp] Agent trả lời kiểu "chưa có thông tin" -> ghi lại câu hỏi để chủ shop bổ sung tri thức/FAQ.
+      if (message && String(message).trim() && detectAnswerGap(responseText)) {
+        logAnswerGap({ sessionId: sid, question: String(message), answer: responseText });
+        console.log(`[AnswerGap] Ghi nhận câu hỏi agent chưa trả lời được (phiên ${sid}).`);
+      }
     }
 
     res.json({
@@ -2785,6 +2820,146 @@ app.get("/api/admin/conversation", async (req, res) => {
     const { data, error } = await client.from('chat_logs').select('*').eq('session_id', session).order('created_at', { ascending: true }).limit(2000);
     if (error) return res.status(500).json({ error: error.message });
     res.json({ messages: data || [] });
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || String(e) });
+  }
+});
+
+// [Nâng cấp] QUẢN TRỊ: danh sách "câu hỏi agent chưa trả lời được" (gom nhóm câu giống nhau + đếm số lần).
+app.get("/api/admin/gaps", async (req, res) => {
+  try {
+    const client = getSupabaseClient();
+    if (!client) return res.json({ gaps: [] });
+    const includeResolved = String(req.query.all || '') === '1';
+    let q = client.from('answer_gaps').select('*').order('created_at', { ascending: false }).limit(1000);
+    if (!includeResolved) q = q.eq('status', 'new');
+    const { data, error } = await q;
+    if (error) return res.status(500).json({ error: error.message });
+    // Gom nhóm theo câu hỏi (chuẩn hoá thường/space) -> đếm số lần hỏi, giữ lần gần nhất + các id để đánh dấu đã xử lý.
+    const map = new Map<string, any>();
+    for (const row of (data || [])) {
+      const key = String(row.question || '').toLowerCase().replace(/\s+/g, ' ').trim();
+      if (!key) continue;
+      if (!map.has(key)) {
+        map.set(key, { question: row.question, count: 0, lastAt: row.created_at, lastAnswer: row.answer, status: row.status, ids: [] });
+      }
+      const g = map.get(key);
+      g.count++;
+      g.ids.push(row.id);
+    }
+    const gaps = Array.from(map.values()).sort((a, b) => b.count - a.count).slice(0, 300);
+    res.json({ gaps });
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || String(e) });
+  }
+});
+
+// [Nâng cấp] QUẢN TRỊ: đánh dấu (các) bản ghi lỗ hổng là ĐÃ XỬ LÝ (sau khi đã bổ sung FAQ).
+app.post("/api/admin/gap-status", async (req, res) => {
+  try {
+    const { ids, status } = req.body || {};
+    const allowed = ['new', 'resolved'];
+    if (!Array.isArray(ids) || ids.length === 0 || !allowed.includes(String(status))) {
+      return res.status(400).json({ error: 'Tham số không hợp lệ.' });
+    }
+    const client = getSupabaseClient();
+    if (!client) return res.status(400).json({ error: 'Chưa cấu hình Supabase.' });
+    const { error } = await client.from('answer_gaps').update({ status }).in('id', ids.slice(0, 500));
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ success: true });
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || String(e) });
+  }
+});
+
+// [Nâng cấp] CÔNG KHAI: khách bấm 👍/👎 dưới câu trả lời của agent.
+app.post("/api/feedback", async (req, res) => {
+  try {
+    const { sessionId, rating, question, answer } = req.body || {};
+    if (rating !== 'up' && rating !== 'down') return res.status(400).json({ error: 'Tham số không hợp lệ.' });
+    const client = getSupabaseClient();
+    if (!client) return res.json({ success: true, saved: false });
+    const { error } = await client.from('answer_feedback').insert([{
+      session_id: (typeof sessionId === 'string' ? sessionId : '').slice(0, 80) || null,
+      rating,
+      question: String(question || '').slice(0, 1000) || null,
+      answer: String(answer || '').slice(0, 2000) || null,
+    }]);
+    if (error) console.warn('[Feedback] insert lỗi:', error.message);
+    res.json({ success: true, saved: !error });
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || String(e) });
+  }
+});
+
+// [Nâng cấp] QUẢN TRỊ: số liệu tổng quan cho dashboard (hội thoại, lead, đánh giá, khung giờ).
+app.get("/api/admin/stats", async (req, res) => {
+  try {
+    const client = getSupabaseClient();
+    if (!client) return res.json({ enabled: false });
+    const days = Math.min(Math.max(parseInt(String(req.query.days || '30'), 10) || 30, 1), 365);
+    const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+
+    // Bảng answer_feedback / answer_gaps có thể CHƯA tạo -> bọc để không làm hỏng cả dashboard.
+    const safe = (p: any) => p.then((r: any) => r).catch(() => ({ data: [] }));
+    const [logsR, leadsR, fbR, gapsR]: any[] = await Promise.all([
+      safe(client.from('chat_logs').select('session_id, sender, created_at').gte('created_at', since).limit(20000)),
+      safe(client.from('leads').select('id, source, status, created_at').gte('created_at', since).limit(5000)),
+      safe(client.from('answer_feedback').select('rating').gte('created_at', since).limit(20000)),
+      safe(client.from('answer_gaps').select('id, status').gte('created_at', since).limit(5000)),
+    ]);
+
+    const logs = logsR?.data || [];
+    const leads = leadsR?.data || [];
+    const feedback = fbR?.data || [];
+    const gaps = gapsR?.data || [];
+
+    // Gom theo ngày (YYYY-MM-DD) + theo giờ trong ngày.
+    const byDay: Record<string, { sessions: Set<string>; messages: number }> = {};
+    const byHour: number[] = new Array(24).fill(0);
+    const sessions = new Set<string>();
+    for (const r of logs) {
+      const d = String(r.created_at || '').slice(0, 10);
+      if (!byDay[d]) byDay[d] = { sessions: new Set(), messages: 0 };
+      byDay[d].messages++;
+      if (r.session_id) { byDay[d].sessions.add(r.session_id); sessions.add(r.session_id); }
+      const h = new Date(r.created_at).getHours();
+      if (!isNaN(h)) byHour[h]++;
+    }
+    const daily = Object.keys(byDay).sort().map((d) => ({ date: d, sessions: byDay[d].sessions.size, messages: byDay[d].messages }));
+
+    // Lead theo ngày + theo trạng thái.
+    const leadsByDay: Record<string, number> = {};
+    const byStatus: Record<string, number> = {};
+    for (const l of leads) {
+      const d = String(l.created_at || '').slice(0, 10);
+      leadsByDay[d] = (leadsByDay[d] || 0) + 1;
+      const s = l.status || 'new';
+      byStatus[s] = (byStatus[s] || 0) + 1;
+    }
+
+    const up = feedback.filter((f: any) => f.rating === 'up').length;
+    const down = feedback.filter((f: any) => f.rating === 'down').length;
+    const totalSessions = sessions.size;
+
+    res.json({
+      enabled: true,
+      days,
+      totals: {
+        sessions: totalSessions,
+        messages: logs.length,
+        leads: leads.length,
+        handoffs: leads.filter((l: any) => l.source === 'handoff').length,
+        // Tỉ lệ hội thoại ra lead (%) — chỉ số quan trọng nhất về hiệu quả bán hàng.
+        conversionRate: totalSessions > 0 ? Math.round((leads.length / totalSessions) * 1000) / 10 : 0,
+        feedbackUp: up,
+        feedbackDown: down,
+        gapsOpen: gaps.filter((g: any) => (g.status || 'new') === 'new').length,
+      },
+      daily: daily.map((d) => ({ ...d, leads: leadsByDay[d.date] || 0 })),
+      byHour,
+      leadsByStatus: byStatus,
+    });
   } catch (e: any) {
     res.status(500).json({ error: e?.message || String(e) });
   }
@@ -3994,6 +4169,8 @@ app.get("/api/widget-config", (req, res) => {
       name: a.name, title: a.title, businessName: a.businessName,
       businessIndustry: a.businessIndustry, tone: a.tone,
       greetingMessage: a.greetingMessage, avatarUrl: a.avatarUrl,
+      // [Nâng cấp] Câu hỏi gợi ý hiện dạng nút bấm trên widget (giảm ma sát, khách lười gõ vẫn tương tác).
+      quickReplies: a.quickReplies,
     },
     widgetSettings: serverWidgetSettings,
   });

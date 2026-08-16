@@ -18,6 +18,11 @@ import {
   HelpCircle,
   CheckCheck,
   Lightbulb,
+  BarChart3,
+  ThumbsUp,
+  ThumbsDown,
+  TrendingUp,
+  Headset,
 } from 'lucide-react';
 
 // [Bước 3] Màn quản trị "Hộp thư bán hàng": xem Lead (khách để lại SĐT) + Hội thoại thật của khách.
@@ -71,7 +76,7 @@ function fmtTime(iso?: string | null): string {
 }
 
 export const SalesInbox: React.FC = () => {
-  const [view, setView] = useState<'leads' | 'conversations' | 'gaps'>('leads');
+  const [view, setView] = useState<'dashboard' | 'leads' | 'conversations' | 'gaps'>('dashboard');
 
   const tabCls = (active: boolean) =>
     `inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold transition-all ${
@@ -82,6 +87,9 @@ export const SalesInbox: React.FC = () => {
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
       {/* Sub-tab switcher */}
       <div className="flex items-center gap-2 flex-wrap">
+        <button onClick={() => setView('dashboard')} className={tabCls(view === 'dashboard')}>
+          <BarChart3 className="w-4 h-4" /> Tổng quan
+        </button>
         <button onClick={() => setView('leads')} className={tabCls(view === 'leads')}>
           <Users className="w-4 h-4" /> Khách tiềm năng (Lead)
         </button>
@@ -93,6 +101,7 @@ export const SalesInbox: React.FC = () => {
         </button>
       </div>
 
+      {view === 'dashboard' && <DashboardPanel />}
       {view === 'leads' && <LeadsPanel />}
       {view === 'conversations' && <ConversationsPanel />}
       {view === 'gaps' && <GapsPanel />}
@@ -635,6 +644,226 @@ const GapsPanel: React.FC = () => {
           )}
         </div>
       </div>
+    </div>
+  );
+};
+
+// ------------------------------------------------------------------
+//  PANEL 4 — TỔNG QUAN (Dashboard thống kê)
+// ------------------------------------------------------------------
+interface StatsData {
+  enabled?: boolean;
+  days?: number;
+  totals?: {
+    sessions: number; messages: number; leads: number; handoffs: number;
+    conversionRate: number; feedbackUp: number; feedbackDown: number; gapsOpen: number;
+  };
+  daily?: { date: string; sessions: number; messages: number; leads: number }[];
+  byHour?: number[];
+  leadsByStatus?: Record<string, number>;
+}
+
+const DashboardPanel: React.FC = () => {
+  const [stats, setStats] = useState<StatsData | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [days, setDays] = useState(30);
+
+  const load = useCallback(async (d: number) => {
+    setLoading(true);
+    setError('');
+    try {
+      const res = await fetch(`/api/admin/stats?days=${d}`);
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        throw new Error(j.error || `Lỗi ${res.status}`);
+      }
+      setStats(await res.json());
+    } catch (e: any) {
+      setError(e?.message || 'Không tải được số liệu.');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { load(days); }, [load, days]);
+
+  const t = stats?.totals;
+  const daily = stats?.daily || [];
+  const byHour = stats?.byHour || [];
+  const maxDaily = Math.max(1, ...daily.map((x) => x.sessions));
+  const maxHour = Math.max(1, ...byHour);
+  const peakHour = byHour.length ? byHour.indexOf(maxHour) : -1;
+
+  // Thẻ số liệu dùng chung.
+  const Stat = ({ icon: Icon, label, value, tone, hint }: any) => (
+    <div className="bg-white p-4 rounded-2xl border border-slate-200/80 shadow-2xs">
+      <div className="flex items-center gap-2">
+        <Icon className={`w-4 h-4 ${tone || 'text-slate-400'}`} />
+        <div className="text-2xl font-black text-slate-900">{value}</div>
+      </div>
+      <div className="text-xs text-slate-500 font-medium mt-0.5">{label}</div>
+      {hint && <div className="text-[10px] text-slate-400 mt-0.5">{hint}</div>}
+    </div>
+  );
+
+  return (
+    <div className="space-y-5">
+      {/* Bộ lọc khoảng thời gian */}
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div className="flex items-center gap-1.5">
+          {[7, 30, 90].map((d) => (
+            <button
+              key={d}
+              onClick={() => setDays(d)}
+              className={`px-3 py-1.5 rounded-xl text-xs font-semibold border transition-colors ${
+                days === d ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
+              }`}
+            >
+              {d} ngày
+            </button>
+          ))}
+        </div>
+        <button
+          onClick={() => load(days)}
+          className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold border border-slate-200"
+        >
+          <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} /> Tải lại
+        </button>
+      </div>
+
+      {error && (
+        <div className="flex items-start gap-2 text-xs text-rose-700 bg-rose-50 border border-rose-200 rounded-xl p-3">
+          <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" /> <span>{error}</span>
+        </div>
+      )}
+
+      {loading ? (
+        <div className="text-center text-sm text-slate-400 py-16">Đang tải số liệu...</div>
+      ) : !stats?.enabled ? (
+        <div className="text-center text-sm text-slate-400 py-16">
+          <BarChart3 className="w-8 h-8 mx-auto mb-2 text-slate-300" />
+          Chưa cấu hình Supabase nên chưa có số liệu.
+        </div>
+      ) : (
+        <>
+          {/* Hàng chỉ số chính */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <Stat icon={MessageSquare} label="Cuộc hội thoại" value={t?.sessions ?? 0} tone="text-indigo-500" hint={`${t?.messages ?? 0} tin nhắn`} />
+            <Stat icon={Users} label="Khách để lại liên hệ" value={t?.leads ?? 0} tone="text-emerald-500" hint={`${t?.handoffs ?? 0} yêu cầu gặp NV`} />
+            <Stat icon={TrendingUp} label="Tỉ lệ ra khách" value={`${t?.conversionRate ?? 0}%`} tone="text-amber-500" hint="lead / hội thoại" />
+            <Stat icon={HelpCircle} label="Câu hỏi agent bí" value={t?.gapsOpen ?? 0} tone="text-rose-400" hint="cần bổ sung FAQ" />
+          </div>
+
+          {/* Đánh giá của khách */}
+          <div className="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-2xs">
+            <h3 className="font-bold text-slate-900 text-sm mb-3">Khách đánh giá câu trả lời</h3>
+            {((t?.feedbackUp ?? 0) + (t?.feedbackDown ?? 0)) === 0 ? (
+              <p className="text-xs text-slate-400">Chưa có lượt đánh giá nào.</p>
+            ) : (
+              <div className="space-y-2">
+                <div className="flex items-center gap-3">
+                  <ThumbsUp className="w-4 h-4 text-emerald-500 shrink-0" />
+                  <div className="flex-1 h-2.5 bg-slate-100 rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-emerald-500 rounded-full"
+                      style={{ width: `${((t?.feedbackUp ?? 0) / ((t?.feedbackUp ?? 0) + (t?.feedbackDown ?? 0))) * 100}%` }}
+                    />
+                  </div>
+                  <span className="text-xs font-bold text-slate-700 w-10 text-right">{t?.feedbackUp ?? 0}</span>
+                </div>
+                <div className="flex items-center gap-3">
+                  <ThumbsDown className="w-4 h-4 text-rose-500 shrink-0" />
+                  <div className="flex-1 h-2.5 bg-slate-100 rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-rose-500 rounded-full"
+                      style={{ width: `${((t?.feedbackDown ?? 0) / ((t?.feedbackUp ?? 0) + (t?.feedbackDown ?? 0))) * 100}%` }}
+                    />
+                  </div>
+                  <span className="text-xs font-bold text-slate-700 w-10 text-right">{t?.feedbackDown ?? 0}</span>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Biểu đồ theo ngày */}
+          <div className="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-2xs">
+            <h3 className="font-bold text-slate-900 text-sm mb-1">Hội thoại &amp; khách để lại liên hệ theo ngày</h3>
+            <p className="text-[10px] text-slate-400 mb-4">
+              <span className="inline-block w-2 h-2 rounded-sm bg-indigo-500 mr-1" />Hội thoại
+              <span className="inline-block w-2 h-2 rounded-sm bg-emerald-500 ml-3 mr-1" />Lead
+            </p>
+            {daily.length === 0 ? (
+              <p className="text-xs text-slate-400">Chưa có dữ liệu trong khoảng thời gian này.</p>
+            ) : (
+              <div className="flex items-end gap-1 h-40 overflow-x-auto">
+                {daily.map((d) => (
+                  <div key={d.date} className="flex flex-col items-center gap-1 min-w-[22px] flex-1 group relative">
+                    <div className="w-full flex items-end justify-center gap-0.5 h-32">
+                      <div
+                        className="w-1/2 bg-indigo-500 rounded-t transition-all"
+                        style={{ height: `${Math.max(2, (d.sessions / maxDaily) * 100)}%` }}
+                      />
+                      <div
+                        className="w-1/2 bg-emerald-500 rounded-t transition-all"
+                        style={{ height: `${Math.max(2, (d.leads / maxDaily) * 100)}%` }}
+                      />
+                    </div>
+                    <span className="text-[8px] text-slate-400 whitespace-nowrap">{d.date.slice(5)}</span>
+                    <div className="absolute bottom-full mb-1 hidden group-hover:block bg-slate-900 text-white text-[10px] rounded-lg px-2 py-1 whitespace-nowrap z-10">
+                      {d.date}: {d.sessions} hội thoại • {d.leads} lead
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Khung giờ cao điểm */}
+          <div className="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-2xs">
+            <h3 className="font-bold text-slate-900 text-sm mb-1">Khung giờ khách nhắn nhiều nhất</h3>
+            <p className="text-[10px] text-slate-400 mb-4">
+              {peakHour >= 0 && maxHour > 1
+                ? `Cao điểm khoảng ${peakHour}:00 — nên bố trí nhân viên trực khung giờ này.`
+                : 'Chưa đủ dữ liệu để xác định khung giờ cao điểm.'}
+            </p>
+            <div className="flex items-end gap-0.5 h-24">
+              {byHour.map((v, h) => (
+                <div key={h} className="flex-1 flex flex-col items-center gap-1 group relative">
+                  <div
+                    className={`w-full rounded-t transition-all ${h === peakHour && maxHour > 1 ? 'bg-amber-500' : 'bg-slate-300'}`}
+                    style={{ height: `${Math.max(2, (v / maxHour) * 70)}px` }}
+                  />
+                  {h % 3 === 0 && <span className="text-[8px] text-slate-400">{h}</span>}
+                  <div className="absolute bottom-full mb-1 hidden group-hover:block bg-slate-900 text-white text-[10px] rounded-lg px-2 py-1 whitespace-nowrap z-10">
+                    {h}:00 — {v} tin
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Lead theo trạng thái */}
+          <div className="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-2xs">
+            <h3 className="font-bold text-slate-900 text-sm mb-3">Tình trạng chăm sóc khách</h3>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              {STATUS_ORDER.map((s) => {
+                const meta = STATUS_META[s];
+                const Icon = meta.icon;
+                return (
+                  <div key={s} className={`p-3 rounded-xl border ${meta.cls}`}>
+                    <div className="flex items-center gap-2">
+                      <Icon className="w-4 h-4" />
+                      <span className="text-xl font-black">{stats?.leadsByStatus?.[s] || 0}</span>
+                    </div>
+                    <div className="text-[11px] font-medium mt-0.5">{meta.label}</div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </>
+      )}
     </div>
   );
 };

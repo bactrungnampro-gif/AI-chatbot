@@ -10,7 +10,9 @@ import {
   MessageSquare,
   Image as ImageIcon,
   ChevronDown,
-  Headset
+  Headset,
+  ThumbsUp,
+  ThumbsDown
 } from 'lucide-react';
 import { AgentConfig, Attachment, ChatMessage, KnowledgeSource, ProductItem, WidgetSettings } from '../types';
 import { FormattedMessage } from './FormattedMessage';
@@ -84,6 +86,34 @@ export const StandaloneWidgetChat: React.FC<StandaloneWidgetChatProps> = ({
         : (currentAgent.name ? `${currentAgent.name}` : 'Hỗ Trợ Khách Hàng AI'));
 
   const agentSubtitle = currentAgent.title || currentSettings?.subtitle || 'Trả lời tự động 24/7 bằng Trợ lý AI';
+
+  // [Nâng cấp] Câu hỏi gợi ý (nút bấm nhanh). Cấu hình ở màn "Cấu Hình Agent" -> mỗi câu 1 dòng.
+  // Chấp nhận cả mảng lẫn chuỗi nhiều dòng; tối đa 4 nút để không rối khung chat.
+  const quickReplies: string[] = (() => {
+    const raw = (currentAgent as any)?.quickReplies;
+    let list: string[] = [];
+    if (Array.isArray(raw)) list = raw.map((x: any) => String(x || ''));
+    else if (typeof raw === 'string') list = raw.split('\n');
+    return list.map((s) => s.trim()).filter(Boolean).slice(0, 4);
+  })();
+
+  // [Nâng cấp] Đánh giá 👍/👎 cho từng câu trả lời (lưu theo id tin nhắn để đổi màu nút đã bấm).
+  const [feedbackGiven, setFeedbackGiven] = useState<Record<string, 'up' | 'down'>>({});
+  const sendFeedback = (msgId: string, rating: 'up' | 'down', answerText: string) => {
+    if (feedbackGiven[msgId]) return; // mỗi câu chỉ đánh giá 1 lần
+    setFeedbackGiven((prev) => ({ ...prev, [msgId]: rating }));
+    // Tìm câu hỏi của khách ngay trước câu trả lời này -> giúp chủ shop biết ngữ cảnh khi xem lại.
+    let question = '';
+    const idx = messages.findIndex((m) => m.id === msgId);
+    for (let i = idx - 1; i >= 0; i--) {
+      if (messages[i].sender === 'user') { question = messages[i].text || ''; break; }
+    }
+    fetch('/api/feedback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId: sessionIdRef.current, rating, question, answer: answerText }),
+    }).catch(() => { /* bắn-và-quên, không ảnh hưởng trải nghiệm khách */ });
+  };
   const avatarUrl = currentAgent.avatarUrl;
 
   const [inputText, setInputText] = useState('');
@@ -593,15 +623,57 @@ export const StandaloneWidgetChat: React.FC<StandaloneWidgetChatProps> = ({
               <FormattedMessage content={msg.text} isAgent={msg.sender === 'agent'} />
 
               <div
-                className={`text-[9px] mt-1 text-right ${
-                  msg.sender === 'user' ? 'text-white/70' : 'text-slate-400'
+                className={`text-[9px] mt-1 flex items-center gap-1.5 ${
+                  msg.sender === 'user' ? 'text-white/70 justify-end' : 'text-slate-400 justify-between'
                 }`}
               >
-                {msg.timestamp}
+                {/* [Nâng cấp] Nút đánh giá 👍/👎 — chỉ hiện ở câu trả lời của agent (bỏ lời chào & tin đang gõ). */}
+                {msg.sender === 'agent' && msg.id !== 'w_welcome_1' && !(msg as any)._typing && !(msg as any)._pending ? (
+                  <span className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={() => sendFeedback(msg.id, 'up', msg.text)}
+                      className={`p-0.5 rounded transition-colors ${feedbackGiven[msg.id] === 'up' ? 'text-emerald-500' : 'text-slate-300 hover:text-emerald-500'}`}
+                      title="Câu trả lời hữu ích"
+                    >
+                      <ThumbsUp className="w-3 h-3" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => sendFeedback(msg.id, 'down', msg.text)}
+                      className={`p-0.5 rounded transition-colors ${feedbackGiven[msg.id] === 'down' ? 'text-rose-500' : 'text-slate-300 hover:text-rose-500'}`}
+                      title="Câu trả lời chưa hữu ích"
+                    >
+                      <ThumbsDown className="w-3 h-3" />
+                    </button>
+                  </span>
+                ) : <span />}
+                <span>{msg.timestamp}</span>
               </div>
             </div>
           </div>
         ))}
+
+        {/* [Nâng cấp] Nút gợi ý câu hỏi — hiện khi agent vừa trả lời xong & không đang bận.
+            Giảm ma sát: khách chỉ cần bấm là hỏi được, không phải nghĩ cách diễn đạt. */}
+        {quickReplies.length > 0 && !isLoading && !showHandoffForm
+          && messages.length > 0 && messages[messages.length - 1].sender === 'agent'
+          && !(messages[messages.length - 1] as any)._typing
+          && !(messages[messages.length - 1] as any)._pending && (
+          <div className="flex flex-wrap gap-1.5 pt-1 pb-0.5">
+            {quickReplies.map((q, i) => (
+              <button
+                key={i}
+                type="button"
+                onClick={() => handleSendMessage(q)}
+                className="px-2.5 py-1.5 rounded-full text-[11px] font-medium bg-white border transition-colors hover:shadow-xs text-left"
+                style={{ color: primaryColor, borderColor: primaryColor + '40' }}
+              >
+                {q}
+              </button>
+            ))}
+          </div>
+        )}
 
         {/* Loading Indicator — ẩn khi đã có bong bóng "tiếp nhận"/đang gõ (tránh trùng lặp trạng thái chờ) */}
         {isLoading && !messages.some((m) => (m as any)._pending || (m as any)._typing) && (

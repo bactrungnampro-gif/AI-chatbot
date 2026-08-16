@@ -757,6 +757,25 @@ export const AgentPersonaConfig: React.FC<AgentPersonaConfigProps> = ({
           />
         </div>
 
+        {/* SECTION 3C: Câu hỏi gợi ý (nút bấm nhanh trên widget) */}
+        <div className="bg-white p-6 rounded-2xl border border-slate-200/80 shadow-2xs space-y-3">
+          <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
+            <Sparkles className="w-4 h-4 text-amber-500" />
+            <h3 className="font-bold text-slate-900 text-sm">Câu Hỏi Gợi Ý (nút bấm nhanh)</h3>
+          </div>
+          <p className="text-xs text-slate-600 leading-relaxed">
+            Các câu này hiện thành <b>nút bấm</b> dưới câu trả lời của agent trên widget — khách chỉ cần bấm là hỏi, không phải gõ.
+            Mỗi câu <b>một dòng</b>, tối đa <b>4 câu</b> (dư sẽ bỏ qua). Nên đặt câu ngắn, đúng thứ khách hay hỏi. Để trống nếu không dùng.
+          </p>
+          <textarea
+            value={(formData as any).quickReplies || ''}
+            onChange={(e) => setFormData({ ...formData, quickReplies: e.target.value } as any)}
+            rows={5}
+            placeholder={'Ví dụ:\nBảng giá hóa chất tẩy rửa\nTư vấn máy chà sàn phù hợp\nChính sách bảo hành\nĐịa chỉ chi nhánh'}
+            className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs leading-relaxed focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 focus:outline-none"
+          />
+        </div>
+
         {/* SECTION 4: Supabase Integration & Vector DB Setup */}
         <div className="bg-white p-6 rounded-2xl border border-slate-200/80 shadow-2xs space-y-5">
           <div className="flex items-center justify-between border-b border-slate-100 pb-3">
