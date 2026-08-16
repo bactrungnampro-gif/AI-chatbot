@@ -2230,6 +2230,16 @@ async function saveHandoff(req: { sessionId?: string; phone?: string; note?: str
   } catch (e: any) {
     console.warn('[Handoff] lỗi lưu:', e?.message || e);
   }
+
+  // [Sửa lỗi] GHI MỘT DẤU MỐC vào chat_logs. Trước đây yêu cầu gặp nhân viên CHỈ lưu ở bảng `leads`,
+  // nên nếu khách bấm nút mà chưa nhắn câu nào thì phiên KHÔNG xuất hiện ở danh sách "Hội thoại khách hàng"
+  // -> nhân viên không có cách mở cửa sổ chat với khách. Ghi dòng này để phiên luôn hiện ra.
+  if (lead.sessionId) {
+    const who = [lead.name ? `Tên: ${lead.name}` : '', lead.phone ? `SĐT: ${lead.phone}` : 'chưa để lại SĐT']
+      .filter(Boolean).join(' • ');
+    await logSingleMessage(lead.sessionId, 'system', `🙋 Khách yêu cầu gặp nhân viên tư vấn (${who}).`);
+  }
+
   notifyNewLead(lead); // dùng chung kênh thông báo; tiêu đề tự đổi thành "🙋 KHÁCH CẦN GẶP NHÂN VIÊN"
 }
 
@@ -2961,7 +2971,27 @@ app.get("/api/admin/conversations", async (req, res) => {
       const c = map.get(s);
       c.messages++;
     }
-    res.json({ conversations: Array.from(map.values()).slice(0, 500) });
+
+    // [Sửa lỗi] Đánh dấu phiên nào ĐANG CHỜ NHÂN VIÊN + kèm SĐT/tên khách,
+    // để nhân viên biết ngay phải mở hội thoại nào (trước đây chỉ thấy dãy mã phiên khó hiểu).
+    try {
+      const { data: pend } = await client.from('leads')
+        .select('session_id, name, phone, created_at')
+        .eq('source', 'handoff').eq('status', 'new')
+        .order('created_at', { ascending: false }).limit(300);
+      for (const l of (pend || [])) {
+        if (!l.session_id) continue;
+        const c = map.get(l.session_id);
+        if (c) { c.needsStaff = true; c.phone = l.phone || ''; c.name = l.name || ''; }
+      }
+    } catch { /* bảng leads chưa có -> bỏ qua, không làm hỏng danh sách */ }
+
+    // Phiên đang chờ nhân viên xếp LÊN ĐẦU, sau đó tới phiên mới nhất.
+    const list = Array.from(map.values()).sort((a, b) => {
+      if (!!b.needsStaff !== !!a.needsStaff) return b.needsStaff ? 1 : -1;
+      return String(b.lastAt || '').localeCompare(String(a.lastAt || ''));
+    });
+    res.json({ conversations: list.slice(0, 500) });
   } catch (e: any) {
     res.status(500).json({ error: e?.message || String(e) });
   }

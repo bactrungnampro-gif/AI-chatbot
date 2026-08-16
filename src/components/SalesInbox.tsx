@@ -45,6 +45,9 @@ interface ConversationSummary {
   messages: number;
   lastAt?: string | null;
   lastText?: string | null;
+  needsStaff?: boolean;   // khách đang chờ nhân viên
+  phone?: string;
+  name?: string;
 }
 
 interface ChatLogRow {
@@ -77,6 +80,8 @@ function fmtTime(iso?: string | null): string {
 
 export const SalesInbox: React.FC = () => {
   const [view, setView] = useState<'dashboard' | 'leads' | 'conversations' | 'gaps'>('dashboard');
+  // [Sửa lỗi] Cho phép nhảy thẳng từ một Lead sang đúng cửa sổ chat của khách đó.
+  const [jumpSession, setJumpSession] = useState<string>('');
 
   const tabCls = (active: boolean) =>
     `inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold transition-all ${
@@ -102,8 +107,12 @@ export const SalesInbox: React.FC = () => {
       </div>
 
       {view === 'dashboard' && <DashboardPanel />}
-      {view === 'leads' && <LeadsPanel />}
-      {view === 'conversations' && <ConversationsPanel />}
+      {view === 'leads' && (
+        <LeadsPanel onOpenChat={(sid) => { setJumpSession(sid); setView('conversations'); }} />
+      )}
+      {view === 'conversations' && (
+        <ConversationsPanel jumpSession={jumpSession} onJumped={() => setJumpSession('')} />
+      )}
       {view === 'gaps' && <GapsPanel />}
     </div>
   );
@@ -112,7 +121,7 @@ export const SalesInbox: React.FC = () => {
 // ------------------------------------------------------------------
 //  PANEL 1 — DANH SÁCH LEAD
 // ------------------------------------------------------------------
-const LeadsPanel: React.FC = () => {
+const LeadsPanel: React.FC<{ onOpenChat: (sessionId: string) => void }> = ({ onOpenChat }) => {
   const [leads, setLeads] = useState<Lead[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -282,6 +291,17 @@ const LeadsPanel: React.FC = () => {
                       </div>
                     </div>
                     <div className="flex items-center gap-1 shrink-0">
+                      {/* [Sửa lỗi] Mở thẳng cửa sổ chat với đúng khách này — trước đây nhân viên
+                          không biết mở hội thoại nào vì chỉ thấy dãy mã phiên. */}
+                      {l.session_id && (
+                        <button
+                          onClick={() => onOpenChat(String(l.session_id))}
+                          className="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[10px] font-bold bg-indigo-50 text-indigo-700 border border-indigo-200 hover:bg-indigo-100 mr-1"
+                          title="Mở cửa sổ chat trực tiếp với khách này"
+                        >
+                          <MessageSquare className="w-3 h-3" /> Mở chat
+                        </button>
+                      )}
                       {STATUS_ORDER.map((s) => {
                         const active = status === s;
                         const m = STATUS_META[s];
@@ -314,7 +334,7 @@ const LeadsPanel: React.FC = () => {
 // ------------------------------------------------------------------
 //  PANEL 2 — HỘI THOẠI
 // ------------------------------------------------------------------
-const ConversationsPanel: React.FC = () => {
+const ConversationsPanel: React.FC<{ jumpSession?: string; onJumped?: () => void }> = ({ jumpSession, onJumped }) => {
   const [list, setList] = useState<ConversationSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -347,6 +367,15 @@ const ConversationsPanel: React.FC = () => {
   useEffect(() => {
     loadList();
   }, [loadList]);
+
+  // [Sửa lỗi] Khi bấm "Mở chat" từ danh sách Lead -> mở thẳng hội thoại của đúng khách đó.
+  useEffect(() => {
+    if (jumpSession) {
+      openThread(jumpSession);
+      onJumped && onJumped();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jumpSession]);
 
   const refreshThread = useCallback(async (session: string, silent = false) => {
     if (!silent) setThreadLoading(true);
@@ -463,6 +492,16 @@ const ConversationsPanel: React.FC = () => {
             thread.map((m) => {
               const isUser = m.sender === 'user';
               const isStaff = m.sender === 'staff'; // tin do NHÂN VIÊN gửi
+              // Ghi chú hệ thống (vd "khách yêu cầu gặp nhân viên") -> hiện dạng dòng giữa, không phải bong bóng chat.
+              if (m.sender === 'system') {
+                return (
+                  <div key={m.id} className="flex justify-center">
+                    <span className="text-[11px] font-semibold text-rose-700 bg-rose-50 border border-rose-200 rounded-full px-3 py-1">
+                      {m.text} · {fmtTime(m.created_at)}
+                    </span>
+                  </div>
+                );
+              }
               return (
                 <div key={m.id} className={`flex items-start gap-3 ${isUser ? '' : 'flex-row-reverse'}`}>
                   <div
@@ -562,14 +601,28 @@ const ConversationsPanel: React.FC = () => {
               <button
                 key={c.session_id}
                 onClick={() => openThread(c.session_id)}
-                className="w-full text-left p-3 rounded-xl border border-slate-100 bg-slate-50/50 hover:bg-indigo-50/40 hover:border-indigo-100 transition-colors flex items-center gap-3"
+                className={`w-full text-left p-3 rounded-xl border transition-colors flex items-center gap-3 ${
+                  c.needsStaff
+                    ? 'border-rose-200 bg-rose-50/60 hover:bg-rose-50'
+                    : 'border-slate-100 bg-slate-50/50 hover:bg-indigo-50/40 hover:border-indigo-100'
+                }`}
               >
-                <div className="w-9 h-9 rounded-full bg-indigo-100 text-indigo-600 flex items-center justify-center shrink-0">
-                  <MessageSquare className="w-4 h-4" />
+                <div className={`w-9 h-9 rounded-full flex items-center justify-center shrink-0 ${
+                  c.needsStaff ? 'bg-rose-100 text-rose-600' : 'bg-indigo-100 text-indigo-600'
+                }`}>
+                  {c.needsStaff ? <Headset className="w-4 h-4" /> : <MessageSquare className="w-4 h-4" />}
                 </div>
                 <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2">
-                    <span className="font-semibold text-slate-800 text-sm truncate">{c.session_id}</span>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    {/* [Sửa lỗi] Hiện SĐT/tên khách thay vì chỉ mã phiên khó hiểu */}
+                    <span className="font-semibold text-slate-800 text-sm truncate">
+                      {c.phone || c.name || c.session_id}
+                    </span>
+                    {c.needsStaff && (
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-600 text-white shrink-0">
+                        🙋 ĐANG CHỜ NHÂN VIÊN
+                      </span>
+                    )}
                     <span className="text-[10px] text-slate-400 shrink-0">{c.messages} tin</span>
                   </div>
                   {c.lastText && <p className="text-xs text-slate-500 truncate mt-0.5">{c.lastText}</p>}

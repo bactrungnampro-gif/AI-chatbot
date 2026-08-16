@@ -525,8 +525,9 @@ export const StandaloneWidgetChat: React.FC<StandaloneWidgetChatProps> = ({
     if (handoffSubmitting) return;
     const name = handoffName.trim();
     const phone = handoffPhone.trim();
-    // Gửi kèm liên hệ nhưng chưa nhập gì -> không làm gì (nút đã bị vô hiệu ở trạng thái này).
-    if (hasContact && !name && !phone) return;
+    // BẮT BUỘC có số điện thoại hợp lệ khi gửi yêu cầu -> nhân viên luôn có cách liên hệ lại.
+    // (Khách không muốn để số thì bấm "Bỏ qua" — khi đó vẫn được chat trực tiếp với nhân viên.)
+    if (hasContact && phone.replace(/\D/g, '').length < 9) return;
     setHandoffSubmitting(true);
     const note = hasContact
       ? ('Khách để lại liên hệ qua form. ' + (handoffNote.trim() ? 'Lời nhắn: ' + handoffNote.trim() : ''))
@@ -873,22 +874,26 @@ export const StandaloneWidgetChat: React.FC<StandaloneWidgetChatProps> = ({
               </button>
             </div>
             <p className="text-[10px] text-slate-500 leading-relaxed">
-              Anh/Chị để lại thông tin để nhân viên liên hệ lại sớm nhất ạ:
+              Anh/Chị để lại <b>số điện thoại</b> để nhân viên liên hệ lại sớm nhất ạ:
             </p>
             <input
               type="text"
               value={handoffName}
               onChange={(e) => setHandoffName(e.target.value)}
-              placeholder="Tên của Anh/Chị"
+              placeholder="Tên của Anh/Chị (không bắt buộc)"
               className="w-full bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs text-slate-800 placeholder-slate-400 outline-none focus:ring-2 focus:ring-indigo-500/20"
             />
             <input
               type="tel"
               value={handoffPhone}
               onChange={(e) => setHandoffPhone(e.target.value)}
-              placeholder="Số điện thoại / Zalo"
+              placeholder="Số điện thoại / Zalo (bắt buộc)"
               className="w-full bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs text-slate-800 placeholder-slate-400 outline-none focus:ring-2 focus:ring-indigo-500/20"
             />
+            {/* Nhắc nhẹ khi số chưa hợp lệ — nhân viên PHẢI có cách liên hệ lại. */}
+            {handoffPhone.trim().length > 0 && handoffPhone.replace(/\D/g, '').length < 9 && (
+              <p className="text-[10px] text-rose-500">Số điện thoại chưa đúng, Anh/Chị kiểm tra giúp em ạ.</p>
+            )}
             <input
               type="text"
               value={handoffNote}
@@ -900,7 +905,7 @@ export const StandaloneWidgetChat: React.FC<StandaloneWidgetChatProps> = ({
               <button
                 type="button"
                 onClick={() => submitHandoff(true)}
-                disabled={handoffSubmitting || (!handoffName.trim() && !handoffPhone.trim())}
+                disabled={handoffSubmitting || handoffPhone.replace(/\D/g, '').length < 9}
                 className="flex-1 py-1.5 rounded-lg text-white text-xs font-semibold disabled:opacity-40 disabled:cursor-not-allowed shadow-xs"
                 style={{ backgroundColor: primaryColor }}
               >
