@@ -2516,6 +2516,46 @@ function logAnswerGap(args: { sessionId?: string; question?: string; answer?: st
   } catch { /* bỏ qua */ }
 }
 
+// ===== [Sửa lỗi nghiệm thu 4.2] BỘ ĐỆM NGỮ CẢNH LINK =====
+// Tập domain hợp lệ, tập URL thật và "danh bạ link" CHỈ phụ thuộc kho tri thức + danh mục sản phẩm
+// (thay đổi vài lần/ngày), nhưng trước đây được dựng LẠI TỪ ĐẦU cho MỖI câu hỏi của khách —
+// quét toàn bộ nội dung kho tri thức nhiều lượt, tốn ~300-450ms CPU và làm nghẽn các request khác.
+//
+// AN TOÀN: ngoài so khớp "chữ ký" dữ liệu, bộ đệm còn TỰ HẾT HẠN sau 60 giây. Nhờ vậy nếu chữ ký
+// lỡ không bắt được một thay đổi nào đó thì sai lệch cũng chỉ tồn tại tối đa 1 phút — điểm này quan
+// trọng vì bộ đệm nuôi guardrail chống bịa link, đệm sai sẽ xoá nhầm link/ảnh thật.
+const LINK_CTX_TTL_MS = 60 * 1000;
+let linkCtxCache: {
+  sig: string; at: number;
+  domains: Set<string>; urls: Set<string>; listStr: string; linkDir: string | null;
+} | null = null;
+
+// Chữ ký RẺ: chỉ đọc thuộc tính (độ dài, mốc cập nhật, các URL), KHÔNG duyệt từng ký tự nội dung.
+function linkCtxSignature(sources: any[], products: any[]): string {
+  const parts: string[] = [];
+  for (const k of sources) {
+    parts.push([
+      k?.id || '', (k?.content || '').length, k?.updatedAt || k?.lastSyncedAt || '',
+      k?.url || '', k?.sheetUrl || '', Array.isArray(k?.subPages) ? k.subPages.length : 0,
+    ].join('~'));
+  }
+  parts.push('#');
+  for (const p of products) {
+    parts.push([
+      p?.id || '', p?.name || '', p?.imageUrl || '', p?.productUrl || '', p?.sourceUrl || '',
+      (p?.description || '').length,
+    ].join('~'));
+  }
+  return parts.join('|');
+}
+
+function getLinkCtxCache(sig: string) {
+  if (!linkCtxCache) return null;
+  if (linkCtxCache.sig !== sig) return null;
+  if (Date.now() - linkCtxCache.at > LINK_CTX_TTL_MS) return null;
+  return linkCtxCache;
+}
+
 // Main AI Support Chat Endpoint
 app.post("/api/chat", async (req, res) => {
   try {
@@ -2605,10 +2645,14 @@ app.post("/api/chat", async (req, res) => {
     const filteredKnowledgeSources = knowledgeSources.filter((k: any) => k.active !== false);
     const filteredProducts = products.filter((p: any) => p.active !== false);
 
+    // [Sửa lỗi nghiệm thu 4.2] Dùng lại kết quả đã dựng nếu kho tri thức/sản phẩm chưa đổi.
+    const _linkSig = linkCtxSignature(filteredKnowledgeSources, filteredProducts);
+    const _linkCached = getLinkCtxCache(_linkSig);
+
     // Extract domains for link-sending permission dynamically
-    const allowedDomainsSet = new Set<string>();
+    const allowedDomainsSet: Set<string> = _linkCached ? _linkCached.domains : new Set<string>();
     // [Bước 1 - guardrail] Tập URL THẬT (chuẩn hóa) có trong dữ liệu -> để hậu kiểm câu trả lời, loại link bịa.
-    const knownUrlSet = new Set<string>();
+    const knownUrlSet: Set<string> = _linkCached ? _linkCached.urls : new Set<string>();
     const normUrl = (raw: string): string | null => {
       try {
         const u = new URL(raw);
@@ -2643,7 +2687,7 @@ app.post("/api/chat", async (req, res) => {
       return m ? `https://drive.google.com/uc?export=download&id=${m[1]}` : '';
     };
 
-    filteredKnowledgeSources.forEach((k: any) => {
+    if (!_linkCached) filteredKnowledgeSources.forEach((k: any) => {
       if (k.url) parseAndRegisterUrl(k.url);
       if (k.sheetUrl) parseAndRegisterUrl(k.sheetUrl);
       const _dl = driveDownloadUrl(k.url || k.sheetUrl || '');
@@ -2659,7 +2703,7 @@ app.post("/api/chat", async (req, res) => {
       }
     });
 
-    filteredProducts.forEach((p: any) => {
+    if (!_linkCached) filteredProducts.forEach((p: any) => {
       if (p.sourceUrl) parseAndRegisterUrl(p.sourceUrl);
       if (p.productUrl) parseAndRegisterUrl(p.productUrl);
       if (p.imageUrl) parseAndRegisterUrl(p.imageUrl);
@@ -2669,7 +2713,7 @@ app.post("/api/chat", async (req, res) => {
       }
     });
 
-    const allowedDomainsListStr = Array.from(allowedDomainsSet).join(', ');
+    const allowedDomainsListStr = _linkCached ? _linkCached.listStr : Array.from(allowedDomainsSet).join(', ');
 
     // Prepare Knowledge Base Context. [Fix H6] Cấu hình được + KHÔNG âm thầm bỏ nguồn (báo số nguồn bị cắt).
     const MAX_KB_TOTAL_CHARS = parseInt(process.env.KB_MAX_CONTEXT_CHARS || '48000', 10);
@@ -2736,7 +2780,7 @@ app.post("/api/chat", async (req, res) => {
 
     // [Fix bịa link] Danh sách LINK CHÍNH XÁC từ metadata nguồn (url/sheetUrl/subPages) + sản phẩm.
     // Luôn đưa vào prompt (kể cả khi bật RAG hay content bị cắt) để model có link thật mà không phải bịa.
-    const linkDirectory = (() => {
+    const linkDirectory = (_linkCached && _linkCached.linkDir !== null) ? _linkCached.linkDir : (() => {
       const seen = new Set<string>();
       const URL_RE = /https?:\/\/[^\s)\]}"'<>]+/g;
       const cleanUrl = (u: string) => (u || '').replace(/[.,;:!?)\]}>'"]+$/, '');
@@ -2805,6 +2849,18 @@ app.post("/api/chat", async (req, res) => {
       if (out.length > LINK_DIR_MAX_CHARS) out = out.slice(0, LINK_DIR_MAX_CHARS) + '\n...[danh sách link đã rút gọn]';
       return out;
     })();
+
+    // [Sửa lỗi nghiệm thu 4.2] Lưu lại kết quả vừa dựng để các câu hỏi sau dùng chung (tối đa 60 giây).
+    if (!_linkCached) {
+      linkCtxCache = {
+        sig: _linkSig,
+        at: Date.now(),
+        domains: allowedDomainsSet,
+        urls: knownUrlSet,
+        listStr: allowedDomainsListStr,
+        linkDir: linkDirectory,
+      };
+    }
 
     // [PoC RAG] Nếu bật, truy hồi các đoạn liên quan nhất tới câu hỏi thay vì nhồi toàn bộ tri thức vào prompt.
     let knowledgeContextText = activeKnowledge;
