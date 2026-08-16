@@ -23,6 +23,7 @@ import {
   ThumbsDown,
   TrendingUp,
   Headset,
+  Download,
 } from 'lucide-react';
 
 // [Bước 3] Màn quản trị "Hộp thư bán hàng": xem Lead (khách để lại SĐT) + Hội thoại thật của khách.
@@ -127,6 +128,36 @@ const LeadsPanel: React.FC<{ onOpenChat: (sessionId: string) => void }> = ({ onO
   const [error, setError] = useState('');
   const [savingId, setSavingId] = useState<string | number | null>(null);
   const [search, setSearch] = useState('');
+  const [exporting, setExporting] = useState(false);
+
+  // [Nâng cấp] Xuất danh sách lead ra CSV (mở bằng Excel).
+  // Endpoint quản trị cần token nên phải tải qua fetch (interceptor tự gắn Bearer),
+  // không dùng thẻ <a href> được vì link thường KHÔNG kèm token -> sẽ bị chặn 401.
+  const exportCsv = async () => {
+    if (exporting) return;
+    setExporting(true);
+    setError('');
+    try {
+      const res = await fetch('/api/admin/leads/export');
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        throw new Error(d.error || `Lỗi ${res.status}`);
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `danh-sach-lead-${new Date().toISOString().slice(0, 10)}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (e: any) {
+      setError(e?.message || 'Không xuất được danh sách.');
+    } finally {
+      setExporting(false);
+    }
+  };
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -229,6 +260,14 @@ const LeadsPanel: React.FC<{ onOpenChat: (sessionId: string) => void }> = ({ onO
                 className="pl-9 pr-3 py-2 border border-slate-200 rounded-xl text-xs w-full bg-slate-50 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
               />
             </div>
+            <button
+              onClick={exportCsv}
+              disabled={exporting || leads.length === 0}
+              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold disabled:opacity-40 disabled:cursor-not-allowed shadow-xs"
+              title="Tải danh sách lead về máy (mở bằng Excel)"
+            >
+              <Download className="w-4 h-4" /> {exporting ? 'Đang tải...' : 'Xuất Excel'}
+            </button>
             <button
               onClick={load}
               className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold border border-slate-200"

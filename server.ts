@@ -2045,6 +2045,98 @@ function tooManyRequests(req: any, res: any, bucket: string, max: number, window
   return true;
 }
 
+// ===================== [Chăm sóc khách] NHẮC LEAD CHƯA LIÊN HỆ =====================
+// Lead để trạng thái "Mới" quá lâu = khách đang bị bỏ quên -> mất đơn.
+// Cứ 30 phút kiểm tra 1 lần; lead nào quá LEAD_FOLLOWUP_HOURS giờ mà chưa ai xử lý thì nhắc qua Telegram.
+// Đánh dấu `reminded_at` để KHÔNG nhắc lại cùng một lead mãi (chỉ nhắc 1 lần cho mỗi lead).
+// Đặt LEAD_FOLLOWUP_HOURS=0 để tắt tính năng này.
+async function checkLeadFollowups() {
+  try {
+    const hours = parseInt(process.env.LEAD_FOLLOWUP_HOURS || '4', 10);
+    if (!Number.isFinite(hours) || hours <= 0) return;
+    const client = getSupabaseClient();
+    if (!client) return;
+
+    const cutoff = new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
+    const { data, error } = await client.from('leads')
+      .select('id, name, phone, source, note, created_at')
+      .eq('status', 'new').lt('created_at', cutoff).is('reminded_at', null)
+      .order('created_at', { ascending: true }).limit(20);
+    if (error) {
+      // Thường do bảng `leads` chưa có cột reminded_at -> nhắc chủ shop chạy file SQL bổ sung.
+      if (/reminded_at/i.test(error.message)) {
+        console.warn('[Followup] Thiếu cột reminded_at — hãy chạy STEP9_CHAMSOC_LEAD.sql trong Supabase.');
+      }
+      return;
+    }
+    const list = data || [];
+    if (list.length === 0) return;
+
+    const lines = list.slice(0, 10).map((l: any, i: number) => {
+      const waited = Math.round((Date.now() - new Date(l.created_at).getTime()) / 3600000);
+      return `${i + 1}. ${l.phone || '(không có SĐT)'}${l.name ? ' — ' + l.name : ''} (chờ ${waited} giờ)`;
+    });
+    const extra = list.length > 10 ? `\n… và ${list.length - 10} khách khác` : '';
+    sendTelegram(
+      `⏰ NHẮC: ${list.length} KHÁCH CHƯA ĐƯỢC LIÊN HỆ\n(để trạng thái "Mới" quá ${hours} giờ)\n\n${lines.join('\n')}${extra}\n\n👉 Mở màn quản trị → Lead & Hội Thoại Khách để chăm sóc.`,
+      'Followup'
+    );
+
+    // Đánh dấu đã nhắc -> lần sau không nhắc lại các lead này nữa.
+    const ids = list.map((l: any) => l.id);
+    await client.from('leads').update({ reminded_at: new Date().toISOString() }).in('id', ids);
+    console.log(`[Followup] Đã nhắc ${list.length} lead chưa liên hệ.`);
+  } catch (e: any) {
+    console.warn('[Followup] lỗi:', e?.message || e);
+  }
+}
+
+// ===================== [Chăm sóc khách] BÁO CÁO CUỐI NGÀY =====================
+// Mỗi ngày vào giờ đã đặt (giờ Việt Nam), gửi tổng kết qua Telegram để chủ shop nắm tình hình.
+// Đặt DAILY_REPORT_HOUR=-1 để tắt. Mặc định 18 giờ.
+let lastDailyReportDate = '';
+async function maybeSendDailyReport() {
+  try {
+    const hour = parseInt(process.env.DAILY_REPORT_HOUR ?? '18', 10);
+    if (!Number.isFinite(hour) || hour < 0 || hour > 23) return;
+    // Quy đổi sang giờ Việt Nam (UTC+7) để báo cáo đúng "cuối ngày" theo giờ địa phương.
+    const nowVn = new Date(Date.now() + 7 * 60 * 60 * 1000);
+    const todayVn = nowVn.toISOString().slice(0, 10);
+    if (nowVn.getUTCHours() !== hour) return;
+    if (lastDailyReportDate === todayVn) return; // đã gửi hôm nay rồi
+    const client = getSupabaseClient();
+    if (!client) return;
+    lastDailyReportDate = todayVn;
+
+    // Mốc 00:00 giờ VN của hôm nay, quy về UTC để truy vấn.
+    const startVn = new Date(`${todayVn}T00:00:00.000Z`).getTime() - 7 * 60 * 60 * 1000;
+    const since = new Date(startVn).toISOString();
+
+    const safe = (p: any) => p.then((r: any) => r).catch(() => ({ data: [] }));
+    const [logsR, leadsR, pendR]: any[] = await Promise.all([
+      safe(client.from('chat_logs').select('session_id').gte('created_at', since).limit(20000)),
+      safe(client.from('leads').select('id, source').gte('created_at', since).limit(2000)),
+      safe(client.from('leads').select('id').eq('status', 'new').limit(2000)),
+    ]);
+    const sessions = new Set((logsR?.data || []).map((r: any) => r.session_id).filter(Boolean));
+    const leads = leadsR?.data || [];
+    const handoffs = leads.filter((l: any) => l.source === 'handoff').length;
+    const pending = (pendR?.data || []).length;
+
+    sendTelegram(
+      `📊 BÁO CÁO CUỐI NGÀY (${nowVn.getUTCDate()}/${nowVn.getUTCMonth() + 1})\n\n` +
+      `💬 Hội thoại: ${sessions.size}\n` +
+      `📞 Khách để lại liên hệ: ${leads.length}\n` +
+      `🙋 Yêu cầu gặp nhân viên: ${handoffs}\n` +
+      `⏳ Lead chưa xử lý (tổng): ${pending}`,
+      'DailyReport'
+    );
+    console.log('[DailyReport] Đã gửi báo cáo cuối ngày.');
+  } catch (e: any) {
+    console.warn('[DailyReport] lỗi:', e?.message || e);
+  }
+}
+
 // ===================== [Dữ liệu] DỌN DẸP BẢN GHI CŨ =====================
 // chat_logs ghi 2 dòng mỗi lượt chat và không bao giờ tự xoá -> sau vài tháng sẽ rất nặng, truy vấn chậm.
 // Hàm này xoá bản ghi cũ hơn số ngày cấu hình. Chạy lúc khởi động + mỗi 24 giờ.
@@ -3003,6 +3095,57 @@ app.get("/api/admin/leads", async (req, res) => {
     const { data, error } = await client.from('leads').select('*').order('created_at', { ascending: false }).limit(limit);
     if (error) return res.status(500).json({ error: error.message });
     res.json({ leads: data || [] });
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || String(e) });
+  }
+});
+
+// [Nâng cấp] QUẢN TRỊ: XUẤT danh sách lead ra file CSV (mở được bằng Excel).
+// Dùng CSV thay vì .xlsx để không phải thêm thư viện — Excel mở CSV trực tiếp.
+// Có BOM UTF-8 ở đầu file để Excel hiển thị ĐÚNG tiếng Việt có dấu (thiếu BOM sẽ ra chữ loạn).
+app.get("/api/admin/leads/export", async (req, res) => {
+  try {
+    const client = getSupabaseClient();
+    if (!client) return res.status(400).json({ error: 'Chưa cấu hình Supabase.' });
+
+    let q = client.from('leads').select('*').order('created_at', { ascending: false }).limit(5000);
+    const status = String(req.query.status || '').trim();
+    if (status && status !== 'all') q = q.eq('status', status);
+    const { data, error } = await q;
+    if (error) return res.status(500).json({ error: error.message });
+
+    const STATUS_VI: Record<string, string> = { new: 'Mới', called: 'Đã gọi', won: 'Chốt đơn', lost: 'Không thành' };
+    const SOURCE_VI: Record<string, string> = { chat_auto: 'Tự bắt trong chat', form: 'Form để lại SĐT', handoff: 'Yêu cầu gặp nhân viên', chat: 'Chat' };
+
+    // Bọc giá trị theo chuẩn CSV: nhân đôi dấu ", và luôn đặt trong ngoặc kép.
+    // Chặn ký tự mở đầu =,+,-,@ để tránh lỗi CSV injection (Excel hiểu nhầm thành công thức).
+    const esc = (v: any): string => {
+      let s = v === null || v === undefined ? '' : String(v);
+      if (/^[=+\-@]/.test(s)) s = "'" + s;
+      return '"' + s.replace(/"/g, '""') + '"';
+    };
+    const fmtDate = (iso: any) => {
+      if (!iso) return '';
+      const d = new Date(iso);
+      return isNaN(d.getTime()) ? String(iso) : d.toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' });
+    };
+
+    const header = ['Ngày giờ', 'Số điện thoại', 'Tên khách', 'Nguồn', 'Trạng thái', 'Ghi chú', 'Mã phiên'];
+    const rows = (data || []).map((l: any) => [
+      fmtDate(l.created_at),
+      l.phone || '',
+      l.name || '',
+      SOURCE_VI[l.source] || l.source || '',
+      STATUS_VI[l.status || 'new'] || l.status || '',
+      l.note || '',
+      l.session_id || '',
+    ]);
+
+    const csv = [header, ...rows].map((r) => r.map(esc).join(',')).join('\r\n');
+    const stamp = new Date().toISOString().slice(0, 10);
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="danh-sach-lead-${stamp}.csv"`);
+    res.send('﻿' + csv); // ﻿ = BOM giúp Excel đọc đúng tiếng Việt
   } catch (e: any) {
     res.status(500).json({ error: e?.message || String(e) });
   }
@@ -4749,6 +4892,13 @@ async function startServer() {
   // rồi lặp lại mỗi 24 giờ. Bắn-và-quên, lỗi chỉ ghi log — không ảnh hưởng việc phục vụ khách.
   setTimeout(() => { cleanupOldData().catch(() => {}); }, 30000);
   setInterval(() => { cleanupOldData().catch(() => {}); }, 24 * 60 * 60 * 1000);
+
+  // [Chăm sóc khách] Nhắc lead chưa liên hệ: kiểm tra mỗi 30 phút.
+  setInterval(() => { checkLeadFollowups().catch(() => {}); }, 30 * 60 * 1000);
+  setTimeout(() => { checkLeadFollowups().catch(() => {}); }, 60000);
+
+  // [Chăm sóc khách] Báo cáo cuối ngày: kiểm tra mỗi 10 phút, chỉ gửi khi tới đúng giờ đã đặt.
+  setInterval(() => { maybeSendDailyReport().catch(() => {}); }, 10 * 60 * 1000);
 
   const distPath = path.join(process.cwd(), 'dist');
   const hasDist = fs.existsSync(path.join(distPath, 'index.html'));
