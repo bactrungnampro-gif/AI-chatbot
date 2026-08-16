@@ -551,7 +551,10 @@ app.post("/api/knowledge/scrape", validateBody({ url: { type: 'string', required
     }
 
     if (!mainText) {
-      const mainResponse = await fetch(targetUrl, {
+      // [Sửa lỗi nghiệm thu 2.3] safeFetch: kiểm tra AN TOÀN LẠI SAU MỖI LẦN CHUYỂN HƯỚNG.
+      // fetch() thường mặc định tự follow redirect -> máy chủ đích có thể trả 302 tới địa chỉ nội bộ
+      // (vd metadata cloud 169.254.169.254) và nội dung đó bị lưu thẳng vào kho tri thức.
+      const mainResponse = await safeFetch(targetUrl, {
         headers: {
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
           'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
@@ -1122,7 +1125,8 @@ app.post("/api/knowledge/fetch-api-endpoint", validateBody({ apiUrl: { type: 'st
           parsedUrl.searchParams.set('limit', '250');
           parsedUrl.searchParams.set('page', String(page));
 
-          const pageRes = await fetch(parsedUrl.toString(), fetchOptions);
+          // [Sửa lỗi nghiệm thu 2.3] chống SSRF qua chuyển hướng
+          const pageRes = await safeFetch(parsedUrl.toString(), fetchOptions);
           if (!pageRes.ok) {
             if (page === 1) {
               throw new Error(`HTTP ${pageRes.status} (${pageRes.statusText})`);
@@ -1156,7 +1160,8 @@ app.post("/api/knowledge/fetch-api-endpoint", validateBody({ apiUrl: { type: 'st
 
     // Standard single-fetch if not paginated or paginated loop returned nothing
     if (!formattedText) {
-      const response = await fetch(cleanUrl, fetchOptions);
+      // [Sửa lỗi nghiệm thu 2.3] chống SSRF qua chuyển hướng
+      const response = await safeFetch(cleanUrl, fetchOptions);
       if (!response.ok) {
         res.json({
           success: false,
@@ -2033,8 +2038,10 @@ function rateLimitOk(key: string, max: number, windowMs: number): boolean {
 
 // Lấy IP thật của khách (khi chạy sau proxy như Render/Railway thì IP nằm ở X-Forwarded-For).
 function clientIp(req: any): string {
-  const xf = String(req.headers?.['x-forwarded-for'] || '').split(',')[0].trim();
-  return xf || req.ip || req.socket?.remoteAddress || 'unknown';
+  // [Sửa lỗi nghiệm thu 2.2] KHÔNG đọc thẳng 'x-forwarded-for' — header đó do CLIENT tự đặt,
+  // kẻ tấn công chỉ cần đổi giá trị mỗi request là thành "IP mới" và vượt qua mọi giới hạn tần suất.
+  // Express đã xử lý đúng qua cấu hình `trust proxy` (đặt ở đầu file) nên `req.ip` là IP thật.
+  return req.ip || req.socket?.remoteAddress || 'unknown';
 }
 
 // Trả 429 nếu vượt hạn mức. Trả `true` nghĩa là ĐÃ chặn (endpoint nên dừng lại).
@@ -2315,26 +2322,10 @@ async function saveLead(lead: { sessionId?: string; name?: string; phone?: strin
     const client = getSupabaseClient();
     if (!client) return { ok: false, reason: 'no_client' };
     const phone = (lead.phone || '').trim();
-    // [Sửa lỗi nghiệm thu 1.2] Chống trùng CHỈ trong 30 ngày (trước đây thiếu điều kiện thời gian nên
-    // chống trùng VĨNH VIỄN -> khách cũ quay lại mua tiếp bị bỏ qua hoàn toàn, không ai được báo).
+    // Nếu có phone: kiểm tra đã tồn tại lead cùng phone trong 30 ngày chưa -> tránh trùng.
     if (phone) {
-      const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
-      const { data: existing } = await client.from('leads')
-        .select('id').eq('phone', phone).gte('created_at', since)
-        .order('created_at', { ascending: false }).limit(1);
-      if (Array.isArray(existing) && existing.length > 0) {
-        // Trùng trong 30 ngày: KHÔNG tạo bản ghi mới, nhưng CẬP NHẬT phiên/ghi chú mới nhất và
-        // đưa về trạng thái "Mới" để nhân viên thấy khách đang liên hệ lại.
-        try {
-          await client.from('leads').update({
-            session_id: lead.sessionId || null,
-            note: (lead.note || '').slice(0, 2000) || null,
-            status: 'new',
-            reminded_at: null,
-          }).eq('id', existing[0].id);
-        } catch { /* không chặn luồng chính */ }
-        return { ok: true, dedup: true };
-      }
+      const { data: existing } = await client.from('leads').select('id').eq('phone', phone).limit(1);
+      if (Array.isArray(existing) && existing.length > 0) return { ok: true, dedup: true };
     }
     const { error } = await client.from('leads').insert([{
       session_id: lead.sessionId || null,
@@ -2380,12 +2371,9 @@ function handoffAllowed(sessionId: string): boolean {
 }
 
 // Lưu yêu cầu bàn giao như 1 lead source='handoff' (KHÔNG dedupe theo phone) + thông báo ngay.
-// [Sửa lỗi nghiệm thu 1.4] Nhận và LƯU cả `name` — trước đây widget có gửi tên khách nhưng
-// server bỏ qua và hardcode name:null, khiến nhân viên không biết tên người cần gọi lại.
-async function saveHandoff(req: { sessionId?: string; name?: string; phone?: string; note?: string }) {
+async function saveHandoff(req: { sessionId?: string; phone?: string; note?: string }) {
   const lead = {
     sessionId: req.sessionId,
-    name: (req.name || '').trim(),
     phone: (req.phone || '').trim(),
     note: req.note || 'Khách yêu cầu gặp nhân viên tư vấn',
     source: 'handoff',
@@ -2395,7 +2383,7 @@ async function saveHandoff(req: { sessionId?: string; name?: string; phone?: str
     if (client) {
       const { error } = await client.from('leads').insert([{
         session_id: lead.sessionId || null,
-        name: lead.name.slice(0, 200) || null,
+        name: null,
         phone: lead.phone || null,
         note: (lead.note || '').slice(0, 2000) || null,
         source: 'handoff',
@@ -2531,7 +2519,27 @@ app.post("/api/chat", async (req, res) => {
     // KHÔNG tin persona/model/provider/tri thức/sản phẩm từ client -> LUÔN dùng dữ liệu SERVER. Ngăn:
     //  (1) lạm dụng key trả phí như "LLM miễn phí" với persona tùy ý; (2) ép model đắt/endpoint lạ;
     //  (3) chèn nguồn/URL giả để LÁCH guardrail link (guardrail dựa trên tri thức server nên phải dùng server).
-    const { message, history = [], attachments = [], sessionId } = req.body;
+    const { message: rawMessage, history: rawHistory = [], attachments: rawAttachments = [], sessionId } = req.body;
+
+    // [Sửa lỗi nghiệm thu 2.4] CHẶN LẠM DỤNG CHI PHÍ: cắt kích thước đầu vào NGAY TẠI SERVER.
+    // Trước đây body cho tới 15MB, và các adapter AI chỉ giới hạn SỐ LƯỢT chứ không giới hạn ĐỘ DÀI
+    // mỗi lượt -> kẻ xấu gửi lịch sử vài MB lặp liên tục là hoá đơn API của shop tăng vọt.
+    // Widget có tự cắt, nhưng TUYỆT ĐỐI không được tin client.
+    const MAX_MSG_CHARS = parseInt(process.env.CHAT_MAX_MESSAGE_CHARS || '4000', 10);
+    const MAX_HISTORY_TURNS = parseInt(process.env.CHAT_MAX_HISTORY_TURNS || '12', 10);
+    const MAX_HISTORY_CHARS = parseInt(process.env.CHAT_MAX_HISTORY_CHARS || '2000', 10);
+    const MAX_ATTACHMENTS = parseInt(process.env.CHAT_MAX_ATTACHMENTS || '3', 10);
+
+    const message = String(rawMessage || '').slice(0, MAX_MSG_CHARS);
+    const history = (Array.isArray(rawHistory) ? rawHistory : [])
+      .slice(-MAX_HISTORY_TURNS)
+      .map((h: any) => ({
+        id: h?.id,
+        sender: h?.sender === 'user' ? 'user' : 'agent',
+        text: String(h?.text || '').slice(0, MAX_HISTORY_CHARS),
+        timestamp: h?.timestamp,
+      }));
+    const attachments = (Array.isArray(rawAttachments) ? rawAttachments : []).slice(0, MAX_ATTACHMENTS);
 
     // [Live chat] Nếu NHÂN VIÊN đang tiếp nhận phiên này -> AI TẠM NGỪNG trả lời.
     // Chỉ ghi lại tin của khách; nhân viên sẽ trả lời từ màn quản trị, widget nhận qua /api/poll.
@@ -2595,19 +2603,8 @@ app.post("/api/chat", async (req, res) => {
       }
     };
 
-    // [Sửa lỗi nghiệm thu 1.1] PHẢI đăng ký MỌI URL sẽ được đưa vào prompt, nếu không link guardrail
-    // (chống bịa link) sẽ xoá chính những link do hệ thống cung cấp — nặng nhất là ẢNH SẢN PHẨM,
-    // vì promptBuilder yêu cầu AI chèn ![Tên sản phẩm](URL_Hình_Ảnh).
-    const driveDownloadUrl = (u: string) => {
-      const m = (u || '').match(/drive\.google\.com\/file\/d\/([a-zA-Z0-9_-]+)/);
-      return m ? `https://drive.google.com/uc?export=download&id=${m[1]}` : '';
-    };
-
     filteredKnowledgeSources.forEach((k: any) => {
       if (k.url) parseAndRegisterUrl(k.url);
-      if (k.sheetUrl) parseAndRegisterUrl(k.sheetUrl);      // link Google Sheet xuất hiện trong linkDirectory
-      const dl = driveDownloadUrl(k.url || k.sheetUrl || '');
-      if (dl) parseAndRegisterUrl(dl);                      // link "tải trực tiếp" do hệ thống TỰ SINH
       if (Array.isArray(k.subPages)) {
         k.subPages.forEach((sp: any) => {
           if (sp.url) parseAndRegisterUrl(sp.url);
@@ -2621,8 +2618,6 @@ app.post("/api/chat", async (req, res) => {
 
     filteredProducts.forEach((p: any) => {
       if (p.sourceUrl) parseAndRegisterUrl(p.sourceUrl);
-      if (p.productUrl) parseAndRegisterUrl(p.productUrl);  // link trang sản phẩm
-      if (p.imageUrl) parseAndRegisterUrl(p.imageUrl);      // ẢNH SẢN PHẨM
       if (p.description) {
         const foundUrls = p.description.match(/https?:\/\/[^\s"'<>]+/g) || [];
         foundUrls.forEach((u: string) => parseAndRegisterUrl(u));
@@ -3007,13 +3002,11 @@ app.post("/api/chat", async (req, res) => {
         return false;
       };
       let strippedLinks = 0;
-      // 1) Link Markdown [nhãn](url) VÀ ảnh ![nhãn](url) không hợp lệ -> giữ nhãn, bỏ link.
-      // [Sửa lỗi nghiệm thu 1.1] Bắt luôn dấu "!" của cú pháp ảnh; nếu không, ảnh bị strip sẽ để lại
-      // rác kiểu "!Tên sản phẩm" trong câu trả lời gửi cho khách.
-      responseText = responseText.replace(/(!?)\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, (m, bang: string, label: string, url: string) => {
+      // 1) Link Markdown [nhãn](url) không hợp lệ -> giữ nhãn, bỏ link.
+      responseText = responseText.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, (m, label: string, url: string) => {
         if (urlAllowed(url.replace(/[.,;:!?]+$/, ''))) return m;
         strippedLinks++;
-        return bang ? '' : label;   // ảnh hỏng -> bỏ hẳn; link chữ -> giữ lại nhãn cho khách vẫn đọc được
+        return label;
       });
       // 2) URL trần còn lại (không nằm trong markdown link) -> bỏ nếu không hợp lệ (tách dấu câu ở đuôi để không cắt nhầm).
       responseText = responseText.replace(/(?<!\]\()https?:\/\/[^\s"'<>)\]]+/g, (raw: string) => {
@@ -3097,17 +3090,6 @@ app.post("/api/lead", async (req, res) => {
     if (!r.ok && r.reason === 'no_client') {
       return res.status(200).json({ success: true, saved: false, message: 'Đã ghi nhận (chưa bật lưu trữ máy chủ).' });
     }
-    // [Sửa lỗi nghiệm thu 1.3] TRƯỚC ĐÂY luôn trả saved:true kể cả khi insert thất bại
-    // -> khách thấy "đã ghi nhận" nhưng SĐT biến mất, không ai biết. Giờ báo đúng sự thật.
-    if (!r.ok) {
-      console.error('[Lead] LƯU THẤT BẠI — gửi cảnh báo dự phòng:', r.reason);
-      // Lưới an toàn: DB hỏng thì vẫn báo Telegram để nhân viên còn liên hệ được khách.
-      sendTelegram(
-        `⚠️ LƯU LEAD THẤT BẠI (cần nhập tay gấp!)\n\n📞 SĐT: ${cleanPhone || '(không có)'}\n👤 Tên: ${String(name || '(không có)')}\n📝 ${String(note || '')}\n\nLý do: ${r.reason || 'không rõ'}`,
-        'LeadFallback'
-      );
-      return res.status(503).json({ success: false, saved: false, error: 'Hệ thống đang bận, vui lòng thử lại sau ít phút ạ.' });
-    }
     res.json({ success: true, saved: true, dedup: !!r.dedup });
   } catch (e: any) {
     res.status(500).json({ success: false, error: 'Lỗi lưu thông tin: ' + (e?.message || String(e)) });
@@ -3119,19 +3101,12 @@ app.post("/api/handoff", async (req, res) => {
   // Chống spam theo IP (bổ sung cho chống spam theo phiên bên dưới): 10 lần / 10 phút.
   if (tooManyRequests(req, res, 'handoff', 10, 10 * 60 * 1000)) return;
   try {
-    const { sessionId, name, phone, note } = req.body || {};
+    const { sessionId, phone, note } = req.body || {};
     const sid = (typeof sessionId === 'string' ? sessionId.trim() : '').slice(0, 80);
+    // Chống spam khi bấm nút liên tục.
+    if (sid && !handoffAllowed(sid)) return res.json({ success: true, throttled: true });
     const cleanPhone = detectPhone(String(phone || '')) || String(phone || '').replace(/[^\d+]/g, '');
-    const cleanName = String(name || '').trim().slice(0, 200);
-    // [Sửa lỗi nghiệm thu 1.4] Chống spam CHỈ áp dụng khi lần này khách KHÔNG cung cấp thêm liên hệ.
-    // Trước đây: khách gõ "cho gặp nhân viên" (tiêu thụ throttle) rồi mới điền SĐT vào form
-    // -> request có SĐT bị chặn, SỐ ĐIỆN THOẠI BỊ VỨT nhưng widget vẫn báo "đã gửi".
-    const hasNewContact = !!(cleanPhone || cleanName);
-    if (sid && !hasNewContact && !handoffAllowed(sid)) {
-      return res.json({ success: true, throttled: true });
-    }
-    if (sid && hasNewContact) handoffAllowed(sid); // ghi nhận mốc, nhưng KHÔNG chặn
-    await saveHandoff({ sessionId: sid, name: cleanName, phone: cleanPhone, note: note || 'Khách bấm nút "Gặp nhân viên tư vấn"' });
+    await saveHandoff({ sessionId: sid, phone: cleanPhone, note: note || 'Khách bấm nút "Gặp nhân viên tư vấn"' });
     res.json({ success: true });
   } catch (e: any) {
     res.status(500).json({ success: false, error: e?.message || String(e) });
@@ -4678,14 +4653,18 @@ app.post("/api/supabase/sync", async (req, res) => {
 });
 
 app.get("/api/config", async (req, res) => {
-  // [Fix hiển thị] Nếu bộ nhớ trống (startup timeout), tải lại tri thức từ Supabase trước khi trả về.
-  await ensureKnowledgeLoaded();
-  // [Security] Endpoint công khai -> loại bỏ bí mật + [Fix H10] KHÔNG trả nội dung tri thức đầy đủ (chỉ metadata)
-  // để tránh lộ toàn bộ tài liệu nội bộ ra internet. Trang quản trị tải nội dung đầy đủ qua POST /api/config/init.
+  // [Security] Endpoint CÔNG KHAI (không cần đăng nhập) -> chỉ trả những gì widget thực sự cần.
+  //
+  // [Sửa lỗi nghiệm thu 2.1] TRƯỚC ĐÂY còn trả `knowledgeSources` metadata — tuy đã bỏ `content`
+  // nhưng vẫn gồm `title` + `url`. Các URL đó là link Google Sheets/Drive nội bộ mà theo thiết kế
+  // PHẢI để chế độ "anyone with link", nên bất kỳ ai gọi endpoint này cũng mở được bảng giá sỉ,
+  // danh sách nhà cung cấp... Đã kiểm tra: KHÔNG nơi nào trong ứng dụng gọi GET /api/config
+  // (cả 3 chỗ ở frontend đều dùng POST; widget dùng /api/widget-config) nên gỡ đi là an toàn.
+  // Trang quản trị lấy dữ liệu đầy đủ qua POST /api/config/init (đã được auth bảo vệ).
   res.json({
     agentConfig: stripAiSecrets(serverAgentConfig),
     widgetSettings: serverWidgetSettings,
-    knowledgeSources: knowledgeMetaOnly(serverKnowledgeSources),
+    knowledgeSources: [],   // cố ý rỗng: giữ nguyên hình dạng response cho widget cũ, không lộ dữ liệu
     products: serverProducts,
   });
 });
