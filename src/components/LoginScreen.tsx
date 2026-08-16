@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { Lock, Mail, LogIn, ShieldCheck, Loader2 } from 'lucide-react';
 import { signIn } from '../lib/auth';
 
@@ -12,16 +12,37 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onSuccess }) => {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
+  // [Fix tự-điền] Trình duyệt/trình quản lý mật khẩu điền thẳng vào DOM mà KHÔNG kích hoạt onChange của React
+  // -> ô hiện có chữ nhưng state vẫn rỗng, gây báo nhầm "Vui lòng nhập email và mật khẩu".
+  // Giải pháp: giữ ref tới 2 ô, khi gửi form thì đọc thẳng giá trị thật trong DOM làm phương án dự phòng.
+  const emailRef = useRef<HTMLInputElement>(null);
+  const passwordRef = useRef<HTMLInputElement>(null);
+
+  // Sau khi trang tải, đồng bộ lại state từ giá trị trình duyệt đã tự điền (thử vài nhịp vì autofill có độ trễ).
+  useEffect(() => {
+    const sync = () => {
+      const e = emailRef.current?.value || '';
+      const p = passwordRef.current?.value || '';
+      if (e) setEmail((prev) => (prev ? prev : e));
+      if (p) setPassword((prev) => (prev ? prev : p));
+    };
+    const timers = [100, 400, 1000].map((ms) => setTimeout(sync, ms));
+    return () => timers.forEach(clearTimeout);
+  }, []);
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
-    if (!email.trim() || !password) {
+    // Ưu tiên state; nếu rỗng (do autofill) thì lấy giá trị thật đang hiển thị trong ô.
+    const emailVal = (email || emailRef.current?.value || '').trim();
+    const passVal = password || passwordRef.current?.value || '';
+    if (!emailVal || !passVal) {
       setError('Vui lòng nhập email và mật khẩu.');
       return;
     }
     setLoading(true);
     try {
-      await signIn(email.trim(), password);
+      await signIn(emailVal, passVal);
       onSuccess();
     } catch (err: any) {
       setError(err?.message || 'Đăng nhập thất bại. Vui lòng kiểm tra lại email/mật khẩu.');
@@ -47,6 +68,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onSuccess }) => {
               <Mail className="w-3.5 h-3.5 text-slate-500" /> Email
             </label>
             <input
+              ref={emailRef}
               type="email"
               autoComplete="username"
               value={email}
@@ -60,6 +82,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onSuccess }) => {
               <Lock className="w-3.5 h-3.5 text-slate-500" /> Mật khẩu
             </label>
             <input
+              ref={passwordRef}
               type="password"
               autoComplete="current-password"
               value={password}
