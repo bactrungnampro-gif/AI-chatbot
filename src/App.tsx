@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Navbar } from './components/Navbar';
+import { Sidebar } from './components/Sidebar';
 import { ChatSandbox } from './components/ChatSandbox';
 import { KnowledgeManager } from './components/KnowledgeManager';
 import { ProductCatalog } from './components/ProductCatalog';
@@ -22,6 +23,13 @@ import { LogOut } from 'lucide-react';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<string>('chat');
+  // [Nâng cấp UX] Trạng thái thu gọn menu dọc — nhớ lựa chọn của người dùng giữa các lần vào.
+  const [navCollapsed, setNavCollapsed] = useState<boolean>(() => {
+    try { return localStorage.getItem('aistudio_nav_collapsed') === '1'; } catch { return false; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem('aistudio_nav_collapsed', navCollapsed ? '1' : '0'); } catch { /* bỏ qua */ }
+  }, [navCollapsed]);
   const [hasApiKey, setHasApiKey] = useState<boolean>(true);
 
   // [Auth] Trạng thái xác thực quản trị (Supabase Auth). Khi tắt (AUTH_ENABLED=false) app hoạt động như cũ.
@@ -366,14 +374,22 @@ export default function App() {
         </button>
       )}
 
-      {/* Top Navbar */}
+      {/* Top Navbar (thương hiệu + trạng thái) */}
       <Navbar
-        activeTab={activeTab}
-        setActiveTab={setActiveTab}
         hasApiKey={hasApiKey}
         onOpenWidgetPreview={() => setActiveTab('integration')}
       />
 
+      {/* [Nâng cấp UX] Bố cục 2 cột: MENU DỌC bên trái + nội dung bên phải (không còn kéo trượt tab ngang) */}
+      <div className="flex flex-1 min-h-0">
+        <Sidebar
+          activeTab={activeTab}
+          setActiveTab={setActiveTab}
+          collapsed={navCollapsed}
+          setCollapsed={setNavCollapsed}
+        />
+
+        <div className="flex-1 flex flex-col min-w-0">
       {/* Main Content Area */}
       <main className="flex-1">
         {activeTab === 'chat' && (
@@ -437,10 +453,12 @@ export default function App() {
         )}
       </main>
 
-      {/* Footer */}
-      <footer className="bg-white border-t border-slate-200/80 py-4 text-center text-xs text-slate-400 mt-8">
-        <p>Trợ Lý AI Tư Vấn Khách Hàng • Mô hình: {agentConfig?.selectedModel || 'Gemini'} • Tích Hợp Website 24/7</p>
-      </footer>
+          {/* Footer */}
+          <footer className="bg-white border-t border-slate-200/80 py-4 text-center text-xs text-slate-400 mt-8">
+            <p>Trợ Lý AI Tư Vấn Khách Hàng • Mô hình: {agentConfig?.selectedModel || 'Gemini'} • Tích Hợp Website 24/7</p>
+          </footer>
+        </div>
+      </div>
 
     </div>
   );

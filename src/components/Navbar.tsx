@@ -1,45 +1,26 @@
 import React from 'react';
-import { 
-  Bot, 
-  MessageSquare, 
-  BookOpen, 
-  ShoppingBag, 
-  Sliders, 
-  Code2, 
-  History,
+import {
+  Bot,
   Sparkles,
   ExternalLink,
   ShieldCheck,
-  FileText,
-  Inbox
+  FileText
 } from 'lucide-react';
 
 interface NavbarProps {
-  activeTab: string;
-  setActiveTab: (tab: string) => void;
   hasApiKey: boolean;
   onOpenWidgetPreview: () => void;
 }
 
+// Thanh trên cùng: thương hiệu + trạng thái + nút nhanh.
+// Danh sách màn hình đã chuyển sang MENU DỌC bên trái (Sidebar.tsx).
 export const Navbar: React.FC<NavbarProps> = ({
-  activeTab,
-  setActiveTab,
   hasApiKey,
   onOpenWidgetPreview,
 }) => {
-  const tabs = [
-    { id: 'chat', label: 'Thử Nghiệm Chat (Sandbox)', icon: MessageSquare },
-    { id: 'knowledge', label: 'Cơ Sở Tri Thức & Web Data', icon: BookOpen },
-    { id: 'products', label: 'Danh Mục Sản Phẩm', icon: ShoppingBag },
-    { id: 'persona', label: 'Cấu Hình Agent & Qui Tắc', icon: Sliders },
-    { id: 'integration', label: 'Tích Hợp Website Widget', icon: Code2 },
-    { id: 'inbox', label: 'Lead & Hội Thoại Khách', icon: Inbox },
-    { id: 'history', label: 'Lịch Sử & Nhật Ký', icon: History },
-  ];
-
   return (
     <header className="sticky top-0 z-40 bg-white/95 backdrop-blur border-b border-slate-200 shadow-xs">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+      <div className="w-full px-3 sm:px-4 lg:px-6">
         <div className="flex items-center justify-between h-16">
           
           {/* Logo & Agent Status */}
@@ -96,27 +77,7 @@ export const Navbar: React.FC<NavbarProps> = ({
 
         </div>
 
-        {/* Navigation Tabs */}
-        <div className="flex space-x-1 overflow-x-auto no-scrollbar border-t border-slate-100 pt-1 pb-1">
-          {tabs.map((tab) => {
-            const Icon = tab.icon;
-            const isActive = activeTab === tab.id;
-            return (
-              <button
-                key={tab.id}
-                onClick={() => setActiveTab(tab.id)}
-                className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-medium transition-all whitespace-nowrap ${
-                  isActive
-                    ? 'bg-indigo-50 text-indigo-600 font-bold border border-indigo-100 shadow-2xs'
-                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100/80'
-                }`}
-              >
-                <Icon className={`w-4 h-4 ${isActive ? 'text-indigo-600' : 'text-slate-400'}`} />
-                <span>{tab.label}</span>
-              </button>
-            );
-          })}
-        </div>
+        {/* [Nâng cấp UX] Hàng tab ngang đã chuyển sang MENU DỌC (Sidebar.tsx) -> không còn phải kéo trượt. */}
 
       </div>
     </header>
