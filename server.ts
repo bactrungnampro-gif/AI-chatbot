@@ -1995,6 +1995,103 @@ function logChatTurn(sessionId: string, userText: string, agentText: string) {
   } catch { /* bỏ qua */ }
 }
 
+// [Live chat] Ghi MỘT tin nhắn đơn lẻ (dùng khi nhân viên trả lời, hoặc khi AI đang tạm ngừng).
+async function logSingleMessage(sessionId: string, sender: string, text: string) {
+  try {
+    const client = getSupabaseClient();
+    if (!client || !sessionId) return null;
+    const { data, error } = await client.from('chat_logs')
+      .insert([{ session_id: sessionId, sender, text: (text || '').slice(0, 8000) }])
+      .select('id, session_id, sender, text, created_at')
+      .single();
+    if (error) { console.warn('[ChatLog] insert 1 lỗi:', error.message); return null; }
+    return data;
+  } catch { return null; }
+}
+
+// [Live chat] TRẠNG THÁI PHIÊN: khi nhân viên tiếp nhận (human mode) thì AI TẠM NGỪNG trả lời
+// -> tránh việc AI và người thật cùng trả lời gây loạn. Có cache RAM ngắn để không tra DB mỗi lượt chat.
+const humanModeCache = new Map<string, { on: boolean; at: number }>();
+const HUMAN_MODE_TTL = 15000; // 15 giây
+
+// [An toàn] Nếu nhân viên bật chế độ tiếp nhận rồi QUÊN TẮT, AI sẽ im lặng vĩnh viễn -> khách bị bỏ rơi.
+// Vì vậy: quá HUMAN_MODE_TIMEOUT_MIN phút không có hoạt động của nhân viên thì TỰ TRẢ QUYỀN lại cho AI.
+const HUMAN_MODE_TIMEOUT_MIN = Math.max(1, parseInt(process.env.HUMAN_MODE_TIMEOUT_MIN || '30', 10) || 30);
+
+async function isHumanMode(sessionId: string): Promise<boolean> {
+  if (!sessionId) return false;
+  const c = humanModeCache.get(sessionId);
+  if (c && Date.now() - c.at < HUMAN_MODE_TTL) return c.on;
+  try {
+    const client = getSupabaseClient();
+    if (!client) return false;
+    const { data } = await client.from('chat_sessions').select('human_mode, updated_at').eq('session_id', sessionId).maybeSingle();
+    let on = !!(data && data.human_mode);
+    // Hết hạn phiên nhân viên -> tự tắt để AI phục vụ khách trở lại (không để khách chờ vô tận).
+    if (on && data?.updated_at) {
+      const idleMs = Date.now() - new Date(data.updated_at).getTime();
+      if (idleMs > HUMAN_MODE_TIMEOUT_MIN * 60 * 1000) {
+        on = false;
+        console.log(`[LiveChat] Phiên ${sessionId}: nhân viên không hoạt động ${HUMAN_MODE_TIMEOUT_MIN} phút -> trả quyền cho AI.`);
+        setHumanMode(sessionId, false).catch(() => {});
+        logSingleMessage(sessionId, 'staff', '🤖 Trợ lý AI tiếp tục hỗ trợ Anh/Chị ạ. Cần gặp nhân viên, mình cứ nhắn giúp em nhé!').catch(() => {});
+        return false;
+      }
+    }
+    humanModeCache.set(sessionId, { on, at: Date.now() });
+    if (humanModeCache.size > 5000) humanModeCache.clear();
+    return on;
+  } catch {
+    return false;
+  }
+}
+
+// [Live chat] Chống dồn tin Telegram khi khách nhắn liên tiếp: mỗi phiên tối đa 1 thông báo / 20 giây.
+const liveChatNotifyAt = new Map<string, number>();
+function liveChatNotifyAllowed(sessionId: string): boolean {
+  if (!sessionId) return false;
+  const now = Date.now();
+  const last = liveChatNotifyAt.get(sessionId) || 0;
+  if (now - last < 20000) return false;
+  liveChatNotifyAt.set(sessionId, now);
+  if (liveChatNotifyAt.size > 5000) liveChatNotifyAt.clear();
+  return true;
+}
+
+async function setHumanMode(sessionId: string, on: boolean): Promise<boolean> {
+  try {
+    const client = getSupabaseClient();
+    if (!client || !sessionId) return false;
+    const { error } = await client.from('chat_sessions')
+      .upsert({ session_id: sessionId, human_mode: on, updated_at: new Date().toISOString() }, { onConflict: 'session_id' });
+    if (error) { console.warn('[LiveChat] setHumanMode lỗi:', error.message); return false; }
+    humanModeCache.set(sessionId, { on, at: Date.now() }); // cập nhật cache ngay để có hiệu lực tức thì
+    return true;
+  } catch { return false; }
+}
+
+// [Dùng chung] Gửi 1 tin nhắn Telegram tới TẤT CẢ người nhận đã cấu hình.
+// TELEGRAM_CHAT_ID có thể là 1 id, id NHÓM (số âm), hoặc danh sách nhiều id cách nhau dấu phẩy.
+// Bắn-và-quên: không chặn luồng chính, lỗi chỉ ghi log.
+function sendTelegram(text: string, tag = 'Notify') {
+  try {
+    const tgToken = (process.env.TELEGRAM_BOT_TOKEN || '').trim();
+    const tgChatRaw = (process.env.TELEGRAM_CHAT_ID || '').trim();
+    if (!tgToken || !tgChatRaw || !text) return;
+    const chatIds = tgChatRaw.split(',').map((s) => s.trim()).filter(Boolean);
+    for (const chatId of chatIds) {
+      fetch(`https://api.telegram.org/bot${tgToken}/sendMessage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chat_id: chatId, text, disable_web_page_preview: true }),
+      }).then((r: any) => { if (!r.ok) console.warn(`[${tag}] Telegram HTTP ${r.status} (chat ${chatId})`); })
+        .catch((e: any) => console.warn(`[${tag}] Telegram lỗi (chat ${chatId}):`, e?.message || e));
+    }
+  } catch (e: any) {
+    console.warn(`[${tag}] Telegram lỗi chung:`, e?.message || e);
+  }
+}
+
 // [Bước 4] Thông báo lead mới cho chủ shop qua các kênh đã cấu hình (Telegram / Webhook / Email-Resend).
 // Bắn-và-quên: KHÔNG chặn phản hồi, mọi lỗi chỉ ghi log. Chỉ gửi kênh nào có đủ biến môi trường.
 function notifyNewLead(lead: { sessionId?: string; name?: string; phone?: string; note?: string; source?: string }) {
@@ -2018,21 +2115,8 @@ function notifyNewLead(lead: { sessionId?: string; name?: string; phone?: string
     ].filter(Boolean);
     const text = lines.join('\n');
 
-    // 1) Telegram — hỗ trợ NHIỀU người nhận: TELEGRAM_CHAT_ID có thể là 1 id, id NHÓM (số âm),
-    //    hoặc danh sách nhiều id cách nhau dấu phẩy. Gửi lần lượt tới từng nơi.
-    const tgToken = (process.env.TELEGRAM_BOT_TOKEN || '').trim();
-    const tgChatRaw = (process.env.TELEGRAM_CHAT_ID || '').trim();
-    if (tgToken && tgChatRaw) {
-      const chatIds = tgChatRaw.split(',').map((s) => s.trim()).filter(Boolean);
-      for (const chatId of chatIds) {
-        fetch(`https://api.telegram.org/bot${tgToken}/sendMessage`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ chat_id: chatId, text, disable_web_page_preview: true }),
-        }).then((r: any) => { if (!r.ok) console.warn(`[LeadNotify] Telegram HTTP ${r.status} (chat ${chatId})`); })
-          .catch((e: any) => console.warn(`[LeadNotify] Telegram lỗi (chat ${chatId}):`, e?.message || e));
-      }
-    }
+    // 1) Telegram — hỗ trợ NHIỀU người nhận (xem sendTelegram bên dưới).
+    sendTelegram(text, 'LeadNotify');
 
     // 2) Webhook chung (Zalo OA / n8n / Make / Slack ...): POST JSON lead + text.
     const hook = (process.env.LEAD_WEBHOOK_URL || '').trim();
@@ -2149,6 +2233,52 @@ async function saveHandoff(req: { sessionId?: string; phone?: string; note?: str
   notifyNewLead(lead); // dùng chung kênh thông báo; tiêu đề tự đổi thành "🙋 KHÁCH CẦN GẶP NHÂN VIÊN"
 }
 
+// [Nâng cấp] THẺ SẢN PHẨM: dò tên sản phẩm (trong danh mục) XUẤT HIỆN trong câu trả lời của agent
+// -> trả kèm để widget hiện thẻ có ảnh/giá/nút xem. Làm ở TẦNG CODE nên KHÔNG phụ thuộc AI có bịa hay không:
+// chỉ hiện sản phẩm CÓ THẬT trong danh mục, không bao giờ tạo ra sản phẩm mới.
+function matchProductsInText(responseText: string, products: any[]): any[] {
+  try {
+    if (!responseText || !Array.isArray(products) || products.length === 0) return [];
+    const hay = responseText.toLowerCase();
+    const hits: { p: any; len: number; pos: number }[] = [];
+    for (const p of products) {
+      const name = String(p?.name || '').trim();
+      if (name.length < 4) continue; // tên quá ngắn dễ khớp nhầm
+      const pos = hay.indexOf(name.toLowerCase());
+      if (pos >= 0) hits.push({ p, len: name.length, pos });
+    }
+    // Ưu tiên tên DÀI hơn (cụ thể hơn), rồi tới vị trí xuất hiện sớm hơn trong câu trả lời.
+    hits.sort((a, b) => (b.len - a.len) || (a.pos - b.pos));
+    const seen = new Set<string>();
+    const chosenNames: string[] = [];
+    const out: any[] = [];
+    for (const h of hits) {
+      const id = String(h.p.id || h.p.name);
+      if (seen.has(id)) continue;
+      // Bỏ qua tên LỒNG trong sản phẩm đã chọn (vd "Marble Gloss" nằm trong "Hóa chất ... Marble Gloss")
+      // -> tránh hiện 2 thẻ gần như trùng nhau cho cùng một sản phẩm khách đang hỏi.
+      const nameLower = String(h.p.name || '').toLowerCase();
+      if (chosenNames.some((c) => c.includes(nameLower))) continue;
+      seen.add(id);
+      chosenNames.push(nameLower);
+      out.push({
+        id: h.p.id,
+        name: h.p.name,
+        price: h.p.price,
+        originalPrice: h.p.originalPrice,
+        imageUrl: h.p.imageUrl || '',
+        productUrl: h.p.productUrl || h.p.sourceUrl || '',
+        inStock: h.p.inStock !== false,
+        category: h.p.category || '',
+      });
+      if (out.length >= 3) break; // tối đa 3 thẻ để không rối khung chat
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
 // [Nâng cấp] PHÁT HIỆN "LỖ HỔNG TRI THỨC": câu trả lời cho thấy agent KHÔNG có thông tin để trả lời.
 // Dùng để gom lại những câu khách hỏi mà agent chưa đáp được -> chủ shop bổ sung FAQ/tri thức.
 function detectAnswerGap(responseText: string): boolean {
@@ -2216,6 +2346,29 @@ app.post("/api/chat", async (req, res) => {
     //  (1) lạm dụng key trả phí như "LLM miễn phí" với persona tùy ý; (2) ép model đắt/endpoint lạ;
     //  (3) chèn nguồn/URL giả để LÁCH guardrail link (guardrail dựa trên tri thức server nên phải dùng server).
     const { message, history = [], attachments = [], sessionId } = req.body;
+
+    // [Live chat] Nếu NHÂN VIÊN đang tiếp nhận phiên này -> AI TẠM NGỪNG trả lời.
+    // Chỉ ghi lại tin của khách; nhân viên sẽ trả lời từ màn quản trị, widget nhận qua /api/poll.
+    const sidEarly = (typeof sessionId === 'string' && sessionId.trim()) ? sessionId.trim().slice(0, 80) : '';
+    if (sidEarly && await isHumanMode(sidEarly)) {
+      if (message && String(message).trim()) {
+        logSingleMessage(sidEarly, 'user', String(message)).catch(() => {});
+        // [Live chat] BÁO NGAY cho nhân viên qua Telegram — nếu không, nhân viên phải ngồi canh tab quản trị.
+        // Có chống dồn tin: mỗi phiên tối đa 1 thông báo / 20 giây khi khách nhắn liên tiếp.
+        if (liveChatNotifyAllowed(sidEarly)) {
+          sendTelegram(
+            `💬 KHÁCH ĐANG CHỜ NHÂN VIÊN TRẢ LỜI\n\n"${String(message).slice(0, 500)}"\n\n🆔 Phiên: ${sidEarly}\n👉 Mở màn quản trị → Lead & Hội Thoại Khách → Hội thoại để trả lời.`,
+            'LiveChat'
+          );
+        }
+      }
+      return res.json({
+        success: true,
+        humanMode: true,
+        responseText: '',            // KHÔNG trả lời tự động — nhân viên đang phụ trách
+        timestamp: new Date().toISOString(),
+      });
+    }
 
     const agentConfig = serverAgentConfig || {};
     const knowledgeSources = Array.isArray(serverKnowledgeSources) ? serverKnowledgeSources : [];
@@ -2708,10 +2861,14 @@ app.post("/api/chat", async (req, res) => {
       }
     }
 
+    // [Nâng cấp] Thẻ sản phẩm: chỉ gồm sản phẩm CÓ THẬT trong danh mục được nhắc trong câu trả lời.
+    const matchedProducts = matchProductsInText(responseText, products);
+
     res.json({
       success: true,
       responseText,
       clarificationAsked,
+      products: matchedProducts,
       timestamp: new Date().toISOString()
     });
 
@@ -2820,6 +2977,79 @@ app.get("/api/admin/conversation", async (req, res) => {
     const { data, error } = await client.from('chat_logs').select('*').eq('session_id', session).order('created_at', { ascending: true }).limit(2000);
     if (error) return res.status(500).json({ error: error.message });
     res.json({ messages: data || [] });
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || String(e) });
+  }
+});
+
+// [Live chat] CÔNG KHAI: widget hỏi thăm tin mới từ nhân viên + trạng thái "nhân viên đang tiếp nhận".
+// Gọi KHÔNG kèm `after` -> chỉ trả lastId hiện tại (dùng để khởi tạo, không tải lại lịch sử).
+app.get("/api/poll", async (req, res) => {
+  try {
+    const session = String(req.query.session || '').trim().slice(0, 80);
+    if (!session) return res.status(400).json({ error: 'Thiếu session.' });
+    const client = getSupabaseClient();
+    if (!client) return res.json({ humanMode: false, lastId: 0, messages: [] });
+
+    const humanMode = await isHumanMode(session);
+    const afterRaw = req.query.after;
+    const hasAfter = afterRaw !== undefined && afterRaw !== null && String(afterRaw) !== '';
+
+    if (!hasAfter) {
+      // Khởi tạo: lấy id lớn nhất hiện có để widget bắt đầu theo dõi từ đó.
+      const { data } = await client.from('chat_logs').select('id').eq('session_id', session)
+        .order('id', { ascending: false }).limit(1);
+      const lastId = Array.isArray(data) && data.length > 0 ? data[0].id : 0;
+      return res.json({ humanMode, lastId, messages: [] });
+    }
+
+    const after = parseInt(String(afterRaw), 10) || 0;
+    // Chỉ lấy tin của NHÂN VIÊN (khách đã tự thấy tin mình gửi; tin agent đã hiện sẵn ở widget).
+    const { data, error } = await client.from('chat_logs')
+      .select('id, sender, text, created_at')
+      .eq('session_id', session).eq('sender', 'staff').gt('id', after)
+      .order('id', { ascending: true }).limit(50);
+    if (error) return res.status(500).json({ error: error.message });
+    const messages = data || [];
+    const lastId = messages.length > 0 ? messages[messages.length - 1].id : after;
+    res.json({ humanMode, lastId, messages });
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || String(e) });
+  }
+});
+
+// [Live chat] QUẢN TRỊ: nhân viên gửi tin trả lời khách. Tự bật chế độ "nhân viên tiếp nhận".
+app.post("/api/admin/reply", async (req, res) => {
+  try {
+    const { session, text } = req.body || {};
+    const sid = String(session || '').trim().slice(0, 80);
+    const msg = String(text || '').trim();
+    if (!sid || !msg) return res.status(400).json({ error: 'Thiếu session hoặc nội dung.' });
+    const client = getSupabaseClient();
+    if (!client) return res.status(400).json({ error: 'Chưa cấu hình Supabase.' });
+    // Gửi tin => coi như nhân viên đã tiếp nhận phiên này (AI ngừng trả lời).
+    await setHumanMode(sid, true);
+    const row = await logSingleMessage(sid, 'staff', msg);
+    if (!row) return res.status(500).json({ error: 'Không gửi được tin nhắn.' });
+    res.json({ success: true, message: row });
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || String(e) });
+  }
+});
+
+// [Live chat] QUẢN TRỊ: bật/tắt chế độ nhân viên tiếp nhận (tắt = trả quyền trả lời lại cho AI).
+app.post("/api/admin/session-mode", async (req, res) => {
+  try {
+    const { session, humanMode } = req.body || {};
+    const sid = String(session || '').trim().slice(0, 80);
+    if (!sid || typeof humanMode !== 'boolean') return res.status(400).json({ error: 'Tham số không hợp lệ.' });
+    const ok = await setHumanMode(sid, humanMode);
+    if (!ok) return res.status(500).json({ error: 'Không cập nhật được trạng thái.' });
+    // Báo cho khách biết ai đang phụ trách (minh bạch, tránh khách tưởng bị bỏ rơi).
+    await logSingleMessage(sid, 'staff', humanMode
+      ? '👋 Nhân viên tư vấn đã tham gia hỗ trợ Anh/Chị ạ.'
+      : '🤖 Trợ lý AI tiếp tục hỗ trợ Anh/Chị ạ. Cần gặp nhân viên, mình cứ nhắn giúp em nhé!');
+    res.json({ success: true });
   } catch (e: any) {
     res.status(500).json({ error: e?.message || String(e) });
   }

@@ -16,6 +16,7 @@ export function isPublicApi(req: express.Request): boolean {
   if (path === '/api/lead' && req.method === 'POST') return true; // widget gửi thông tin liên hệ (lead) công khai
   if (path === '/api/handoff' && req.method === 'POST') return true; // widget yêu cầu gặp nhân viên (công khai)
   if (path === '/api/feedback' && req.method === 'POST') return true; // widget gửi đánh giá 👍/👎 (công khai)
+  if (path === '/api/poll' && req.method === 'GET') return true;      // widget nhận tin nhân viên (live chat) công khai
   if (path === '/api/config' && req.method === 'GET') return true; // widget đọc cấu hình
   if (path === '/api/widget-config' && req.method === 'GET') return true; // widget đọc cấu hình NHẸ (không kèm tri thức)
   return false;

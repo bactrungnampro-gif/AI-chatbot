@@ -97,6 +97,53 @@ export const StandaloneWidgetChat: React.FC<StandaloneWidgetChatProps> = ({
     return list.map((s) => s.trim()).filter(Boolean).slice(0, 4);
   })();
 
+  // [Live chat] Theo dõi tin nhắn từ NHÂN VIÊN + trạng thái "nhân viên đang tiếp nhận".
+  // Widget hỏi thăm máy chủ mỗi 5 giây (polling) — đơn giản, không cần WebSocket, đủ mượt cho tư vấn bán hàng.
+  const [humanMode, setHumanMode] = useState(false);
+  const lastPollIdRef = useRef<number>(-1);
+
+  useEffect(() => {
+    let stopped = false;
+    const poll = async () => {
+      try {
+        const sid = sessionIdRef.current;
+        if (!sid) return;
+        // Lần đầu: chỉ lấy mốc id hiện tại (không tải lại lịch sử cũ).
+        const url = lastPollIdRef.current < 0
+          ? `/api/poll?session=${encodeURIComponent(sid)}`
+          : `/api/poll?session=${encodeURIComponent(sid)}&after=${lastPollIdRef.current}`;
+        const res = await fetch(url);
+        if (!res.ok || stopped) return;
+        const data = await res.json();
+        setHumanMode(!!data.humanMode);
+        if (typeof data.lastId === 'number' && data.lastId > lastPollIdRef.current) {
+          lastPollIdRef.current = data.lastId;
+        }
+        const incoming = Array.isArray(data.messages) ? data.messages : [];
+        if (incoming.length > 0) {
+          setMessages((prev) => {
+            const existing = new Set(prev.map((m) => m.id));
+            const add = incoming
+              .filter((r: any) => !existing.has(`staff_${r.id}`))
+              .map((r: any) => ({
+                id: `staff_${r.id}`,
+                sender: 'agent' as const, // hiện ở phía trái như tin của bên shop
+                text: r.text || '',
+                timestamp: new Date(r.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+                _staff: true, // đánh dấu để hiện nhãn "Nhân viên tư vấn"
+              }));
+            return add.length > 0 ? [...prev, ...(add as any)] : prev;
+          });
+        }
+      } catch {
+        /* im lặng bỏ qua — mạng chập chờn không được làm hỏng trải nghiệm chat */
+      }
+    };
+    poll();
+    const timer = setInterval(poll, 5000);
+    return () => { stopped = true; clearInterval(timer); };
+  }, []);
+
   // [Nâng cấp] Đánh giá 👍/👎 cho từng câu trả lời (lưu theo id tin nhắn để đổi màu nút đã bấm).
   const [feedbackGiven, setFeedbackGiven] = useState<Record<string, 'up' | 'down'>>({});
   const sendFeedback = (msgId: string, rating: 'up' | 'down', answerText: string) => {
@@ -249,21 +296,23 @@ export const StandaloneWidgetChat: React.FC<StandaloneWidgetChatProps> = ({
 
   // [Bước 4] Giao câu trả lời thật: BIẾN bong bóng "tiếp nhận" (nếu có) thành câu trả lời, kèm hiệu ứng gõ chữ.
   // Máy chủ đã trả về văn bản HOÀN CHỈNH (đã lọc link/kiểm duyệt) -> đây chỉ là hiển thị, an toàn tuyệt đối.
-  const deliverAgentAnswer = (fullText: string, clarificationAsked?: boolean) => {
+  const deliverAgentAnswer = (fullText: string, clarificationAsked?: boolean, products?: any[]) => {
     const full = fullText || '';
     const enabled = (currentAgent as any)?.typingEffect !== false && full.length >= 12;
     const ackId = pendingAckIdRef.current;
     pendingAckIdRef.current = '';
+    // [Nâng cấp] Thẻ sản phẩm do máy chủ đối chiếu với danh mục (chỉ sản phẩm CÓ THẬT).
+    const cards = Array.isArray(products) && products.length > 0 ? products : undefined;
 
     if (ackId) {
       // Tái sử dụng bong bóng tiếp nhận -> khung chat sạch, không thêm bong bóng mới.
       if (!enabled) {
         setMessages((prev) => prev.map((m) => (m.id === ackId
-          ? { ...m, text: full, clarificationAsked, _ack: undefined, _pending: undefined, _full: undefined, _typing: undefined } as any : m)));
+          ? { ...m, text: full, clarificationAsked, _products: cards, _ack: undefined, _pending: undefined, _full: undefined, _typing: undefined } as any : m)));
         return;
       }
       setMessages((prev) => prev.map((m) => (m.id === ackId
-        ? { ...m, text: '', clarificationAsked, _ack: undefined, _pending: undefined, _full: full, _typing: true } as any : m)));
+        ? { ...m, text: '', clarificationAsked, _products: cards, _ack: undefined, _pending: undefined, _full: full, _typing: true } as any : m)));
       startTyping(ackId, full);
       return;
     }
@@ -271,7 +320,7 @@ export const StandaloneWidgetChat: React.FC<StandaloneWidgetChatProps> = ({
     // Không có bong bóng tiếp nhận (trường hợp hiếm) -> thêm bong bóng mới.
     const id = `msg_agent_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
     const base: any = {
-      id, sender: 'agent', clarificationAsked,
+      id, sender: 'agent', clarificationAsked, _products: cards,
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
     };
     if (!enabled) { setMessages((prev) => [...prev, { ...base, text: full }]); return; }
@@ -377,7 +426,14 @@ export const StandaloneWidgetChat: React.FC<StandaloneWidgetChatProps> = ({
       _pending: true,
     };
 
-    setMessages((prev) => [...prev, userMessage, ackMsg]);
+    // [Live chat] Khi NHÂN VIÊN đang phụ trách -> KHÔNG hiện câu tiếp nhận của AI (tránh nhấp nháy),
+    // khách chỉ chờ tin trả lời của nhân viên.
+    if (humanMode) {
+      pendingAckIdRef.current = '';
+      setMessages((prev) => [...prev, userMessage]);
+    } else {
+      setMessages((prev) => [...prev, userMessage, ackMsg]);
+    }
     setInputText('');
     const currentAttachments = [...attachments];
     setAttachments([]);
@@ -410,8 +466,18 @@ export const StandaloneWidgetChat: React.FC<StandaloneWidgetChatProps> = ({
         throw new Error(errorText);
       }
 
+      // [Live chat] Nhân viên đang phụ trách -> AI không trả lời. Gỡ bong bóng "tiếp nhận",
+      // khách sẽ nhận tin trực tiếp từ nhân viên qua polling.
+      if (data.humanMode) {
+        setHumanMode(true);
+        const ackId = pendingAckIdRef.current;
+        pendingAckIdRef.current = '';
+        if (ackId) setMessages((prev) => prev.filter((m) => m.id !== ackId));
+        return;
+      }
+
       // [Bước 4] Biến bong bóng "tiếp nhận" thành câu trả lời thật (kèm hiệu ứng gõ chữ).
-      deliverAgentAnswer(data.responseText, data.clarificationAsked);
+      deliverAgentAnswer(data.responseText, data.clarificationAsked, data.products);
     } catch (err: any) {
       console.error('Widget Chat error:', err);
       // KHONG pho bay loi ky thuat cho khach -> thong bao than thien; chi tiet log o console.
@@ -557,6 +623,16 @@ export const StandaloneWidgetChat: React.FC<StandaloneWidgetChatProps> = ({
         </div>
       </header>
 
+      {/* [Live chat] Băng báo khi NHÂN VIÊN đang trực tiếp hỗ trợ (AI tạm ngừng) */}
+      {humanMode && (
+        <div className="px-3 py-1.5 bg-emerald-50 border-b border-emerald-200 flex items-center gap-1.5 shrink-0">
+          <Headset className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+          <span className="text-[11px] font-semibold text-emerald-700">
+            Nhân viên tư vấn đang trực tiếp hỗ trợ Anh/Chị
+          </span>
+        </div>
+      )}
+
       {/* Chat Messages List */}
       <div ref={chatContainerRef} onScroll={handleChatScroll} className="flex-1 overflow-y-auto p-3 sm:p-4 space-y-3.5 bg-slate-50">
         {messages.map((msg) => (
@@ -600,6 +676,13 @@ export const StandaloneWidgetChat: React.FC<StandaloneWidgetChatProps> = ({
               }`}
               style={msg.sender === 'user' ? { backgroundColor: primaryColor } : undefined}
             >
+              {/* [Live chat] Nhãn phân biệt tin của NHÂN VIÊN THẬT với tin của AI */}
+              {(msg as any)._staff && (
+                <div className="flex items-center gap-1 mb-1 text-[9px] font-bold text-emerald-600">
+                  <Headset className="w-2.5 h-2.5" /> NHÂN VIÊN TƯ VẤN
+                </div>
+              )}
+
               {/* Attachments preview */}
               {msg.attachments && msg.attachments.length > 0 && (
                 <div className="mb-2 space-y-1.5">
@@ -622,13 +705,55 @@ export const StandaloneWidgetChat: React.FC<StandaloneWidgetChatProps> = ({
               {/* Message text */}
               <FormattedMessage content={msg.text} isAgent={msg.sender === 'agent'} />
 
+              {/* [Nâng cấp] Thẻ sản phẩm — chỉ hiện sau khi gõ xong, và chỉ gồm sản phẩm CÓ THẬT trong danh mục */}
+              {msg.sender === 'agent' && !(msg as any)._typing && Array.isArray((msg as any)._products) && (
+                <div className="mt-2 space-y-1.5">
+                  {(msg as any)._products.map((p: any) => (
+                    <div key={p.id} className="flex items-center gap-2 p-2 bg-slate-50 border border-slate-200 rounded-xl">
+                      {p.imageUrl ? (
+                        <img src={p.imageUrl} alt={p.name} className="w-12 h-12 rounded-lg object-cover shrink-0 bg-white" loading="lazy" />
+                      ) : (
+                        <div className="w-12 h-12 rounded-lg bg-slate-200 flex items-center justify-center shrink-0">
+                          <ImageIcon className="w-5 h-5 text-slate-400" />
+                        </div>
+                      )}
+                      <div className="flex-1 min-w-0">
+                        <div className="text-[11px] font-bold text-slate-800 leading-tight line-clamp-2">{p.name}</div>
+                        <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
+                          {typeof p.price === 'number' && p.price > 0 && (
+                            <span className="text-[11px] font-black" style={{ color: primaryColor }}>
+                              {p.price.toLocaleString('vi-VN')}đ
+                            </span>
+                          )}
+                          {typeof p.originalPrice === 'number' && p.originalPrice > (p.price || 0) && (
+                            <span className="text-[9px] text-slate-400 line-through">{p.originalPrice.toLocaleString('vi-VN')}đ</span>
+                          )}
+                          {!p.inStock && <span className="text-[9px] text-rose-500 font-semibold">Tạm hết hàng</span>}
+                        </div>
+                      </div>
+                      {p.productUrl && (
+                        <a
+                          href={p.productUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="px-2.5 py-1.5 rounded-lg text-[10px] font-bold text-white shrink-0 shadow-2xs"
+                          style={{ backgroundColor: primaryColor }}
+                        >
+                          Xem
+                        </a>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+
               <div
                 className={`text-[9px] mt-1 flex items-center gap-1.5 ${
                   msg.sender === 'user' ? 'text-white/70 justify-end' : 'text-slate-400 justify-between'
                 }`}
               >
                 {/* [Nâng cấp] Nút đánh giá 👍/👎 — chỉ hiện ở câu trả lời của agent (bỏ lời chào & tin đang gõ). */}
-                {msg.sender === 'agent' && msg.id !== 'w_welcome_1' && !(msg as any)._typing && !(msg as any)._pending ? (
+                {msg.sender === 'agent' && msg.id !== 'w_welcome_1' && !(msg as any)._typing && !(msg as any)._pending && !(msg as any)._staff ? (
                   <span className="flex items-center gap-1">
                     <button
                       type="button"
@@ -656,7 +781,7 @@ export const StandaloneWidgetChat: React.FC<StandaloneWidgetChatProps> = ({
 
         {/* [Nâng cấp] Nút gợi ý câu hỏi — hiện khi agent vừa trả lời xong & không đang bận.
             Giảm ma sát: khách chỉ cần bấm là hỏi được, không phải nghĩ cách diễn đạt. */}
-        {quickReplies.length > 0 && !isLoading && !showHandoffForm
+        {quickReplies.length > 0 && !isLoading && !showHandoffForm && !humanMode
           && messages.length > 0 && messages[messages.length - 1].sender === 'agent'
           && !(messages[messages.length - 1] as any)._typing
           && !(messages[messages.length - 1] as any)._pending && (

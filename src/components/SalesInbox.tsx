@@ -321,6 +321,10 @@ const ConversationsPanel: React.FC = () => {
   const [openSession, setOpenSession] = useState<string | null>(null);
   const [thread, setThread] = useState<ChatLogRow[]>([]);
   const [threadLoading, setThreadLoading] = useState(false);
+  // [Live chat] Soạn tin trả lời + trạng thái nhân viên tiếp nhận.
+  const [replyText, setReplyText] = useState('');
+  const [sending, setSending] = useState(false);
+  const [humanMode, setHumanMode] = useState(false);
 
   const loadList = useCallback(async () => {
     setLoading(true);
@@ -344,10 +348,8 @@ const ConversationsPanel: React.FC = () => {
     loadList();
   }, [loadList]);
 
-  const openThread = async (session: string) => {
-    setOpenSession(session);
-    setThreadLoading(true);
-    setThread([]);
+  const refreshThread = useCallback(async (session: string, silent = false) => {
+    if (!silent) setThreadLoading(true);
     try {
       const res = await fetch(`/api/admin/conversation?session=${encodeURIComponent(session)}`);
       if (!res.ok) {
@@ -357,9 +359,71 @@ const ConversationsPanel: React.FC = () => {
       const data = await res.json();
       setThread(Array.isArray(data.messages) ? data.messages : []);
     } catch (e: any) {
-      setError(e?.message || 'Không tải được nội dung hội thoại.');
+      if (!silent) setError(e?.message || 'Không tải được nội dung hội thoại.');
     } finally {
-      setThreadLoading(false);
+      if (!silent) setThreadLoading(false);
+    }
+  }, []);
+
+  const openThread = async (session: string) => {
+    setOpenSession(session);
+    setThread([]);
+    setReplyText('');
+    // Lấy trạng thái "nhân viên đang tiếp nhận" của phiên này.
+    try {
+      const r = await fetch(`/api/poll?session=${encodeURIComponent(session)}`);
+      if (r.ok) { const d = await r.json(); setHumanMode(!!d.humanMode); }
+    } catch { /* bỏ qua */ }
+    refreshThread(session);
+  };
+
+  // [Live chat] Tự làm mới hội thoại đang mở mỗi 5 giây để thấy tin khách gửi tới.
+  useEffect(() => {
+    if (!openSession) return;
+    const t = setInterval(() => refreshThread(openSession, true), 5000);
+    return () => clearInterval(t);
+  }, [openSession, refreshThread]);
+
+  // Nhân viên gửi tin trả lời khách (tự động bật chế độ nhân viên tiếp nhận).
+  const sendReply = async () => {
+    const text = replyText.trim();
+    if (!text || !openSession || sending) return;
+    setSending(true);
+    try {
+      const res = await fetch('/api/admin/reply', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session: openSession, text }),
+      });
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        throw new Error(d.error || `Lỗi ${res.status}`);
+      }
+      setReplyText('');
+      setHumanMode(true);
+      refreshThread(openSession, true);
+    } catch (e: any) {
+      setError(e?.message || 'Không gửi được tin nhắn.');
+    } finally {
+      setSending(false);
+    }
+  };
+
+  // Bật/tắt chế độ nhân viên tiếp nhận (tắt = trả quyền trả lời lại cho AI).
+  const toggleMode = async (on: boolean) => {
+    if (!openSession) return;
+    setHumanMode(on); // cập nhật lạc quan cho mượt
+    try {
+      const res = await fetch('/api/admin/session-mode', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session: openSession, humanMode: on }),
+      });
+      if (!res.ok) throw new Error('Không đổi được chế độ.');
+      refreshThread(openSession, true);
+    } catch (e: any) {
+      setHumanMode(!on); // hoàn tác nếu lỗi
+      setError(e?.message || 'Không đổi được chế độ.');
     }
   };
 
@@ -374,9 +438,23 @@ const ConversationsPanel: React.FC = () => {
           >
             <ChevronLeft className="w-4 h-4" /> Quay lại
           </button>
-          <div className="text-xs text-slate-400 truncate">Phiên: {openSession}</div>
+          <div className="flex items-center gap-2 min-w-0">
+            <span className="text-xs text-slate-400 truncate hidden sm:inline">Phiên: {openSession}</span>
+            {/* [Live chat] Công tắc: nhân viên tiếp nhận (AI ngừng) hay để AI trả lời */}
+            <button
+              onClick={() => toggleMode(!humanMode)}
+              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold border transition-colors shrink-0 ${
+                humanMode
+                  ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'
+                  : 'bg-slate-100 text-slate-600 border-slate-200 hover:bg-slate-200'
+              }`}
+              title={humanMode ? 'Đang do nhân viên phụ trách — bấm để trả lại cho AI' : 'AI đang trả lời — bấm để nhân viên tiếp nhận'}
+            >
+              {humanMode ? <><Headset className="w-3.5 h-3.5" /> Nhân viên đang phụ trách</> : <><Bot className="w-3.5 h-3.5" /> AI đang trả lời</>}
+            </button>
+          </div>
         </div>
-        <div className="p-4 space-y-3 max-h-[70vh] overflow-y-auto">
+        <div className="p-4 space-y-3 max-h-[60vh] overflow-y-auto">
           {threadLoading ? (
             <div className="text-center text-sm text-slate-400 py-10">Đang tải...</div>
           ) : thread.length === 0 ? (
@@ -384,19 +462,25 @@ const ConversationsPanel: React.FC = () => {
           ) : (
             thread.map((m) => {
               const isUser = m.sender === 'user';
+              const isStaff = m.sender === 'staff'; // tin do NHÂN VIÊN gửi
               return (
                 <div key={m.id} className={`flex items-start gap-3 ${isUser ? '' : 'flex-row-reverse'}`}>
                   <div
                     className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 text-white ${
-                      isUser ? 'bg-slate-700' : 'bg-indigo-600'
+                      isUser ? 'bg-slate-700' : isStaff ? 'bg-emerald-600' : 'bg-indigo-600'
                     }`}
                   >
-                    {isUser ? <User className="w-4 h-4" /> : <Bot className="w-4 h-4" />}
+                    {isUser ? <User className="w-4 h-4" /> : isStaff ? <Headset className="w-4 h-4" /> : <Bot className="w-4 h-4" />}
                   </div>
                   <div className={`max-w-[75%] ${isUser ? 'text-left' : 'text-right'}`}>
+                    {isStaff && <div className="text-[10px] font-bold text-emerald-600 mb-0.5">Nhân viên</div>}
                     <div
                       className={`inline-block px-3 py-2 rounded-2xl text-sm whitespace-pre-wrap ${
-                        isUser ? 'bg-slate-100 text-slate-800 rounded-tl-sm' : 'bg-indigo-50 text-slate-800 rounded-tr-sm'
+                        isUser
+                          ? 'bg-slate-100 text-slate-800 rounded-tl-sm'
+                          : isStaff
+                          ? 'bg-emerald-50 text-slate-800 border border-emerald-100 rounded-tr-sm'
+                          : 'bg-indigo-50 text-slate-800 rounded-tr-sm'
                       }`}
                     >
                       {m.text}
@@ -407,6 +491,34 @@ const ConversationsPanel: React.FC = () => {
               );
             })
           )}
+        </div>
+
+        {/* [Live chat] Ô soạn tin — nhân viên trả lời thẳng cho khách trong widget */}
+        <div className="p-3 border-t border-slate-100 bg-slate-50/60 rounded-b-2xl">
+          {!humanMode && (
+            <p className="text-[11px] text-slate-500 mb-2">
+              💡 Gửi tin sẽ tự chuyển phiên sang <b>nhân viên phụ trách</b> (AI tạm ngừng trả lời cho tới khi bạn trả lại quyền).
+            </p>
+          )}
+          <div className="flex items-end gap-2">
+            <textarea
+              value={replyText}
+              onChange={(e) => setReplyText(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendReply(); }
+              }}
+              rows={2}
+              placeholder="Nhập tin nhắn gửi khách... (Enter để gửi, Shift+Enter xuống dòng)"
+              className="flex-1 p-2.5 bg-white border border-slate-200 rounded-xl text-sm resize-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 focus:outline-none"
+            />
+            <button
+              onClick={sendReply}
+              disabled={sending || !replyText.trim()}
+              className="px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-semibold disabled:opacity-40 disabled:cursor-not-allowed shadow-xs shrink-0"
+            >
+              {sending ? 'Đang gửi...' : 'Gửi'}
+            </button>
+          </div>
         </div>
       </div>
     );
